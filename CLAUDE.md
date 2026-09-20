@@ -42,6 +42,7 @@ Agent code lives in `app/agent/` and never imports FastAPI. It is driven by `app
 
 1. Update `docs/CHANGELOG.md`.
 2. Write `docs/phase-notes/<part-id>.md` covering what was built, the key decisions, and three viva questions with answers.
+3. After committing, always run `git push`, and report the pushed commit hash.
 
 ## Pace
 
