@@ -1,6 +1,8 @@
 # BACKEND_PLAN.md: browser-agent-backend (AI-07)
 
-Plan of record for the backend repo. Derived solely from [PROJECT_SPEC.md](PROJECT_SPEC.md); `docs/reference/` is empty, so nothing here is sourced from the original PRD or Complete Documentation PDFs. Section 4 lists everything I could not resolve from the spec alone. Nothing in section 4 has been decided.
+Plan of record for the backend repo. Derived solely from [PROJECT_SPEC.md](PROJECT_SPEC.md); `docs/reference/` is empty, so nothing here is sourced from the original PRD or Complete Documentation PDFs.
+
+All 18 open items from the first draft are now decided. Section 4 records each decision and where it is written down.
 
 ## 1. What the backend must do (10 lines)
 
@@ -13,73 +15,78 @@ Plan of record for the backend repo. Derived solely from [PROJECT_SPEC.md](PROJE
 7. Execute the approved action, then prove the outcome with a deterministic verifier rather than trusting the model's claim.
 8. On a failed verification, work through seven ordered recovery strategies within a bounded retry budget before failing the step.
 9. Persist every step, decision, verification, and recovery attempt, then stream them live over WebSocket with gap-free ordering and replay-on-reconnect.
-10. Cache verified action sequences by task signature, replay them on an exact match, settle credit usage on terminal states, and expose health and Prometheus metrics for the KPIs in spec section 9.
+10. Cache verified action sequences by task signature, replay them into a fresh task on an exact match, settle credit usage on terminal states, and expose health and Prometheus metrics for the KPIs in spec section 9.
 
 ## 2. Folder structure
 
-Module paths that spec section 4.1 pins (`agent/browser/driver.py`, `services/task_runner.py`, `domain/state_machine.py`, and the rest) are reproduced exactly. See ambiguity A1 on the package root.
+Per decision A1, the backend package root is `app/`, and the module paths pinned in spec section 4.1 are relative to it: `agent/browser/driver.py` is `app/agent/browser/driver.py` on disk. That mapping is now recorded in the spec itself.
+
+`alembic/`, `tests/`, and `demo_sites/` sit at the repo root rather than under `app/`. The first two are not application modules, and `demo_sites/` is a separate ASGI app on its own port per decision A12.
 
 ```text
 browser-agent-backend/
 ├─ .github/workflows/ci.yml          lint, type-check, test, build
-├─ agent/
-│  ├─ orchestrator.py                the loop, state transitions, event publishing
-│  ├─ schemas.py                     Pydantic models for LLM structured output
-│  ├─ browser/
-│  │  ├─ driver.py                   isolated context, action execution, state capture
-│  │  ├─ sessions.py                 multi-tab tracking, popup capture, tab ids
-│  │  └─ actions.py                  action allow-list and dispatch
-│  ├─ perception/
-│  │  ├─ collector.js                injected DOM collector
-│  │  ├─ dom_extractor.py            run collector, stamp data-agent-idx
-│  │  ├─ summarizer.py               token-budgeted page summary
-│  │  └─ bs4_fallback.py             static extraction path
-│  ├─ vision/grounding.py            set-of-marks annotation, vision call, bbox
-│  ├─ planner/
-│  │  ├─ planner.py                  prompt build, LLM call, validation, repair retry
-│  │  └─ prompts/                    versioned prompt templates
-│  ├─ llm/
-│  │  ├─ base.py                     provider-agnostic, vision-capable interface
-│  │  ├─ anthropic.py openai.py gemini.py mock.py
-│  │  └─ registry.py                 provider selection from config
-│  ├─ safety/
-│  │  ├─ risk.py                     deterministic plus LLM risk scoring
-│  │  └─ injection.py                page_state delimiting, hidden-element rules
-│  ├─ verification/verifier.py       deterministic outcome checks
-│  ├─ recovery/
-│  │  ├─ strategies.py               the seven ordered strategies
-│  │  └─ recovery.py                 bounded retry driver
-│  └─ cache/replay.py                signature, store, verified replay
-├─ api/
-│  ├─ deps.py                        auth, RBAC, pagination dependencies
-│  ├─ errors.py                      error envelope and exception handlers
-│  ├─ ops.py                         health, metrics, JWKS (root paths)
-│  └─ v1/
-│     ├─ auth.py tasks.py steps.py approvals.py cache.py grounding.py ws.py
-├─ core/
-│  ├─ config.py                      pydantic-settings, env schema
-│  ├─ logging.py                     structlog, request ids
-│  ├─ redaction.py                   password and card-like value scrubbing
-│  ├─ security.py                    hashing, token issue and verify
-│  ├─ jwt_keys.py                    RS256 keypair load, JWKS document
-│  ├─ middleware.py                  CORS, secure headers, request context
-│  └─ rate_limit.py                  auth and task-creation limits
-├─ db/
-│  ├─ base.py session.py
-│  ├─ models/                        the nine tables from spec section 5
-│  └─ repositories/                  task, step, approval, cache, audit
-├─ domain/
-│  ├─ enums.py                       statuses, actions, risk levels
-│  └─ state_machine.py               legal transitions, raises on illegal
-├─ schemas/                          request and response models
-├─ services/
-│  ├─ task_service.py                task lifecycle orchestration
-│  ├─ task_runner.py                 asyncio background execution, semaphore, cancel
-│  ├─ approval_service.py            approval lifecycle and timeout
-│  ├─ screenshot_store.py            local FS now, S3/MinIO behind the same interface
-│  ├─ payments_client.py             reserve, settle, release, BILLING_ENABLED
-│  ├─ events.py                      WS event bus, seq allocation, replay
-│  └─ metrics.py                     Prometheus collectors for section 9 KPIs
+├─ app/
+│  ├─ main.py                        FastAPI app factory, router and middleware wiring
+│  ├─ agent/
+│  │  ├─ orchestrator.py             the loop, state transitions, event publishing
+│  │  ├─ schemas.py                  Pydantic models for LLM structured output
+│  │  ├─ browser/
+│  │  │  ├─ driver.py                isolated context, action execution, state capture
+│  │  │  ├─ sessions.py              multi-tab tracking, popup capture, tab ids
+│  │  │  └─ actions.py               action allow-list and dispatch
+│  │  ├─ perception/
+│  │  │  ├─ collector.js             injected DOM collector
+│  │  │  ├─ dom_extractor.py         run collector, stamp data-agent-idx
+│  │  │  ├─ summarizer.py            token-budgeted page summary
+│  │  │  └─ bs4_fallback.py          static extraction path
+│  │  ├─ vision/grounding.py         set-of-marks annotation, vision call, bbox
+│  │  ├─ planner/
+│  │  │  ├─ planner.py               prompt build, LLM call, validation, repair retry
+│  │  │  └─ prompts/                 versioned prompt templates
+│  │  ├─ llm/
+│  │  │  ├─ base.py                  provider-agnostic, vision-capable interface
+│  │  │  ├─ anthropic.py openai.py gemini.py mock.py
+│  │  │  └─ registry.py              provider selection from config
+│  │  ├─ safety/
+│  │  │  ├─ risk.py                  deterministic plus LLM risk scoring
+│  │  │  └─ injection.py             page_state delimiting, hidden-element rules
+│  │  ├─ verification/verifier.py    deterministic outcome checks
+│  │  ├─ recovery/
+│  │  │  ├─ strategies.py            the seven ordered strategies
+│  │  │  └─ recovery.py              bounded retry driver
+│  │  └─ cache/replay.py             signature, store, verified replay into a new task
+│  ├─ api/
+│  │  ├─ deps.py                     auth, RBAC, pagination dependencies
+│  │  ├─ errors.py                   error envelope and exception handlers
+│  │  ├─ ops.py                      JWKS and /metrics (root paths)
+│  │  └─ v1/
+│  │     ├─ auth.py tasks.py steps.py approvals.py cache.py grounding.py ws.py
+│  │     └─ health.py                /api/v1/health
+│  ├─ core/
+│  │  ├─ config.py                   pydantic-settings, env schema
+│  │  ├─ logging.py                  structlog, request ids
+│  │  ├─ redaction.py                password and card-like value scrubbing
+│  │  ├─ security.py                 hashing, token issue and verify
+│  │  ├─ jwt_keys.py                 RS256 keypair load, JWKS document
+│  │  ├─ middleware.py               CORS, secure headers, request context
+│  │  └─ rate_limit.py               RateLimiter interface, in-memory token bucket
+│  ├─ db/
+│  │  ├─ base.py session.py
+│  │  ├─ models/                     the nine tables from spec section 5
+│  │  └─ repositories/               task, step, approval, cache, audit
+│  ├─ domain/
+│  │  ├─ enums.py                    statuses, actions, risk levels
+│  │  └─ state_machine.py            legal transitions, raises on illegal
+│  ├─ schemas/                       request and response models
+│  └─ services/
+│     ├─ task_service.py             task lifecycle orchestration
+│     ├─ task_runner.py              asyncio background execution, semaphore, cancel
+│     ├─ approval_service.py         approval lifecycle and timeout
+│     ├─ screenshot_store.py         local FS now, S3/MinIO behind the same interface
+│     ├─ payments_client.py          reserve, settle, release, BILLING_ENABLED
+│     ├─ events.py                   WS event bus, seq allocation, replay
+│     └─ metrics.py                  Prometheus collectors for section 9 KPIs
 ├─ alembic/                          migrations
 ├─ demo_sites/skyfare/               mock flight site plus chaos toggles, port 8200
 ├─ tests/
@@ -91,16 +98,18 @@ browser-agent-backend/
 └─ README.md
 ```
 
-## 3. Parts B01 to B31
+## 3. Parts
 
-Build order is dependency order. Every part ships its own tests and leaves `main` green; see A2 on the TEST-001 to TEST-010 mapping.
+**The numbering below is indicative only. You supply each part one at a time, and the part id in your prompt is authoritative. Where the two disagree, your prompt wins and this section is updated to match.**
+
+It is kept as a dependency-ordered sketch of the whole build, so scope that has no home yet stays visible.
 
 ### Foundation
 
 | Part | Delivers |
 |---|---|
 | B01 | Repo scaffolding: uv, pyproject, ruff, mypy, Makefile, `.env.example`, FastAPI entrypoint, Dockerfile, compose with Postgres, CI workflow. |
-| B02 | `core/config.py`: typed settings for every env var, fail-fast validation at startup, no secret ever defaulted in code. |
+| B02 | `app/core/config.py`: typed settings for every env var, fail-fast validation at startup, no secret ever defaulted in code. |
 | B03 | structlog JSON logging, per-request ids, and the redaction filter that keeps page content, screenshots, and credentials out of logs. |
 | B04 | The error envelope, exception handlers, and the 400/401/402/403/404/409/422/429/5xx status-code map from spec section 6. |
 | B05 | SQLAlchemy 2 async engine, session dependency, declarative base, and the nine ORM models with their documented indexes. |
@@ -113,18 +122,18 @@ Build order is dependency order. Every part ships its own tests and leaves `main
 | B07 | Password hashing, user repository, `POST /auth/register`, `POST /auth/login`, and the signup credit grant hook. |
 | B08 | RS256 keypair handling, 15 minute access tokens, and `GET /.well-known/jwks.json` at the root path. |
 | B09 | Refresh cookie issuance and rotation, `POST /auth/refresh`, `POST /auth/logout`, `GET /auth/me`, and the RBAC dependencies. |
-| B10 | CORS locked to the frontend origin, secure headers, and rate limiting on auth and task creation. |
+| B10 | CORS locked to the frontend origin, secure headers, and the `RateLimiter` interface with its in-memory token bucket applied to auth and task creation. |
 
 ### Domain and task API
 
 | Part | Delivers |
 |---|---|
-| B11 | `domain/enums.py` and `domain/state_machine.py`: every status, the legal transition table, and hard failure on illegal moves. |
+| B11 | `app/domain/enums.py` and `state_machine.py`: the full persisted status set, the legal transition table, and hard failure on illegal moves. |
 | B12 | Task repository, `task_number` allocation, and `POST /tasks` including the credit reservation and its 402 path. |
 | B13 | `GET /tasks` with status, date-range, query and pagination filters, `GET /tasks/{id}`, and `POST /tasks/{id}/cancel`. |
 | B14 | Step persistence and `GET /tasks/{id}/steps` plus `GET /tasks/{id}/steps/{stepId}` with its decision, verification, and recovery detail. |
 | B15 | `screenshot_store.py` with task-scoped keys, and `GET /tasks/{id}/steps/{stepId}/screenshot` served only to the owner. |
-| B16 | Approvals: `POST /tasks/{id}/approve`, `POST /tasks/{id}/reject`, RBAC, and the approval timeout job. |
+| B16 | Approvals: `POST /tasks/{id}/approve`, `POST /tasks/{id}/reject`, RBAC, and the timeout job that expires an approval and times the task out. |
 | B17 | `POST /tasks/{id}/stream-ticket` with single-use 60 second tickets and the WebSocket handshake that consumes them. |
 | B18 | The event bus: seq allocation, persist-before-publish, `after_step` replay from the DB, heartbeat, and client `ping`. |
 
@@ -148,56 +157,44 @@ Build order is dependency order. Every part ships its own tests and leaves `main
 
 | Part | Delivers |
 |---|---|
-| B30 | `orchestrator.py` and `services/task_runner.py`: the section 4.2 loop, budgets, concurrency semaphore, cancellation, credit settlement. |
-| B31 | `cache/replay.py` signature and verified replay, the SkyFare demo site with its chaos toggles, and the agent evaluation and chaos test suites. |
+| B30 | `orchestrator.py` and `services/task_runner.py`: the section 4.2 loop, budgets, global and per-user concurrency caps, cancellation, credit settlement. |
+| B31 | `cache/replay.py` signature and new-task replay, the SkyFare demo site with its chaos toggles, and the agent evaluation and chaos test suites. |
 
-## 4. Ambiguities and contradictions
+## 4. Decisions
 
-Nothing below is decided. Each carries a proposal, and I will take the ones you confirm.
+All 18 items from the first draft are resolved. "Spec" marks the ones now written into PROJECT_SPEC.md as well.
 
-### Blocking (I need an answer before the part that touches them)
+### Blocking items
 
-**A1. The spec pins module paths with no package root.** Section 4.1 says `agent/browser/driver.py`, not `app/agent/browser/driver.py`. Taken literally, `agent`, `services`, `domain` and `core` become top-level importable packages, which is faithful but risks colliding with installed distributions. *Proposal: keep the literal top-level layout as drawn in section 2. Alternative is an `app/` prefix and a stated mapping. Affects B01.*
+| Ref | Decision | Spec |
+|---|---|---|
+| A1 | Package root is `app/`. Spec section 4.1 paths are relative to it, so `agent/browser/driver.py` is `app/agent/browser/driver.py`. | §4.1 |
+| A2 | The ten test IDs are recorded verbatim as a table, so they survive the missing reference PDFs. TEST-001 to TEST-008 and TEST-010 are High, TEST-009 is Medium. | §11 |
+| A3 | Persist the full status set including `RECOVERING` and `VERIFYING`, so a reconnecting client and the task detail screen agree with the live view. | plan |
+| A4 | An approval hitting `APPROVAL_TIMEOUT_SECONDS` is recorded `EXPIRED` and drives the task to `TIMED_OUT` with `failure_reason` "approval timed out". `REJECTED` is only for an explicit human rejection. | §4.3 |
+| A5 | `POST /tasks/{id}/replay` always creates a new task row and returns it; it never re-runs the original task id. `reservations.task_id` stays unique and there is no cross-repo conflict. | §6 |
+| A6 | Signup grant rises to 200 credits, roughly four tasks of headroom. The reservation stays at `MAX_STEPS × 2`. | §7 |
 
-**A2. TEST-001 to TEST-010 are referenced but not defined anywhere I can read.** Spec section 11 requires each to map to at least one automated test, but only TEST-006 is identifiable, from the aside in section 4.5. `docs/reference/` is empty. *Proposal: I draft ten candidate IDs from the spec's own requirements and you confirm or replace them before B31. I cannot claim compliance against IDs I have not seen. Affects every part's test section.*
+### Non-blocking items
 
-**A3. `RECOVERING` is called a "UI-visible sub-state" but `tasks.status` has no defined value set.** It is unclear whether `RECOVERING` and `VERIFYING` are persisted statuses or transient states that only appear on the WebSocket. *Proposal: persist the full set, including `RECOVERING`, so a reconnecting client and the task detail screen agree with the live view. Affects B11.*
-
-**A4. An expired approval has no defined task outcome.** `approvals.approval_status` includes `EXPIRED`, and the terminal task states include both `REJECTED` and `TIMED_OUT`, but the spec does not say which one an `APPROVAL_TIMEOUT_SECONDS` expiry produces. *Proposal: approval `EXPIRED` drives the task to `TIMED_OUT`, reserving `REJECTED` for an explicit human rejection. Affects B11 and B16.*
-
-**A5. `reservations.task_id` is unique, but `POST /tasks/{id}/replay` re-runs the same task.** A replay of an already-settled task cannot create a second reservation for that `task_id` without violating the constraint. *Proposal: replay settles against the original reservation if still HELD, otherwise opens a new reservation keyed by a replay attempt id. This needs agreement with whoever owns the payments repo, since the constraint lives there. Affects B12 and B31.*
-
-**A6. The signup grant and the reservation size leave a new user exactly one task.** Signup grants 50 credits; `POST /tasks` reserves `MAX_STEPS × 2` = 50. Billing is 1 credit per step, so the 2x reservation looks like deliberate headroom for vision steps, but the result is that a new user's first task consumes their entire grant. *Proposal: confirm this is intended. Options are to raise the grant, reserve `MAX_STEPS × 1` plus a vision allowance, or leave it. Affects B12.*
-
-### Non-blocking (I will proceed on the proposal unless you say otherwise)
-
-**A7. `MAX_TIME` in the section 4.2 pseudo-code versus `MAX_TASK_SECONDS` in the defaults.** Same budget, two names. *Proposal: `MAX_TASK_SECONDS` is canonical.*
-
-**A8. `task_steps.status` values are never enumerated,** unlike task status. *Proposal: `PENDING`, `AWAITING_APPROVAL`, `EXECUTING`, `VERIFYING`, `RECOVERING`, `VERIFIED`, `FAILED`, `SKIPPED`.*
-
-**A9. `/health` and `/metrics` appear under the heading "Backend API (`/api/v1`)".** JWKS is explicitly called out as a root path; these two are not. *Proposal: serve both at the root, outside the version prefix, matching normal scrape and probe conventions.*
-
-**A10. The `step` WebSocket event embeds a base64 JPEG, and a REST screenshot endpoint also exists.** Inline images are the fastest path to the ≤1 to 2 second live target but make each event large, and reconnect replay could burst many of them at once. *Proposal: keep inline base64 for live events as specified, cap replayed events to metadata plus the REST URL, and make the cutover configurable.*
-
-**A11. `audit_events.metadata` collides with SQLAlchemy's reserved `metadata` attribute** on declarative models. *Proposal: keep the column named `metadata` in Postgres, map it to `event_metadata` in the ORM.*
-
-**A12. Demo sites are "inside backend repo" but served on :8200 while the API is on :8000.** *Proposal: a separate ASGI app under `demo_sites/` with its own compose service, never mounted into the main app, so chaos behaviour cannot leak into API routes.*
-
-**A13. `MAX_CONCURRENT_TASKS=3` does not say global or per-user.** *Proposal: global process semaphore of 3, plus a separate configurable per-user cap so one user cannot occupy every slot.*
-
-**A14. Cache invalidation counts "runs" without defining one.** Section 4.12 invalidates below 0.5 success after at least 3 runs, but a replay that fails on step 4 of 9 and falls back to the planner is neither clearly a success nor clearly a failure. *Proposal: a run is any replay attempt; success means every replayed step verified with no planner fallback.*
-
-**A15. `POST /tasks/{id}/ground` has no defined request or response body.** *Proposal: accept an optional target hint and tab id, return the grounded index and bbox, and record it as a grounding invocation for the vision-rate KPI.*
-
-**A16. Redaction versus execution for the `type` action.** Section 10 requires redaction "everywhere, including DB and WS", but the driver needs the real value to type it. *Proposal: the real value exists only in memory for the duration of the action; `task_steps.value_redacted` and every event carry the masked form. Worth stating explicitly since it is a security rule.*
-
-**A17. Rate limits and page size are required but unquantified.** *Proposal: 5 per minute per IP on login and register, 10 per minute per user on task creation, page size 20 with a 100 maximum, all configurable.*
-
-**A18. `ADR-004` (section 4.7) and `BR-008` (section 1) are cited but absent.** *Proposal: treat the spec text as the whole requirement and note the dangling reference. Flagging in case those documents carry detail the spec dropped.*
+| Ref | Decision |
+|---|---|
+| A7 | `MAX_TASK_SECONDS` is the canonical name for the task time budget; `MAX_TIME` in the section 4.2 pseudo-code refers to it. |
+| A8 | `task_steps.status` values are `PENDING`, `AWAITING_APPROVAL`, `EXECUTING`, `VERIFYING`, `RECOVERING`, `VERIFIED`, `FAILED`, `SKIPPED`. |
+| A9 | Health stays at `/api/v1/health`, since Docker and the frontend both use it. `/metrics` is served at the root, internal and admin only. |
+| A10 | Live `step` events carry inline base64 JPEG as specified. Replayed events carry metadata plus the REST screenshot URL instead, with the cutover configurable, so a reconnect cannot burst a run's worth of images. |
+| A11 | `audit_events.metadata` keeps that column name in Postgres and maps to `event_metadata` on the ORM model, avoiding SQLAlchemy's reserved attribute. |
+| A12 | `demo_sites/` is a separate ASGI app with its own compose service on :8200, never mounted into the main app, so chaos behaviour cannot leak into API routes. |
+| A13 | Concurrency is a global semaphore of 3 plus a per-user cap defaulting to 2. Both configurable. |
+| A14 | A cache "run" is any replay attempt. Success means every replayed step verified with no planner fallback. That feeds `success_rate` and the below-0.5-after-3-runs invalidation. |
+| A15 | `POST /tasks/{id}/ground` accepts an optional target hint and tab id, returns the grounded index and bbox, and records a grounding invocation for the vision-rate KPI. |
+| A16 | The real value for a `type` action exists only in memory for the duration of that action. `task_steps.value_redacted` and every event carry the masked form. |
+| A17 | Rate limits: 5/min per IP on login and register, 10/min per user on task creation. Page size 20, maximum 100. All configurable. |
+| A18 | `ADR-004` and `BR-008` are cited in the spec but absent from `docs/reference/`. The spec text is treated as the whole requirement; the dangling references are noted, not chased. |
 
 ## 5. Dependencies
 
-Grouped as they will appear in `pyproject.toml`. Everything in spec section 3 is here; the four additions the spec does not name are marked and justified.
+Grouped as they will appear in `pyproject.toml`. Two capabilities the spec requires are built in-house rather than pulled in, per your decision; both are called out below.
 
 ### Runtime and web
 
@@ -224,7 +221,8 @@ Grouped as they will appear in `pyproject.toml`. Everything in spec section 3 is
 | `pyjwt` | Issue and verify the RS256 access tokens. |
 | `cryptography` | Supplies the RSA primitives PyJWT needs for RS256 and for building the JWKS document. |
 | `passlib[argon2]` | Password hashing with a modern KDF; argon2 is the first option the spec names. |
-| `slowapi` *(addition)* | Section 10 requires rate limiting on auth and task creation but names no library. Small, FastAPI-native, and swappable. |
+
+Rate limiting is **not** a dependency. `app/core/rate_limit.py` defines a small `RateLimiter` interface with an in-memory token-bucket implementation behind it, so the algorithm is explainable end to end and a Redis-backed implementation can replace it later without touching call sites.
 
 ### Browser and perception
 
@@ -239,20 +237,20 @@ Grouped as they will appear in `pyproject.toml`. Everything in spec section 3 is
 
 | Package | Why |
 |---|---|
-| `anthropic`, `openai`, `google-genai` | The three providers behind `agent/llm/base.py`. All three are vision-capable, which grounding requires. |
+| `anthropic`, `openai`, `google-genai` | The three providers behind `app/agent/llm/base.py`. All three are vision-capable, which grounding requires. |
 
 ### Observability
 
 | Package | Why |
 |---|---|
 | `structlog` | Structured JSON logs with per-request context, and the place the redaction filter is enforced. |
-| `prometheus-client` *(addition)* | `GET /metrics` must emit Prometheus text for the section 9 KPIs; the spec names the format but no library. |
+| `prometheus-client` | `GET /metrics` must emit Prometheus text for the section 9 KPIs; the spec names the format but no library. |
 
 ### Demo sites
 
 | Package | Why |
 |---|---|
-| `jinja2` *(addition)* | SkyFare needs server-rendered templates to support the chaos toggles (shuffled class names, layout variant B, injected hidden text). Section 12 requires the behaviour but names no templating. |
+| `jinja2` | SkyFare needs server-rendered templates to support the chaos toggles (shuffled class names, layout variant B, injected hidden text). Section 12 requires the behaviour but names no templating. |
 
 ### Development and test
 
@@ -260,17 +258,19 @@ Grouped as they will appear in `pyproject.toml`. Everything in spec section 3 is
 |---|---|
 | `pytest`, `pytest-asyncio`, `pytest-cov` | The async test suite and coverage, as specified. |
 | `ruff`, `mypy` | Lint and type-check, as specified, both enforced in CI. |
-| `respx` *(addition)* | Mocks httpx so the payments integration can be tested without running the payments service. |
-| `testcontainers[postgresql]` *(addition, optional)* | Section 11 requires integration tests against Postgres in docker. Compose alone can cover this if you would rather not add it. |
+| `respx` | Mocks httpx so the payments integration can be tested without running the payments service. |
+
+Integration tests run against the docker compose Postgres using a separate test database, created and dropped per run. No `testcontainers`.
 
 ## 6. Conventions
 
 - Every part leaves `main` green: ruff, mypy, and the full test suite pass before it is handed back.
-- Every part ships its own tests. No part defers testing to B31.
+- Every part ships its own tests. No part defers testing to a later one.
+- Each of TEST-001 to TEST-010 is claimed by the part that makes it testable, and the mapping is kept current in this document.
 - No secret is ever defaulted in code; `.env.example` documents each one.
 - Snake_case in Postgres, camelCase on the wire, per spec section 1 and the section 6.1 event bodies.
 - `browser-use` is never imported and never copied, per spec section 3.
 
 ## 7. Status
 
-Awaiting review. Section 4 items A1 to A6 need answers before the parts they name. Nothing is implemented yet.
+All 18 decisions recorded; five are now written into the spec (§4.1, §4.3, §6, §7, §11). Nothing is implemented yet. Awaiting the first part prompt.

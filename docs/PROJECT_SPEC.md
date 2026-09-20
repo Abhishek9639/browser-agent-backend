@@ -59,6 +59,8 @@ Forbidden: importing the `browser-use` library or copying its code. It is a refe
 
 ### 4.1 Layers → modules
 
+Module paths below are relative to the backend package root `app/`, so `agent/browser/driver.py` is `app/agent/browser/driver.py` on disk.
+
 | Layer | Module | Responsibility |
 |---|---|---|
 | Browser driver | `agent/browser/driver.py` | launch isolated context per task, execute actions, capture state |
@@ -97,7 +99,7 @@ Defaults: `MAX_STEPS=25`, `MAX_TASK_SECONDS=300`, `MAX_RETRIES_PER_STEP=3`, `APP
 
 ### 4.3 Task states
 
-`SUBMITTED → PLANNING → ACTING → VERIFYING → (loop) → COMPLETED` Interstitial: `AWAITING_APPROVAL` (returns to ACTING on approve), `RECOVERING` (UI-visible sub-state). Terminal: `COMPLETED`, `EXECUTION_FAILED`, `REJECTED`, `CANCELLED`, `TIMED_OUT`. Transitions are enforced in one place (`domain/state_machine.py`); illegal transitions raise.
+`SUBMITTED → PLANNING → ACTING → VERIFYING → (loop) → COMPLETED` Interstitial: `AWAITING_APPROVAL` (returns to ACTING on approve), `RECOVERING` (UI-visible sub-state). Terminal: `COMPLETED`, `EXECUTION_FAILED`, `REJECTED`, `CANCELLED`, `TIMED_OUT`. Transitions are enforced in one place (`domain/state_machine.py`); illegal transitions raise. An approval that hits `APPROVAL_TIMEOUT_SECONDS` is recorded as `EXPIRED` and drives the task to `TIMED_OUT` with `failure_reason` "approval timed out"; `REJECTED` is used only for an explicit human rejection.
 
 ### 4.4 Action allow-list
 
@@ -193,7 +195,7 @@ Indexes as documented: tasks.task_number unique; task_steps.task_id; llm_decisio
 
 Auth: `POST /auth/register`, `POST /auth/login`, `POST /auth/refresh`, `POST /auth/logout`, `GET /auth/me`, `GET /.well-known/jwks.json` (root path).
 
-Tasks: `POST /tasks`, `GET /tasks?status=&from=&to=&q=&page=`, `GET /tasks/{id}`, `POST /tasks/{id}/cancel`. Steps: `GET /tasks/{id}/steps`, `GET /tasks/{id}/steps/{stepId}` (with llm decision, verification, recovery), `GET /tasks/{id}/steps/{stepId}/screenshot` (auth-checked image). Live: `POST /tasks/{id}/stream-ticket` → `{ticket}` (single-use, 60 s); `WS /tasks/{id}/stream?ticket=...&after_step=N`. Recovery & grounding: `GET /tasks/{id}/recovery-attempts`, `POST /tasks/{id}/ground`. Approval: `POST /tasks/{id}/approve`, `POST /tasks/{id}/reject` — body `{"approved": bool, "reason": str}`; requires role APPROVER or task owner (configurable); else 403. Cache: `GET /tasks/{id}/cache-match`, `POST /tasks/{id}/replay`. Ops: `GET /health`, `GET /metrics` (Prometheus text, admin/internal only).
+Tasks: `POST /tasks`, `GET /tasks?status=&from=&to=&q=&page=`, `GET /tasks/{id}`, `POST /tasks/{id}/cancel`. Steps: `GET /tasks/{id}/steps`, `GET /tasks/{id}/steps/{stepId}` (with llm decision, verification, recovery), `GET /tasks/{id}/steps/{stepId}/screenshot` (auth-checked image). Live: `POST /tasks/{id}/stream-ticket` → `{ticket}` (single-use, 60 s); `WS /tasks/{id}/stream?ticket=...&after_step=N`. Recovery & grounding: `GET /tasks/{id}/recovery-attempts`, `POST /tasks/{id}/ground`. Approval: `POST /tasks/{id}/approve`, `POST /tasks/{id}/reject` — body `{"approved": bool, "reason": str}`; requires role APPROVER or task owner (configurable); else 403. Cache: `GET /tasks/{id}/cache-match`, `POST /tasks/{id}/replay` (always creates a new task row and returns it; it never re-runs the original task id, so `reservations.task_id` stays unique). Ops: `GET /health`, `GET /metrics` (Prometheus text, admin/internal only).
 
 Error envelope (always):
 
@@ -224,7 +226,7 @@ Model: credits wallet, no subscriptions (similar in spirit to Browser Use's cred
 
 Pricing (placeholder — configurable in DB):
 
-- Signup grant: 50 credits (once, idempotent per user)
+- Signup grant: 200 credits (once, idempotent per user)
 - 1 credit per agent step; +1 extra for a vision-grounded step; replayed steps 0.5 → round up per task
 - Packs: Starter ₹99 → 200 credits, Pro ₹499 → 1200, Team ₹999 → 2600
 
@@ -253,7 +255,22 @@ Secrets only via env; never log page content, screenshots, credentials, or typed
 
 ## 11. Testing requirements
 
-Unit, integration (Postgres via docker), API, WS, UI (Vitest), UI e2e (Playwright Test), agent evaluation (labelled page-state → expected action set), chaos suite on demo sites (delays, popups, layout shuffle, renamed selectors, hidden prompt-injection text), payments (signature verification, idempotency, concurrency on wallet). Test IDs TEST-001…TEST-010 from the docs must each map to at least one automated test. A `mock` LLM provider makes the agent loop testable without API quota.
+Unit, integration (Postgres via docker), API, WS, UI (Vitest), UI e2e (Playwright Test), agent evaluation (labelled page-state → expected action set), chaos suite on demo sites (delays, popups, layout shuffle, renamed selectors, hidden prompt-injection text), payments (signature verification, idempotency, concurrency on wallet). Test IDs TEST-001…TEST-010 from the docs must each map to at least one automated test:
+
+| ID | Scenario | Expected | Priority |
+|---|---|---|---|
+| TEST-001 | Valid task submission | task accepted and queued | High |
+| TEST-002 | Empty or invalid task instruction | validation error | High |
+| TEST-003 | Target element not found on page | error recovery is triggered | High |
+| TEST-004 | Valid summarized page state | LLM returns a valid next action | High |
+| TEST-005 | Action verification fails | recovery attempted and retry logged | High |
+| TEST-006 | LLM returns malformed JSON | validation/retry/failure path | High |
+| TEST-007 | High-risk action detected | task pauses for human approval | High |
+| TEST-008 | Unauthorized approval attempt | 403 | High |
+| TEST-009 | Duplicate task submission (same signature) | cached flow is replayed | Medium |
+| TEST-010 | LLM/vision API unavailable | graceful degradation | High |
+
+A `mock` LLM provider makes the agent loop testable without API quota.
 
 ## 12. Demo sites (inside backend repo, `demo_sites/`, served on :8200)
 
