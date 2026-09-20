@@ -228,7 +228,7 @@ Pricing (placeholder — configurable in DB):
 
 - Signup grant: 200 credits (once, idempotent per user)
 - 1 credit per agent step; +1 extra for a vision-grounded step; replayed steps 0.5 → round up per task
-- Packs: Starter ₹99 → 200 credits, Pro ₹499 → 1200, Team ₹999 → 2600
+- Packs: Starter ₹99 → 600 credits, Pro ₹499 → 3500, Team ₹999 → 8000
 
 Tables: `wallets(user_id pk, available, reserved, updated_at)`, `ledger_entries(id, user_id, type GRANT|PURCHASE|RESERVE|SETTLE|RELEASE|REFUND|ADJUST, amount, balance_after, reference_type, reference_id, idempotency_key unique, created_at)` (append-only), `credit_packs(id, name, price_paise, credits, active)`, `orders(id, user_id, pack_id, razorpay_order_id unique, amount_paise, credits, status CREATED|PAID|FAILED, created_at, paid_at)`, `payments(id, order_id, razorpay_payment_id unique, status, method, raw jsonb, created_at)`, `webhook_events(id, event_id unique, event_type, payload jsonb, received_at, processed_at, error)`, `reservations(id, user_id, task_id unique, amount, status HELD|SETTLED|RELEASED|EXPIRED, expires_at, created_at)`. Balance mutations use `SELECT ... FOR UPDATE` on the wallet row inside one transaction and always write a ledger entry.
 
