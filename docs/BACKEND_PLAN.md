@@ -23,6 +23,8 @@ Per decision A1, the backend package root is `app/`, and the module paths pinned
 
 `alembic/`, `tests/`, and `demo_sites/` sit at the repo root rather than under `app/`. The first two are not application modules, and `demo_sites/` is a separate ASGI app on its own port per decision A12.
 
+`models/` and `repositories/` are siblings of `db/`, not nested inside it: flat is simpler and it is what the part prompts use. `db/` holds only the engine, the session and the declarative base. Corrected in B02 to match the repo.
+
 ```text
 browser-agent-backend/
 ├─ .github/workflows/ci.yml          lint, type-check, test, build
@@ -57,24 +59,23 @@ browser-agent-backend/
 │  │  │  └─ recovery.py              bounded retry driver
 │  │  └─ cache/replay.py             signature, store, verified replay into a new task
 │  ├─ api/
-│  │  ├─ deps.py                     auth, RBAC, pagination dependencies
-│  │  ├─ errors.py                   error envelope and exception handlers
+│  │  ├─ deps.py                     settings, auth, RBAC, pagination dependencies
 │  │  ├─ ops.py                      JWKS and /metrics (root paths)
 │  │  └─ v1/
-│  │     ├─ auth.py tasks.py steps.py approvals.py cache.py grounding.py ws.py
-│  │     └─ health.py                /api/v1/health
+│  │     ├─ router.py                aggregates the v1 routers
+│  │     ├─ health.py                /api/v1/health
+│  │     └─ auth.py tasks.py steps.py approvals.py cache.py grounding.py ws.py
 │  ├─ core/
 │  │  ├─ config.py                   pydantic-settings, env schema
-│  │  ├─ logging.py                  structlog, request ids
-│  │  ├─ redaction.py                password and card-like value scrubbing
+│  │  ├─ logging.py                  structlog, request ids, redaction processor
+│  │  ├─ errors.py                   AppError hierarchy and the response envelope
 │  │  ├─ security.py                 hashing, token issue and verify
 │  │  ├─ jwt_keys.py                 RS256 keypair load, JWKS document
 │  │  ├─ middleware.py               CORS, secure headers, request context
 │  │  └─ rate_limit.py               RateLimiter interface, in-memory token bucket
-│  ├─ db/
-│  │  ├─ base.py session.py
-│  │  ├─ models/                     the nine tables from spec section 5
-│  │  └─ repositories/               task, step, approval, cache, audit
+│  ├─ db/                            engine, session, declarative base
+│  ├─ models/                        the nine tables from spec section 5
+│  ├─ repositories/                  task, step, approval, cache, audit
 │  ├─ domain/
 │  │  ├─ enums.py                    statuses, actions, risk levels
 │  │  └─ state_machine.py            legal transitions, raises on illegal

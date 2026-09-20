@@ -1,0 +1,137 @@
+"""Application settings.
+
+Every value comes from the environment (or a local ``.env``). Nothing sensitive
+is ever defaulted here: secrets are typed ``SecretStr`` and default to ``None``
+so a missing one fails loudly at the point of use rather than silently working
+with a placeholder.
+
+Settings for subsystems that arrive in later parts are declared now, grouped by
+prefix, so ``.env.example`` and this module stay a single description of the
+service's configuration surface.
+"""
+
+from enum import StrEnum
+from functools import lru_cache
+from typing import Annotated
+
+from pydantic import Field, SecretStr, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+__all__ = ["AppEnv", "LogLevel", "Settings", "get_settings"]
+
+
+class AppEnv(StrEnum):
+    """Deployment environment. Drives log rendering and error verbosity."""
+
+    DEV = "dev"
+    TEST = "test"
+    PROD = "prod"
+
+
+class LogLevel(StrEnum):
+    DEBUG = "DEBUG"
+    INFO = "INFO"
+    WARNING = "WARNING"
+    ERROR = "ERROR"
+    CRITICAL = "CRITICAL"
+
+
+# Lists are accepted as comma-separated strings, which reads far better in a
+# .env file than JSON. NoDecode turns off pydantic-settings' JSON pre-parse so
+# the validator below sees the raw string.
+CsvList = Annotated[list[str], NoDecode]
+
+
+class Settings(BaseSettings):
+    """The full configuration surface of the backend."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=True,
+        extra="ignore",
+    )
+
+    # ---------------------------------------------------------------- app
+    APP_NAME: str = "browser-agent-backend"
+    APP_ENV: AppEnv = AppEnv.DEV
+    APP_VERSION: str = "0.1.0"
+    API_PREFIX: str = "/api/v1"
+    CORS_ORIGINS: CsvList = Field(default_factory=lambda: ["http://localhost:3000"])
+    LOG_LEVEL: LogLevel = LogLevel.INFO
+
+    # ---------------------------------------------------------------- database
+    DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/agent_core"
+
+    # ---------------------------------------------------------------- jwt (B08, B09)
+    JWT_ALGORITHM: str = "RS256"
+    JWT_ISSUER: str = "browser-agent-backend"
+    JWT_PRIVATE_KEY_PATH: str = "keys/jwt_private.pem"
+    JWT_PUBLIC_KEY_PATH: str = "keys/jwt_public.pem"
+    JWT_ACCESS_TTL_SECONDS: int = 900  # 15 minutes, per spec section 2
+    JWT_REFRESH_TTL_SECONDS: int = 604_800  # 7 days, per spec section 2
+    JWT_REFRESH_COOKIE_NAME: str = "refresh_token"
+
+    # ---------------------------------------------------------------- llm (B23, B24)
+    LLM_PROVIDER: str = "mock"
+    LLM_MODEL: str = "claude-sonnet-5"
+    LLM_VISION_MODEL: str = "claude-sonnet-5"
+    LLM_API_KEY: SecretStr | None = None
+    LLM_TIMEOUT_SECONDS: int = 60
+    LLM_MAX_OUTPUT_TOKENS: int = 2048
+    LLM_PROMPT_VERSION: str = "v1"
+
+    # ---------------------------------------------------------------- agent (B19 onwards)
+    AGENT_MAX_STEPS: int = 25
+    AGENT_MAX_TASK_SECONDS: int = 300
+    AGENT_MAX_RETRIES_PER_STEP: int = 3
+    AGENT_APPROVAL_TIMEOUT_SECONDS: int = 600
+    AGENT_MAX_CONCURRENT_TASKS: int = 3
+    AGENT_MAX_CONCURRENT_TASKS_PER_USER: int = 2
+    AGENT_DOM_TOKEN_BUDGET: int = 3000
+    AGENT_ALLOWED_DOMAINS: CsvList = Field(default_factory=lambda: ["localhost", "127.0.0.1"])
+    AGENT_HEADLESS: bool = True
+
+    # ---------------------------------------------------------------- billing (B12, B30)
+    BILLING_ENABLED: bool = False
+    BILLING_BASE_URL: str = "http://localhost:8100"
+    BILLING_INTERNAL_TOKEN: SecretStr | None = None
+    BILLING_TIMEOUT_SECONDS: int = 10
+
+    # ---------------------------------------------------------------- storage (B15)
+    STORAGE_BACKEND: str = "local"
+    STORAGE_LOCAL_PATH: str = "storage"
+    STORAGE_S3_BUCKET: str | None = None
+    STORAGE_S3_ENDPOINT_URL: str | None = None
+    STORAGE_S3_ACCESS_KEY: SecretStr | None = None
+    STORAGE_S3_SECRET_KEY: SecretStr | None = None
+
+    # ---------------------------------------------------------------- validators
+    @field_validator("CORS_ORIGINS", "AGENT_ALLOWED_DOMAINS", mode="before")
+    @classmethod
+    def _split_csv(cls, value: object) -> object:
+        """Accept ``a,b,c`` as well as a real list."""
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
+    @field_validator("API_PREFIX")
+    @classmethod
+    def _normalise_prefix(cls, value: str) -> str:
+        """A router prefix must start with / and must not end with one."""
+        return "/" + value.strip().strip("/")
+
+    # ---------------------------------------------------------------- helpers
+    @property
+    def is_prod(self) -> bool:
+        return self.APP_ENV is AppEnv.PROD
+
+    @property
+    def is_dev(self) -> bool:
+        return self.APP_ENV is AppEnv.DEV
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    """Cached accessor. Use this everywhere rather than constructing Settings."""
+    return Settings()
