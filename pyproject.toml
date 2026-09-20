@@ -56,7 +56,11 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["ARG"]          # fixtures are injected and may go unused
+"tests/**" = [
+    "ARG",   # fixtures are injected and may go unused
+    "S105",  # obviously-fake digests in test data
+    "S106",
+]
 # The error classes are named in the spec and the part prompt (NotFound, Conflict,
 # RateLimited...). They read better at the raise site than a blanket Error suffix.
 "app/core/errors.py" = ["N818"]

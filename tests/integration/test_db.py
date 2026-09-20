@@ -99,12 +99,22 @@ async def test_healthcheck_fails_against_a_dead_database(integration_settings: S
         await dead.dispose()
 
 
-async def test_alembic_has_run_against_the_live_database(integration_settings: Settings) -> None:
-    """`make migrate` applied the baseline to agent_core."""
+async def test_live_database_is_at_migration_head(integration_settings: Settings) -> None:
+    """`make migrate` has been run and nothing is pending.
+
+    Compares against whatever alembic considers head rather than a hardcoded
+    revision, so adding a migration does not break this test.
+    """
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    head = ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
+
     database = Database(integration_settings)
     try:
         async with database.session() as session:
             version = await session.scalar(text("SELECT version_num FROM alembic_version"))
-        assert version == "0001_baseline"
     finally:
         await database.dispose()
+
+    assert version == head, "run `make migrate`"

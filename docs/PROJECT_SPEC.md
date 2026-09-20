@@ -188,8 +188,11 @@ New browser context per task, no shared storage, downloads disabled, domain allo
 | approvals | id, task_id, step_id, risk_flag, proposed_action (jsonb), approval_status (PENDING/APPROVED/REJECTED/EXPIRED), approved_by → users, reason, created_at, decided_at |
 | audit_events | id, task_id, actor_id, action, metadata (jsonb), timestamp |
 | cached_flows | id, task_signature (unique), action_sequence (jsonb), success_rate, run_count, created_at, updated_at |
+| refresh_tokens | id, user_id → users, token_hash (unique), expires_at, revoked_at, replaced_by_id → refresh_tokens, user_agent, ip, created_at |
 
 Indexes as documented: tasks.task_number unique; task_steps.task_id; llm_decisions.step_id; verifications.step_id; recovery_attempts.step_id; approvals(task_id, created_at); audit_events(task_id, timestamp); cached_flows.task_signature unique.
+
+`refresh_tokens` is an addition, not in the original documentation: rotating the section 2 refresh cookie safely requires the server to know which tokens it issued, so a stolen one can be revoked and reuse of a rotated one detected. Only the hash is stored.
 
 ## 6. Backend API (`/api/v1`)
 

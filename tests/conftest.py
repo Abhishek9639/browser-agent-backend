@@ -20,6 +20,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
+import app.models  # registers every table on Base.metadata
 import tests.integration._models  # noqa: F401  (registers the sample table)
 from app.core.config import AppEnv, Settings
 from app.db.base import Base
