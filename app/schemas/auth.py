@@ -14,6 +14,7 @@ from app.schemas.base import CamelModel
 __all__ = [
     "LoginRequest",
     "LoginResponse",
+    "RefreshResponse",
     "RegisterRequest",
     "UserResponse",
 ]
@@ -93,7 +94,14 @@ class UserResponse(CamelModel):
 
 
 class LoginResponse(CamelModel):
+    """The refresh token is not here on purpose: it is set as an httpOnly
+    cookie, so no script in the page can read it."""
+
     access_token: str
     token_type: str
     expires_in: int
     user: UserResponse
+
+
+class RefreshResponse(LoginResponse):
+    """Same shape as login. The rotated cookie rides on the response."""

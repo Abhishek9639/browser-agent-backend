@@ -28,6 +28,7 @@ __all__ = [
     "InvalidCredentials",
     "NotFound",
     "RateLimited",
+    "RefreshTokenReuse",
     "Unauthorized",
     "UnprocessableAction",
     "ValidationFailed",
@@ -50,8 +51,13 @@ class AppError(Exception):
     http_status: ClassVar[int] = 500
     default_message: ClassVar[str] = "Something went wrong."
 
-    def __init__(self, message: str | None = None) -> None:
+    def __init__(
+        self, message: str | None = None, *, headers: dict[str, str] | None = None
+    ) -> None:
         self.message = message or self.default_message
+        # Some failures carry a header the client is meant to act on, such as
+        # Retry-After on a 429.
+        self.headers = headers or {}
         super().__init__(self.message)
 
 
@@ -77,6 +83,17 @@ class InvalidCredentials(Unauthorized):
 
     code = "INVALID_CREDENTIALS"
     default_message = "Email or password is incorrect."
+
+
+class RefreshTokenReuse(Unauthorized):
+    """A revoked refresh token was presented again.
+
+    Distinct from plain Unauthorized so the route can finish normally and let
+    the chain revocation commit, instead of letting the 401 roll it back.
+    """
+
+    code = "UNAUTHORIZED"
+    default_message = "The refresh token is invalid."
 
 
 class InsufficientCredits(AppError):
@@ -146,10 +163,17 @@ def error_envelope(code: str, message: str, request_id: str) -> dict[str, Any]:
     return {"error": {"code": code, "message": message, "requestId": request_id}}
 
 
-def _respond(request: Request, status: int, code: str, message: str) -> JSONResponse:
+def _respond(
+    request: Request,
+    status: int,
+    code: str,
+    message: str,
+    headers: dict[str, str] | None = None,
+) -> JSONResponse:
     return JSONResponse(
         status_code=status,
         content=error_envelope(code, message, request_id_of(request)),
+        headers=headers or None,
     )
 
 
@@ -162,7 +186,7 @@ async def app_error_handler(request: Request, exc: Exception) -> Response:
         status=error.http_status,
         path=request.url.path,
     )
-    return _respond(request, error.http_status, error.code, error.message)
+    return _respond(request, error.http_status, error.code, error.message, error.headers)
 
 
 async def validation_error_handler(request: Request, exc: Exception) -> Response:

@@ -5,16 +5,19 @@ level, so an app built by ``create_app(settings)`` really is configured by those
 settings all the way down to the handlers. Tests depend on this.
 """
 
-from typing import Annotated
+from collections.abc import Callable, Coroutine
+from typing import Annotated, Any
 
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.core.config import Settings, get_settings
-from app.core.errors import Unauthorized
+from app.core.errors import Forbidden, RateLimited, Unauthorized
 from app.core.jwt_keys import KeyPair
+from app.core.rate_limit import InMemoryRateLimiter, RateLimiter
 from app.core.security import TokenClaims, TokenService
 from app.db.session import DatabaseDep
+from app.domain.enums import UserRole
 from app.models.user import User
 from app.repositories.unit_of_work import UnitOfWorkDep
 from app.services.auth import AuthService
@@ -67,8 +70,9 @@ def get_auth_service(
     uow: UnitOfWorkDep,
     tokens: TokenServiceDep,
     database: DatabaseDep,
+    settings: SettingsDep,
 ) -> AuthService:
-    return AuthService(uow, tokens, database)
+    return AuthService(uow, tokens, database, settings)
 
 
 AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
@@ -104,3 +108,81 @@ async def get_current_user(
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]
+
+
+def client_ip(request: Request, settings: Settings) -> str:
+    """The address a rate-limit bucket is keyed on.
+
+    ``X-Forwarded-For`` is honoured only when explicitly enabled, because any
+    client can send it. Trusting it by default would let one caller mint a
+    fresh bucket per request and defeat the limit entirely.
+    """
+    if settings.RATE_LIMIT_TRUST_FORWARDED_FOR:
+        forwarded = request.headers.get("X-Forwarded-For", "")
+        if forwarded:
+            # Left-most entry is the original client.
+            return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def get_rate_limiter(request: Request) -> RateLimiter:
+    limiter = getattr(request.app.state, "rate_limiter", None)
+    if not isinstance(limiter, RateLimiter):  # pragma: no cover - startup sets it
+        limiter = InMemoryRateLimiter()
+        request.app.state.rate_limiter = limiter
+    return limiter
+
+
+RateLimiterDep = Annotated[RateLimiter, Depends(get_rate_limiter)]
+
+
+def rate_limit(
+    name: str,
+    limit_of: Callable[[Settings], int],
+    *,
+    window_seconds: int = 60,
+) -> Callable[..., Coroutine[Any, Any, None]]:
+    """Build a dependency that throttles a route by client address.
+
+    ``limit_of`` reads the quota from settings at request time rather than at
+    import time, so a test can build an app with a different limit without
+    re-importing the router.
+
+    Keyed on route name plus address, so exhausting the login quota does not
+    also block registration.
+    """
+
+    async def dependency(
+        request: Request,
+        limiter: RateLimiterDep,
+        settings: SettingsDep,
+    ) -> None:
+        if not settings.RATE_LIMIT_ENABLED:
+            return
+
+        key = f"{name}:{client_ip(request, settings)}"
+        result = await limiter.acquire(key, limit=limit_of(settings), window_seconds=window_seconds)
+        if not result.allowed:
+            raise RateLimited(headers={"Retry-After": str(result.retry_after)})
+
+    return dependency
+
+
+def require_roles(*roles: UserRole) -> Callable[..., Coroutine[Any, Any, User]]:
+    """Allow only the listed roles.
+
+    401 means "we do not know who you are"; 403 means "we do, and you may not".
+    Conflating them would tell an unauthenticated caller that the resource
+    exists and that some role can reach it.
+
+    ADMIN is not implied. Every call site lists the roles it accepts, so
+    reading a route tells you exactly who can reach it.
+    """
+    allowed = frozenset(roles)
+
+    async def dependency(user: CurrentUser) -> User:
+        if user.role not in allowed:
+            raise Forbidden("Your role does not allow this action.")
+        return user
+
+    return dependency

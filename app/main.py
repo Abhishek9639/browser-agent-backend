@@ -18,6 +18,7 @@ from app.core.errors import register_exception_handlers
 from app.core.jwt_keys import load_key_pair
 from app.core.logging import configure_logging, get_logger
 from app.core.middleware import RequestContextMiddleware
+from app.core.rate_limit import InMemoryRateLimiter
 from app.db.session import Database
 
 __all__ = ["app", "create_app"]
@@ -48,6 +49,9 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     # signing key would accept registrations and then fail every login.
     application.state.jwt_keys = load_key_pair(settings)
     logger.info("signing_keys_loaded", kid=settings.JWT_KID)
+
+    # Per process. See the note in app/core/rate_limit.py before scaling out.
+    application.state.rate_limiter = InMemoryRateLimiter()
 
     # B19: await browser_pool.start()
     # B30: await task_runner.start()

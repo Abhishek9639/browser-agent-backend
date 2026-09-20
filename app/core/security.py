@@ -4,6 +4,8 @@ Spec section 2: RS256 access tokens, 15 minutes. Spec section 10: a password is
 never logged and never stored, only its argon2 digest.
 """
 
+import hashlib
+import secrets
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -20,10 +22,13 @@ from app.domain.enums import UserRole
 
 __all__ = [
     "MIN_PASSWORD_LENGTH",
+    "REFRESH_TOKEN_BYTES",
     "AccessToken",
     "TokenClaims",
     "TokenService",
+    "generate_refresh_token",
     "hash_password",
+    "hash_refresh_token",
     "verify_password",
 ]
 
@@ -51,6 +56,32 @@ def verify_password(password: str, password_hash: str) -> bool:
         return _hasher.verify(password_hash, password)
     except (VerifyMismatchError, VerificationError, InvalidHashError):
         return False
+
+
+# 48 random bytes, url-safe. Long enough that guessing is not a threat model.
+REFRESH_TOKEN_BYTES: Final = 48
+
+
+def generate_refresh_token() -> str:
+    """A fresh opaque refresh token.
+
+    Opaque, not a JWT: a refresh token's whole job is to be revocable, and a
+    self-contained token cannot be revoked without a server-side list anyway.
+    Since we need the list either way, the token carries no claims.
+    """
+    return secrets.token_urlsafe(REFRESH_TOKEN_BYTES)
+
+
+def hash_refresh_token(token: str) -> str:
+    """SHA-256 hex of a refresh token. Only this is ever stored.
+
+    Not argon2, deliberately. Slow hashing defends a *low-entropy* secret a
+    human chose against offline guessing. This value is 384 random bits, so
+    there is nothing to guess, and refresh happens on a hot path that needs an
+    indexed equality lookup. A dump of the table still cannot be replayed,
+    which is the property that matters.
+    """
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)

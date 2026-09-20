@@ -62,6 +62,17 @@ class Settings(BaseSettings):
     CORS_ORIGINS: CsvList = Field(default_factory=lambda: ["http://localhost:3000"])
     LOG_LEVEL: LogLevel = LogLevel.INFO
 
+    # ---------------------------------------------------------------- rate limits
+    # Spec section 10 requires throttling on auth and task creation.
+    # Values are decision A17.
+    RATE_LIMIT_ENABLED: bool = True
+    RATE_LIMIT_LOGIN_PER_MINUTE: int = 5
+    RATE_LIMIT_REGISTER_PER_MINUTE: int = 3
+    RATE_LIMIT_TASK_CREATE_PER_MINUTE: int = 10
+    # Trust X-Forwarded-For only behind a proxy you control: a client can set it
+    # freely, and believing it hands every caller a fresh rate-limit bucket.
+    RATE_LIMIT_TRUST_FORWARDED_FOR: bool = False
+
     # ---------------------------------------------------------------- database
     # docker compose and the application read the same variables, so the
     # container credentials and the app's DSN cannot drift apart.

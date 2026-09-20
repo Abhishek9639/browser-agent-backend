@@ -4,6 +4,28 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B07 - Refresh rotation, RBAC, rate limiting
+
+Added
+
+- Login now sets an httpOnly refresh cookie: an opaque 384 bit token, stored only as its SHA-256 hash, `SameSite=Lax`, `Secure` when `APP_ENV=prod`, scoped to `path=/api/v1/auth`.
+- `POST /api/v1/auth/refresh`: single-use rotation. The presented token is revoked and points at its successor via `replaced_by_id`.
+- Reuse detection: presenting an already-revoked token revokes every session for that user, writes a `TOKEN_REUSE_DETECTED` audit row, and returns 401.
+- `POST /api/v1/auth/logout`: revokes the token and clears the cookie, idempotent, always 204.
+- `GET /api/v1/auth/me`.
+- `require_roles(*roles)` in `app/api/deps.py`: 403 for the wrong role, 401 for no token. ADMIN is not implied; each route lists what it accepts.
+- `app/core/rate_limit.py`: a `RateLimiter` interface with an in-memory token bucket, keyed on route plus client address, with idle-bucket eviction. Applied at 5/min to login and 3/min to register; 429 in the error envelope with a `Retry-After` header.
+- `scripts/create_admin.py`: creates an ADMIN or APPROVER from the CLI, prompting for the password rather than taking it as an argument.
+- `AppError` carries response headers, so 429 can send `Retry-After`.
+- Settings: `RATE_LIMIT_ENABLED`, `RATE_LIMIT_LOGIN_PER_MINUTE`, `RATE_LIMIT_REGISTER_PER_MINUTE`, `RATE_LIMIT_TASK_CREATE_PER_MINUTE`, `RATE_LIMIT_TRUST_FORWARDED_FOR`.
+- `docs/auth.md` gains the rotation and reuse diagram, the cookie table, the roles section and the rate limiting section.
+- 12 unit tests and 39 integration tests.
+
+Changed
+
+- Reuse handling runs in the request's own transaction and the route returns the 401 rather than raising it, so the chain revocation commits. Raising would have rolled it back at exactly the wrong moment.
+- Audit metadata uses `session_id` rather than `token_id`: the redaction rule matches any key containing "token" and was masking the identifier a security review needs.
+
 ### B06 - Auth: JWT, JWKS, register, login
 
 Added
