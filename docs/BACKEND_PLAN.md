@@ -67,7 +67,8 @@ browser-agent-backend/
 │  │     └─ auth.py tasks.py steps.py approvals.py cache.py grounding.py ws.py
 │  ├─ core/
 │  │  ├─ config.py                   pydantic-settings, env schema
-│  │  ├─ logging.py                  structlog, request ids, redaction processor
+│  │  ├─ logging.py                  structlog, request ids
+│  │  ├─ redaction.py                masking rules, shared by logs and audit
 │  │  ├─ errors.py                   AppError hierarchy and the response envelope
 │  │  ├─ security.py                 hashing, token issue and verify
 │  │  ├─ jwt_keys.py                 RS256 keypair load, JWKS document
@@ -75,7 +76,8 @@ browser-agent-backend/
 │  │  └─ rate_limit.py               RateLimiter interface, in-memory token bucket
 │  ├─ db/                            engine, session, declarative base
 │  ├─ models/                        the nine tables from spec section 5
-│  ├─ repositories/                  task, step, approval, cache, audit
+│  ├─ repositories/                  base, task, user, approval, cache, audit
+│  │  └─ unit_of_work.py             every repository over one session
 │  ├─ domain/
 │  │  ├─ enums.py                    statuses, actions, risk levels
 │  │  └─ state_machine.py            legal transitions, raises on illegal

@@ -4,6 +4,24 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B05 - Repositories and audit service
+
+Added
+
+- `app/repositories/base.py`: generic `BaseRepository[Model]` (`get`, `get_or_404`, `add`, `add_all`, `delete`, `count`, `list`, `paginate`) and a `Page` result carrying `items`, `total`, `page`, `page_size` plus `total_pages`, `has_next`, `has_previous`. Page size is capped at 100 (decision A17).
+- `UserRepository` (`get_by_email`, case-insensitive; `email_exists`) and `RefreshTokenRepository` (`get_by_token_hash`, `list_active_for_user`, `revoke` with rotation chain, `revoke_all_for_user`).
+- `TaskRepository`: `get_owned` (NotFound, not Forbidden, for other users' tasks; admins exempt), `list_for_user` with status, date range and escaped text search, `get_by_number`, `list_active`, `count_active_for_user`.
+- `TaskStepRepository`: `next_step_number`, `list_for_task`, `list_after` (WebSocket replay), `get_by_number`.
+- `LlmDecisionRepository`, `VerificationRepository`, `RecoveryAttemptRepository` (including `list_for_task` and `next_attempt_number`), `ApprovalRepository` (`get_pending_for_task`, `list_for_task`, `list_expired`), `AuditEventRepository`, `CachedFlowRepository` (`get_by_signature`, `upsert` via `ON CONFLICT`, `record_run`, `should_invalidate`).
+- `app/repositories/unit_of_work.py`: `UnitOfWork` bundling every repository over one session, with a `UnitOfWorkDep` FastAPI dependency. Deliberately has no `commit()`.
+- `app/services/audit.py`: `AuditService.record()` plus `AuditAction` constants. Metadata is redacted before it is stored.
+- `app/core/redaction.py`: the masking rules, extracted from `app/core/logging.py` now that the audit trail is a second consumer. Logs and audit rows mask identically, asserted by a test.
+- 32 integration tests covering every repository method, pagination maths, ownership, filters, and audit redaction.
+
+Fixed
+
+- `CachedFlowRepository.upsert` returned the stale identity-mapped instance after `ON CONFLICT DO UPDATE`; it now uses `populate_existing` so the returned object reflects what the database holds.
+
 ### B04 - Data model and initial migration
 
 Added

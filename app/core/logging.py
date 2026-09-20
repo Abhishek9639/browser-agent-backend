@@ -13,12 +13,12 @@ covered.
 import logging
 import sys
 from collections.abc import Sequence
-from typing import Any, Final
 
 import structlog
 from structlog.typing import EventDict, Processor, WrappedLogger
 
 from app.core.config import LogLevel, Settings
+from app.core.redaction import REDACTED, redact
 
 __all__ = [
     "REDACTED",
@@ -29,61 +29,17 @@ __all__ = [
     "redact_sensitive",
 ]
 
-REDACTED: Final = "[REDACTED]"
-
-# Substring match against the lowercased key. Deliberately broad: over-redacting
-# a log line is a cosmetic problem, under-redacting one is a security incident.
-SENSITIVE_KEY_PARTS: Final[frozenset[str]] = frozenset(
-    {
-        "api_key",
-        "apikey",
-        "authorization",
-        "card",
-        "cookie",
-        "credential",
-        "cvc",
-        "cvv",
-        "jwt",
-        "passwd",
-        "password",
-        "private_key",
-        "screenshot",
-        "secret",
-        "token",
-    }
-)
-
-_MAX_SCRUB_DEPTH: Final = 6
-
-
-def _is_sensitive(key: object) -> bool:
-    lowered = str(key).lower()
-    return any(part in lowered for part in SENSITIVE_KEY_PARTS)
-
-
-def _scrub(value: Any, depth: int = 0) -> Any:
-    """Recursively replace values whose key looks sensitive."""
-    if depth >= _MAX_SCRUB_DEPTH:
-        return value
-    if isinstance(value, dict):
-        return {
-            key: REDACTED if _is_sensitive(key) else _scrub(item, depth + 1)
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [_scrub(item, depth + 1) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_scrub(item, depth + 1) for item in value)
-    return value
-
 
 def redact_sensitive(
     _logger: WrappedLogger,
     _method_name: str,
     event_dict: EventDict,
 ) -> EventDict:
-    """structlog processor: mask sensitive keys anywhere in the event."""
-    scrubbed: EventDict = _scrub(event_dict)
+    """structlog processor: mask sensitive keys anywhere in the event.
+
+    The rules come from :mod:`app.core.redaction`, shared with the audit trail.
+    """
+    scrubbed: EventDict = redact(event_dict)
     return scrubbed
 
 
