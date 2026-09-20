@@ -1,0 +1,90 @@
+[project]
+name = "browser-agent-backend"
+version = "0.1.0"
+description = "Supervised autonomous browser automation agent (AI-07) - backend service"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14.0",
+    "mypy>=1.18.0",
+    "pytest>=8.4.0",
+    "pytest-asyncio>=1.2.0",
+    "pytest-cov>=7.0.0",
+    "pre-commit>=4.3.0",
+]
+
+# ---------------------------------------------------------------- ruff
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["app", "demo_sites", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # import sorting
+    "N",      # pep8-naming
+    "UP",     # pyupgrade
+    "B",      # bugbear
+    "C4",     # comprehensions
+    "SIM",    # simplify
+    "RET",    # return consistency
+    "PTH",    # use pathlib
+    "ASYNC",  # async correctness
+    "S",      # bandit security
+    "T20",    # no print/pprint
+    "ARG",    # unused arguments
+    "RUF",    # ruff-specific
+]
+ignore = [
+    "S101",  # assert is fine; pytest relies on it
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ARG"]          # fixtures are injected and may go unused
+"demo_sites/**" = ["S104"]    # the mock site binds 0.0.0.0 inside docker on purpose
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "demo_sites", "tests"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+# ---------------------------------------------------------------- mypy
+
+[tool.mypy]
+python_version = "3.12"
+files = ["app"]
+strict = true
+warn_unreachable = true
+warn_unused_configs = true
+show_error_codes = true
+pretty = true
+
+# ---------------------------------------------------------------- pytest
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q --strict-markers --strict-config"
+markers = [
+    "integration: needs Postgres (make test-int)",
+    "chaos: runs against the demo sites",
+    "eval: agent evaluation suite",
+]
+
+# ---------------------------------------------------------------- coverage
+
+[tool.coverage.run]
+source = ["app"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
