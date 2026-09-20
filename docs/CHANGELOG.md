@@ -4,6 +4,27 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B03 - Postgres, async database layer, Alembic
+
+Added
+
+- `docker-compose.dev.yml`: postgres:16 with a named volume, a `pg_isready` healthcheck, and `scripts/db/init.sql` creating `agent_core`, `agent_core_test` and `payments` on first boot. `make db-up` waits for healthy.
+- Dependencies: sqlalchemy[asyncio] 2.x, asyncpg, alembic.
+- `app/db/base.py`: `Base` with a constraint naming convention, `UUIDPrimaryKeyMixin` (client and server defaults) and `TimestampMixin` (timezone-aware, server defaults).
+- `app/db/session.py`: `Database` owning the async engine and session factory, a `session()` context manager that commits or rolls back, a `healthcheck()` that runs `SELECT 1` under a timeout and never raises, and the `get_database` / `get_session` dependencies.
+- Alembic in `migrations/` on the async template. `env.py` takes its URL from `Settings` and imports `app.models` for autogenerate. Baseline revision `0001_baseline`.
+- Makefile: `revision`, `downgrade`, `db-reset`; `db-up` now waits for the healthcheck and reports the published port.
+- Health reports `db: ok | down` and returns 503 when Postgres is unreachable.
+- Test fixtures: a stub database for unit tests, a session-scoped engine against `agent_core_test` that builds and drops the schema, and a per-test transactional session using `join_transaction_mode="create_savepoint"`.
+- 10 integration tests and 51 unit tests.
+
+Changed
+
+- Database credentials moved to `POSTGRES_*` settings; `database_url` and `test_database_url` are derived from them, with `DATABASE_URL` still available as an override. compose and the app read the same variables, so they cannot drift.
+- `migrations/script.py.mako` rewritten so generated revisions satisfy ruff (modern typing, no trailing whitespace); `make revision` formats its output.
+- `docs/BACKEND_PLAN.md` section 2: `alembic/` corrected to `migrations/`.
+- README quick start covers the database, and documents the port 5432 conflict.
+
 ### B02 - App core, errors, logging, health
 
 Added

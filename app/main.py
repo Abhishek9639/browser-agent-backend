@@ -16,6 +16,7 @@ from app.core.config import Settings, get_settings
 from app.core.errors import register_exception_handlers
 from app.core.logging import configure_logging, get_logger
 from app.core.middleware import RequestContextMiddleware
+from app.db.session import Database
 
 __all__ = ["app", "create_app"]
 
@@ -37,16 +38,20 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         env=settings.APP_ENV.value,
     )
 
-    # B05: await db.connect()
+    database = Database(settings)
+    application.state.db = database
+    logger.info("database_configured", database=settings.POSTGRES_DB)
+
     # B19: await browser_pool.start()
     # B30: await task_runner.start()
 
     try:
         yield
     finally:
+        # Torn down in reverse order of startup.
         # B30: await task_runner.stop()
         # B19: await browser_pool.stop()
-        # B05: await db.disconnect()
+        await database.dispose()
         logger.info("shutdown", app=settings.APP_NAME)
 
 

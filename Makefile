@@ -2,10 +2,11 @@
 # Run `make help` for the target list.
 
 .DEFAULT_GOAL := help
-.PHONY: help install dev test test-unit test-int lint fmt typecheck check migrate db-up db-down
+.PHONY: help install dev test test-unit test-int lint fmt typecheck check \
+	migrate revision downgrade db-up db-down db-reset
 
 UV      ?= uv
-COMPOSE ?= docker compose
+COMPOSE ?= docker compose -f docker-compose.dev.yml
 
 help:  ## show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -46,22 +47,24 @@ check: lint typecheck test-unit  ## the gate a part must pass
 	@echo "check passed"
 
 migrate:  ## apply database migrations
-	@if [ ! -f alembic.ini ]; then \
-		echo "alembic.ini does not exist yet - migrations arrive in a later part."; \
-		exit 1; \
-	fi
 	$(UV) run alembic upgrade head
 
-db-up:  ## start Postgres
-	@if [ ! -f docker-compose.yml ]; then \
-		echo "docker-compose.yml does not exist yet - it arrives in a later part."; \
-		exit 1; \
-	fi
-	$(COMPOSE) up -d postgres
+revision:  ## autogenerate a migration: make revision m="add users"
+	@if [ -z '$(m)' ]; then echo 'usage: make revision m="your message"'; exit 1; fi
+	$(UV) run alembic revision --autogenerate -m '$(m)'
+	@# alembic renders string literals with repr(), so single quotes; format them.
+	$(UV) run ruff format -q migrations/versions
+	$(UV) run ruff check --fix -q migrations/versions
 
-db-down:  ## stop Postgres
-	@if [ ! -f docker-compose.yml ]; then \
-		echo "docker-compose.yml does not exist yet - it arrives in a later part."; \
-		exit 1; \
-	fi
+downgrade:  ## roll back one migration
+	$(UV) run alembic downgrade -1
+
+db-up:  ## start Postgres and wait until it is accepting connections
+	$(COMPOSE) up -d --wait postgres
+	@echo "postgres ready at $$($(COMPOSE) port postgres 5432)"
+
+db-down:  ## stop Postgres (keeps the data volume)
 	$(COMPOSE) down
+
+db-reset:  ## stop Postgres and delete the data volume
+	$(COMPOSE) down -v

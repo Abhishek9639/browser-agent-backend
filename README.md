@@ -17,8 +17,36 @@ See [docs/PROJECT_SPEC.md](docs/PROJECT_SPEC.md) for the full specification and 
 ## Quick start
 
 ```bash
-make install     # sync dependencies and install git hooks
-make check       # lint, typecheck, unit tests
+cp .env.example .env     # then edit if you need to
+make install             # sync dependencies, install git hooks
+make db-up               # start Postgres, wait until it accepts connections
+make migrate             # apply migrations
+make check               # lint, typecheck, unit tests
+make test-int            # integration tests, against agent_core_test
+```
+
+Then run it:
+
+```bash
+make dev
+curl localhost:8000/api/v1/health
+```
+
+```json
+{"status":"ok","version":"0.1.0","env":"dev","db":"ok","time":"..."}
+```
+
+Health returns 503 with `"db":"down"` when Postgres is unreachable, so it works
+as a readiness probe as well as a liveness one.
+
+### If port 5432 is already in use
+
+A Homebrew or Postgres.app install binds `127.0.0.1:5432` and shadows Docker's
+wildcard bind, so the app would silently talk to the wrong server. Set a free
+port in `.env` and both compose and the app follow it:
+
+```bash
+POSTGRES_PORT=5433
 ```
 
 Run `make help` for every target.
@@ -34,7 +62,10 @@ Run `make help` for every target.
 | `typecheck` | mypy strict on `app/` |
 | `check` | lint + typecheck + test-unit, the gate every part must pass |
 | `migrate` | Apply database migrations |
+| `revision` | Autogenerate a migration: `make revision m="add users"` |
+| `downgrade` | Roll back one migration |
 | `db-up` / `db-down` | Start and stop Postgres |
+| `db-reset` | Stop Postgres and delete its data volume |
 
 ## Layout
 
@@ -49,6 +80,7 @@ app/          application package
   services/   orchestration and business logic
   domain/     enums and the task state machine
   agent/      the agent core, never imports FastAPI
+migrations/   alembic revisions
 demo_sites/   mock sites for demos and chaos tests (:8200)
 tests/        unit, integration, chaos, eval
 docs/         spec, plan, ADRs, phase notes, changelog
@@ -56,4 +88,5 @@ docs/         spec, plan, ADRs, phase notes, changelog
 
 ## Status
 
-Scaffolding only (B01). Nothing is wired up yet; parts land one at a time.
+Through B03: app core, error envelope, structured logging, and the async
+database layer with migrations. Parts land one at a time.

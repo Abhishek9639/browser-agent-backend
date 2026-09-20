@@ -21,7 +21,7 @@ All 18 open items from the first draft are now decided. Section 4 records each d
 
 Per decision A1, the backend package root is `app/`, and the module paths pinned in spec section 4.1 are relative to it: `agent/browser/driver.py` is `app/agent/browser/driver.py` on disk. That mapping is now recorded in the spec itself.
 
-`alembic/`, `tests/`, and `demo_sites/` sit at the repo root rather than under `app/`. The first two are not application modules, and `demo_sites/` is a separate ASGI app on its own port per decision A12.
+`migrations/`, `tests/`, and `demo_sites/` sit at the repo root rather than under `app/`. The first two are not application modules, and `demo_sites/` is a separate ASGI app on its own port per decision A12.
 
 `models/` and `repositories/` are siblings of `db/`, not nested inside it: flat is simpler and it is what the part prompts use. `db/` holds only the engine, the session and the declarative base. Corrected in B02 to match the repo.
 
@@ -88,7 +88,7 @@ browser-agent-backend/
 │     ├─ payments_client.py          reserve, settle, release, BILLING_ENABLED
 │     ├─ events.py                   WS event bus, seq allocation, replay
 │     └─ metrics.py                  Prometheus collectors for section 9 KPIs
-├─ alembic/                          migrations
+├─ migrations/                       alembic revisions
 ├─ demo_sites/skyfare/               mock flight site plus chaos toggles, port 8200
 ├─ tests/
 │  ├─ unit/ integration/ api/ ws/ agent_eval/ chaos/

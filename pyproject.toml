@@ -4,10 +4,13 @@ version = "0.1.0"
 description = "Supervised autonomous browser automation agent (AI-07) - backend service"
 requires-python = ">=3.12"
 dependencies = [
+    "alembic>=1.20.0",
+    "asyncpg>=0.31.0",
     "fastapi>=0.141.1",
     "httpx>=0.28.1",
     "pydantic>=2.13.5",
     "pydantic-settings>=2.15.0",
+    "sqlalchemy[asyncio]>=2.0",
     "structlog>=26.1.0",
     "uvicorn[standard]>=0.53.0",
 ]
@@ -57,6 +60,9 @@ ignore = [
 # The error classes are named in the spec and the part prompt (NotFound, Conflict,
 # RateLimited...). They read better at the raise site than a blanket Error suffix.
 "app/core/errors.py" = ["N818"]
+# Alembic writes these. `op` and `sa` are always imported whether or not a
+# given revision uses them, and the module docstring is the revision header.
+"migrations/versions/*.py" = ["F401", "INP001"]
 "demo_sites/**" = ["S104"]    # the mock site binds 0.0.0.0 inside docker on purpose
 
 [tool.ruff.lint.isort]
@@ -80,6 +86,9 @@ pretty = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# One session-scoped loop, so the integration engine can be built once.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-q --strict-markers --strict-config"

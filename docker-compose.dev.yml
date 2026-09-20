@@ -1,0 +1,31 @@
+# Local development services. Started by `make db-up`.
+# Credentials come from .env (docker compose loads it automatically);
+# the defaults below match app/core/config.py so a bare checkout still works.
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: browser-agent-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      # The init script creates agent_core, agent_core_test and payments.
+      # This one only has to exist for the server to finish starting.
+      POSTGRES_DB: ${POSTGRES_DB:-agent_core}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Runs once, only when the data volume is empty.
+      - ./scripts/db/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-agent_core}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+volumes:
+  postgres_data:
+    name: browser_agent_postgres_data

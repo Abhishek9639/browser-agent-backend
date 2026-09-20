@@ -13,6 +13,7 @@ service's configuration surface.
 from enum import StrEnum
 from functools import lru_cache
 from typing import Annotated
+from urllib.parse import quote_plus
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -61,7 +62,20 @@ class Settings(BaseSettings):
     LOG_LEVEL: LogLevel = LogLevel.INFO
 
     # ---------------------------------------------------------------- database
-    DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/agent_core"
+    # docker compose and the application read the same variables, so the
+    # container credentials and the app's DSN cannot drift apart.
+    POSTGRES_USER: str = "postgres"
+    POSTGRES_PASSWORD: SecretStr = SecretStr("postgres")
+    POSTGRES_HOST: str = "localhost"
+    POSTGRES_PORT: int = 5432
+    POSTGRES_DB: str = "agent_core"
+    POSTGRES_TEST_DB: str = "agent_core_test"
+    # Set this to bypass the assembled DSN entirely (a managed instance, say).
+    DATABASE_URL: str | None = None
+    DB_POOL_SIZE: int = 5
+    DB_MAX_OVERFLOW: int = 10
+    DB_ECHO: bool = False
+    DB_HEALTHCHECK_TIMEOUT_SECONDS: float = 2.0
 
     # ---------------------------------------------------------------- jwt (B08, B09)
     JWT_ALGORITHM: str = "RS256"
@@ -122,6 +136,25 @@ class Settings(BaseSettings):
         return "/" + value.strip().strip("/")
 
     # ---------------------------------------------------------------- helpers
+    def dsn_for(self, database: str) -> str:
+        """Assemble an asyncpg DSN for one database on the configured server."""
+        user = quote_plus(self.POSTGRES_USER)
+        password = quote_plus(self.POSTGRES_PASSWORD.get_secret_value())
+        return (
+            f"postgresql+asyncpg://{user}:{password}"
+            f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{database}"
+        )
+
+    @property
+    def database_url(self) -> str:
+        """The DSN the application runs against."""
+        return self.DATABASE_URL or self.dsn_for(self.POSTGRES_DB)
+
+    @property
+    def test_database_url(self) -> str:
+        """The DSN the integration suite runs against. Never the live database."""
+        return self.dsn_for(self.POSTGRES_TEST_DB)
+
     @property
     def is_prod(self) -> bool:
         return self.APP_ENV is AppEnv.PROD
