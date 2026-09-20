@@ -4,6 +4,28 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B06 - Auth: JWT, JWKS, register, login
+
+Added
+
+- Dependencies: `pyjwt[crypto]`, `argon2-cffi`.
+- `scripts/gen_keys.py`: generates an RSA 2048 keypair into `keys/` (gitignored, private key 0600), prints the env lines, and refuses to overwrite without `--force`.
+- `app/core/jwt_keys.py`: `KeyPair`, `load_key_pair`, and the JWK/JWKS document (`kty`, `kid`, `use`, `alg`, `n`, `e`, base64url unpadded). Keys are loaded once at startup and the service fails to boot without them.
+- `app/core/security.py`: argon2id `hash_password` / `verify_password`, and `TokenService.create_access_token` / `decode_access_token`. Tokens carry `sub`, `role`, `iss`, `aud`, `iat`, `exp`, `jti` with `kid` in the header; decode pins `algorithms=["RS256"]` and requires every claim.
+- `GET /.well-known/jwks.json` at the root path, unauthenticated, cached five minutes.
+- `POST /api/v1/auth/register`: email normalised to lowercase, password policy (min 10, not all digits, max 256), duplicate email 409, role `TASK_SUBMITTER`, response never carries the hash.
+- `POST /api/v1/auth/login`: returns `accessToken`, `tokenType`, `expiresIn`, `user`. Unknown email and wrong password fail identically, and an unknown email still runs an argon2 verification so the timing does not differ.
+- `get_current_user` bearer dependency, plus `SettingsDep`, `KeyPairDep`, `TokenServiceDep`, `AuthServiceDep`.
+- `app/schemas/base.py` (`CamelModel`) and `app/schemas/auth.py`; responses are camelCase on the wire.
+- `InvalidCredentials` error (401 `INVALID_CREDENTIALS`) and the `LOGIN_FAILED` audit action.
+- `docs/auth.md`: two sequence diagrams, the token contents, what decode rejects, and why the failed-login audit needs its own transaction.
+- 23 unit tests and 39 integration tests, including `alg: none`, the RS256-to-HS256 downgrade, tampered payload and signature, wrong issuer and audience, and a token verified using only the published JWKS.
+
+Changed
+
+- Settings: `JWT_ACCESS_TTL_SECONDS` and `JWT_REFRESH_TTL_SECONDS` replaced by `ACCESS_TOKEN_TTL_MIN=15` and `REFRESH_TOKEN_TTL_DAYS=7`, with `access_token_ttl` / `refresh_token_ttl` properties. Added `JWT_AUDIENCE` and `JWT_KID`.
+- Integration tests clean committed audit rows before each test, because the failed-login audit deliberately commits outside the test transaction.
+
 ### B05 - Repositories and audit service
 
 Added

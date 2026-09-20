@@ -10,6 +10,7 @@ prefix, so ``.env.example`` and this module stay a single description of the
 service's configuration surface.
 """
 
+from datetime import timedelta
 from enum import StrEnum
 from functools import lru_cache
 from typing import Annotated
@@ -77,13 +78,19 @@ class Settings(BaseSettings):
     DB_ECHO: bool = False
     DB_HEALTHCHECK_TIMEOUT_SECONDS: float = 2.0
 
-    # ---------------------------------------------------------------- jwt (B08, B09)
+    # ---------------------------------------------------------------- jwt
     JWT_ALGORITHM: str = "RS256"
     JWT_ISSUER: str = "browser-agent-backend"
+    # Who the token is for. Payments validates this, so a token minted for one
+    # audience cannot be replayed against a different service later.
+    JWT_AUDIENCE: str = "browser-agent"
+    # Names the key in the JWKS. Changing it is how a key is rotated: publish
+    # both, sign with the new one, retire the old after the access TTL.
+    JWT_KID: str = "browser-agent-key-1"
     JWT_PRIVATE_KEY_PATH: str = "keys/jwt_private.pem"
     JWT_PUBLIC_KEY_PATH: str = "keys/jwt_public.pem"
-    JWT_ACCESS_TTL_SECONDS: int = 900  # 15 minutes, per spec section 2
-    JWT_REFRESH_TTL_SECONDS: int = 604_800  # 7 days, per spec section 2
+    ACCESS_TOKEN_TTL_MIN: int = 15  # spec section 2
+    REFRESH_TOKEN_TTL_DAYS: int = 7  # spec section 2
     JWT_REFRESH_COOKIE_NAME: str = "refresh_token"
 
     # ---------------------------------------------------------------- llm (B23, B24)
@@ -136,6 +143,14 @@ class Settings(BaseSettings):
         return "/" + value.strip().strip("/")
 
     # ---------------------------------------------------------------- helpers
+    @property
+    def access_token_ttl(self) -> timedelta:
+        return timedelta(minutes=self.ACCESS_TOKEN_TTL_MIN)
+
+    @property
+    def refresh_token_ttl(self) -> timedelta:
+        return timedelta(days=self.REFRESH_TOKEN_TTL_DAYS)
+
     def dsn_for(self, database: str) -> str:
         """Assemble an asyncpg DSN for one database on the configured server."""
         user = quote_plus(self.POSTGRES_USER)

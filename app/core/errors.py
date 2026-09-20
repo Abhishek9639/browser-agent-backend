@@ -25,6 +25,7 @@ __all__ = [
     "DependencyUnavailable",
     "Forbidden",
     "InsufficientCredits",
+    "InvalidCredentials",
     "NotFound",
     "RateLimited",
     "Unauthorized",
@@ -64,6 +65,18 @@ class Unauthorized(AppError):
     code = "UNAUTHORIZED"
     http_status = 401
     default_message = "Authentication is required."
+
+
+class InvalidCredentials(Unauthorized):
+    """Wrong password, or no such account.
+
+    Deliberately one error for both: spec section 10's spirit is that an
+    unauthenticated caller learns nothing, and distinguishing the two would turn
+    the login form into an account-existence oracle.
+    """
+
+    code = "INVALID_CREDENTIALS"
+    default_message = "Email or password is incorrect."
 
 
 class InsufficientCredits(AppError):

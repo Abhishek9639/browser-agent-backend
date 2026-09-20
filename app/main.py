@@ -11,9 +11,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.ops import router as ops_router
 from app.api.v1.router import api_router
 from app.core.config import Settings, get_settings
 from app.core.errors import register_exception_handlers
+from app.core.jwt_keys import load_key_pair
 from app.core.logging import configure_logging, get_logger
 from app.core.middleware import RequestContextMiddleware
 from app.db.session import Database
@@ -41,6 +43,11 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     database = Database(settings)
     application.state.db = database
     logger.info("database_configured", database=settings.POSTGRES_DB)
+
+    # Loaded once at startup, and loudly: a service that boots without its
+    # signing key would accept registrations and then fail every login.
+    application.state.jwt_keys = load_key_pair(settings)
+    logger.info("signing_keys_loaded", kid=settings.JWT_KID)
 
     # B19: await browser_pool.start()
     # B30: await task_runner.start()
@@ -82,6 +89,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
 
     register_exception_handlers(application)
+    # JWKS lives at the root per RFC 8615, everything else is versioned.
+    application.include_router(ops_router)
     application.include_router(api_router, prefix=settings.API_PREFIX)
 
     return application

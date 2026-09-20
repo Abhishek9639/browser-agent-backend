@@ -12,7 +12,8 @@ Starlette 1.6 deprecates TestClient-on-httpx, so the suite drives the ASGI app
 directly with ``httpx.AsyncClient``.
 """
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
@@ -23,8 +24,9 @@ from sqlalchemy.pool import NullPool
 import app.models  # registers every table on Base.metadata
 import tests.integration._models  # noqa: F401  (registers the sample table)
 from app.core.config import AppEnv, Settings
+from app.core.jwt_keys import load_key_pair
 from app.db.base import Base
-from app.db.session import get_database
+from app.db.session import Database, get_database, get_session
 from app.main import create_app
 
 
@@ -38,15 +40,40 @@ class StubDatabase:
         return self.healthy
 
 
+@pytest.fixture(scope="session")
+def jwt_key_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """An RSA keypair for the whole session.
+
+    Generated with the real ``scripts/gen_keys.py``, so the script is exercised
+    by every run, and kept out of the repo's own ``keys/`` so a test can never
+    depend on a developer having generated one.
+    """
+    from scripts.gen_keys import generate
+
+    directory = tmp_path_factory.mktemp("jwt-keys")
+    generate(directory, key_size=2048, force=True)
+    return directory
+
+
 @pytest.fixture
-def settings() -> Settings:
-    return Settings(APP_ENV=AppEnv.TEST, LOG_LEVEL="CRITICAL")
+def settings(jwt_key_dir: Path) -> Settings:
+    return Settings(
+        APP_ENV=AppEnv.TEST,
+        LOG_LEVEL="CRITICAL",
+        JWT_PRIVATE_KEY_PATH=str(jwt_key_dir / "jwt_private.pem"),
+        JWT_PUBLIC_KEY_PATH=str(jwt_key_dir / "jwt_public.pem"),
+    )
 
 
 @pytest.fixture
 def app(settings: Settings) -> FastAPI:
-    """App whose database dependency is a healthy stub."""
+    """App whose database dependency is a healthy stub.
+
+    The lifespan does not run under ASGITransport, so the signing keys are
+    attached here the same way startup would.
+    """
     application = create_app(settings)
+    application.state.jwt_keys = load_key_pair(settings)
     application.dependency_overrides[get_database] = lambda: StubDatabase(healthy=True)
     return application
 
@@ -54,7 +81,9 @@ def app(settings: Settings) -> FastAPI:
 @pytest.fixture
 def settings_only_app(settings: Settings) -> FastAPI:
     """App with no database attached, as if the lifespan never ran."""
-    return create_app(settings)
+    application = create_app(settings)
+    application.state.jwt_keys = load_key_pair(settings)
+    return application
 
 
 @pytest.fixture
@@ -117,3 +146,32 @@ async def db_session(db_engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
         await session.close()
         await transaction.rollback()
         await connection.close()
+
+
+@pytest.fixture
+def api_app(settings: Settings, db_session: AsyncSession) -> Iterator[FastAPI]:
+    """An app wired to the test transaction.
+
+    ``get_session`` is overridden to hand back the test's session, so anything
+    a request writes is rolled back with the test. ``get_database`` stays real,
+    because the failed-login audit deliberately opens its own transaction and
+    that behaviour is worth testing rather than stubbing out.
+    """
+    application = create_app(settings)
+    application.state.jwt_keys = load_key_pair(settings)
+    database = Database(settings, url=settings.test_database_url)
+    application.state.db = database
+
+    application.dependency_overrides[get_session] = lambda: db_session
+    application.dependency_overrides[get_database] = lambda: database
+
+    yield application
+
+    application.dependency_overrides.clear()
+
+
+@pytest.fixture
+async def api_client(api_app: FastAPI) -> AsyncIterator[AsyncClient]:
+    transport = ASGITransport(app=api_app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client

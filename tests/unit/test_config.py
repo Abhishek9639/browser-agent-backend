@@ -7,8 +7,10 @@ def test_defaults_match_the_spec() -> None:
     settings = Settings()
 
     assert settings.API_PREFIX == "/api/v1"
-    assert settings.JWT_ACCESS_TTL_SECONDS == 900
-    assert settings.JWT_REFRESH_TTL_SECONDS == 604_800
+    assert settings.ACCESS_TOKEN_TTL_MIN == 15
+    assert settings.REFRESH_TOKEN_TTL_DAYS == 7
+    assert settings.access_token_ttl.total_seconds() == 900
+    assert settings.refresh_token_ttl.total_seconds() == 604_800
     assert settings.AGENT_MAX_STEPS == 25
     assert settings.AGENT_MAX_TASK_SECONDS == 300
     assert settings.AGENT_MAX_RETRIES_PER_STEP == 3

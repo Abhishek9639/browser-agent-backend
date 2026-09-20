@@ -32,6 +32,7 @@ class AuditAction:
     USER_REGISTERED: Final = "USER_REGISTERED"
     USER_LOGGED_IN: Final = "USER_LOGGED_IN"
     USER_LOGGED_OUT: Final = "USER_LOGGED_OUT"
+    LOGIN_FAILED: Final = "LOGIN_FAILED"
     # The two below are audit action names, not credentials; S105 matches the word.
     TOKEN_REFRESHED: Final = "TOKEN_REFRESHED"  # noqa: S105
     TOKEN_REUSE_DETECTED: Final = "TOKEN_REUSE_DETECTED"  # noqa: S105

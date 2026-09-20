@@ -88,5 +88,8 @@ docs/         spec, plan, ADRs, phase notes, changelog
 
 ## Status
 
-Through B03: app core, error envelope, structured logging, and the async
-database layer with migrations. Parts land one at a time.
+Through B06: app core, database layer and migrations, the data model,
+repositories, and authentication (register, login, JWKS). Parts land one at a
+time.
+
+Before running: `python scripts/gen_keys.py` to create the JWT signing keypair.
