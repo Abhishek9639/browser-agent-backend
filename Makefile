@@ -2,7 +2,7 @@
 # Run `make help` for the target list.
 
 .DEFAULT_GOAL := help
-.PHONY: help install browsers dev test test-unit test-int lint fmt typecheck check \
+.PHONY: help install browsers dev test test-unit test-fast test-int lint fmt typecheck check \
 	migrate revision downgrade db-up db-down db-reset
 
 UV      ?= uv
@@ -32,6 +32,9 @@ test:  ## run the whole suite with coverage
 
 test-unit:  ## run unit tests only
 	$(UV) run pytest tests/unit
+
+test-fast:  ## unit tests without the ones that drive Chromium
+	$(UV) run pytest tests/unit -m "not browser"
 
 test-int:  ## run integration tests (needs `make db-up`)
 	$(UV) run pytest tests/integration -m integration

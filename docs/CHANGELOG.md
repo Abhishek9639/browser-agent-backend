@@ -4,6 +4,22 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B09 - Screenshots, storage, budgets
+
+Added
+
+- `pillow` dependency.
+- `app/agent/browser/screenshots.py`: `capture(page)` grabs the viewport as PNG, downscales to `SCREENSHOT_MAX_WIDTH` (1280) preserving aspect ratio, and encodes JPEG at `SCREENSHOT_JPEG_QUALITY` (60), matching spec section 6.1. `Screenshot` carries the image and the viewport dimensions separately so a client can map a bbox onto a scaled frame. `to_base64()` for the WebSocket payload. Compression runs off the event loop.
+- `app/services/storage.py`: the `ScreenshotStorage` protocol and `LocalFileStorage` under `STORAGE_DIR/screenshots/{task_id}/{step:04d}.jpg`. Refs are opaque relative strings validated against an anchored pattern, with a containment check behind it for symlinks. Writes go to a temporary name and are renamed, so no reader sees a partial file. All filesystem calls run in a worker thread.
+- `app/agent/budget.py`: `TaskBudget` with `check()`, `consume_step()` and `reset()`, raising `BudgetExceeded(reason=MAX_STEPS|MAX_TIME)`. Monotonic, injectable clock.
+- Settings `SCREENSHOT_MAX_WIDTH` and `SCREENSHOT_JPEG_QUALITY`.
+- `make test-fast` (`pytest tests/unit -m "not browser"`) for a tight edit loop, documented in the README.
+- 71 new unit tests (19 budget, 17 screenshot, 35 storage).
+
+Changed
+
+- `STORAGE_LOCAL_PATH` renamed to `STORAGE_DIR`.
+
 ### B08 - Playwright driver and action executor
 
 Added

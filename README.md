@@ -22,7 +22,8 @@ cp .env.example .env     # then edit if you need to
 make install             # sync dependencies, install Chromium, install git hooks
 make db-up               # start Postgres, wait until it accepts connections
 make migrate             # apply migrations
-make check               # lint, typecheck, unit tests
+make check               # lint, typecheck, unit tests (drives Chromium, ~50s)
+make test-fast           # same tests without Chromium, for a tight loop
 make test-int            # integration tests, against agent_core_test
 ```
 
@@ -58,7 +59,8 @@ Run `make help` for every target.
 | `browsers` | Install the Chromium build Playwright drives |
 | `dev` | Run the API with autoreload on :8000 |
 | `test` | Whole suite with coverage |
-| `test-unit` | Unit tests only |
+| `test-unit` | Unit tests only, including the ones that drive Chromium |
+| `test-fast` | Unit tests without Chromium, for a tight edit loop |
 | `test-int` | Integration tests (needs `make db-up`) |
 | `lint` / `fmt` | ruff check / autofix and format |
 | `typecheck` | mypy strict on `app/` |

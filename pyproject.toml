@@ -9,6 +9,7 @@ dependencies = [
     "asyncpg>=0.31.0",
     "fastapi>=0.141.1",
     "httpx>=0.28.1",
+    "pillow>=12.3.0",
     "playwright>=1.63.0",
     "pydantic>=2.13.5",
     "pydantic-settings>=2.15.0",
@@ -63,10 +64,13 @@ ignore = [
     "ARG",   # fixtures are injected and may go unused
     "S105",  # obviously-fake digests in test data
     "S106",
+    "S311",  # seeded randomness for fixture data, not crypto
 ]
 # The error classes are named in the spec and the part prompt (NotFound, Conflict,
 # RateLimited...). They read better at the raise site than a blanket Error suffix.
 "app/core/errors.py" = ["N818"]
+# BudgetExceeded reads better at the raise site than BudgetExceededError.
+"app/agent/budget.py" = ["N818"]
 # Alembic writes these. `op` and `sa` are always imported whether or not a
 # given revision uses them, and the module docstring is the revision header.
 "migrations/versions/*.py" = ["F401", "INP001"]
