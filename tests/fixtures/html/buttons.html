@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Buttons</title></head>
+<body>
+  <h1>Buttons</h1>
+  <button id="visible" onclick="document.getElementById('log').textContent = 'clicked';">Click me</button>
+  <button id="disabled" disabled>Disabled</button>
+  <button id="hidden" style="display:none">Hidden</button>
+  <button id="slow" onclick="setTimeout(function(){document.getElementById('log').textContent='slow done';}, 300);">Slow</button>
+  <a id="newtab" href="select.html" target="_blank" rel="noopener">Open in new tab</a>
+  <p id="log"></p>
+</body>
+</html>

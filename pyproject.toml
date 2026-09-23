@@ -9,6 +9,7 @@ dependencies = [
     "asyncpg>=0.31.0",
     "fastapi>=0.141.1",
     "httpx>=0.28.1",
+    "playwright>=1.63.0",
     "pydantic>=2.13.5",
     "pydantic-settings>=2.15.0",
     "pyjwt[crypto]>=2.14.0",
@@ -102,6 +103,7 @@ markers = [
     "integration: needs Postgres (make test-int)",
     "chaos: runs against the demo sites",
     "eval: agent evaluation suite",
+    "browser: drives a real Chromium (needs `make browsers`)",
 ]
 
 # ---------------------------------------------------------------- coverage

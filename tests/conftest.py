@@ -175,3 +175,67 @@ async def api_client(api_app: FastAPI) -> AsyncIterator[AsyncClient]:
     transport = ASGITransport(app=api_app, raise_app_exceptions=False)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
+
+
+# ------------------------------------------------------------------- browser
+
+
+@pytest.fixture(scope="session")
+def html_server() -> Iterator[str]:
+    """Serve tests/fixtures/html on a random local port.
+
+    Unit tests never reach the internet: every page the driver is pointed at is
+    a file in this repo, served from localhost. That keeps the suite fast,
+    deterministic, and runnable offline, and it means a failure is always our
+    bug rather than someone else's outage.
+    """
+    import functools
+    import http.server
+    import socketserver
+    import threading
+
+    root = Path(__file__).parent / "fixtures" / "html"
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(root))
+
+    class QuietServer(socketserver.TCPServer):
+        allow_reuse_address = True
+        daemon_threads = True
+
+        def handle_error(self, request: object, client_address: object) -> None:
+            """Browsers drop connections routinely; that is not an error."""
+
+    with QuietServer(("127.0.0.1", 0), handler) as httpd:
+        port = httpd.server_address[1]
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield f"http://127.0.0.1:{port}"
+        finally:
+            httpd.shutdown()
+            thread.join(timeout=5)
+
+
+@pytest.fixture
+def browser_settings(settings: Settings) -> Settings:
+    """Settings whose allow-list covers the local fixture server."""
+    return settings.model_copy(
+        update={
+            "AGENT_HEADLESS": True,
+            "AGENT_ALLOWED_DOMAINS": ["127.0.0.1", "localhost"],
+            "BROWSER_ACTION_TIMEOUT_MS": 3_000,
+            "BROWSER_NAVIGATION_TIMEOUT_MS": 8_000,
+        }
+    )
+
+
+@pytest.fixture
+async def driver(browser_settings: Settings) -> AsyncIterator[object]:
+    """A launched driver with its own isolated context, closed afterwards."""
+    from app.agent.browser.driver import PlaywrightDriver
+
+    instance = PlaywrightDriver(browser_settings)
+    await instance.launch()
+    try:
+        yield instance
+    finally:
+        await instance.close()

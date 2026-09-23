@@ -121,8 +121,17 @@ class Settings(BaseSettings):
     AGENT_MAX_CONCURRENT_TASKS: int = 3
     AGENT_MAX_CONCURRENT_TASKS_PER_USER: int = 2
     AGENT_DOM_TOKEN_BUDGET: int = 3000
-    AGENT_ALLOWED_DOMAINS: CsvList = Field(default_factory=lambda: ["localhost", "127.0.0.1"])
+    # Spec section 4.13. A bare host matches any port on that host; add a port
+    # to pin one. The demo sites on :8200 are listed explicitly even though the
+    # bare entries already cover them, because that is the intended target.
+    AGENT_ALLOWED_DOMAINS: CsvList = Field(
+        default_factory=lambda: ["localhost", "127.0.0.1", "localhost:8200"]
+    )
     AGENT_HEADLESS: bool = True
+
+    # ---------------------------------------------------------------- browser
+    BROWSER_ACTION_TIMEOUT_MS: int = 10_000
+    BROWSER_NAVIGATION_TIMEOUT_MS: int = 30_000
 
     # ---------------------------------------------------------------- billing (B12, B30)
     BILLING_ENABLED: bool = False

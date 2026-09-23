@@ -2,7 +2,7 @@
 # Run `make help` for the target list.
 
 .DEFAULT_GOAL := help
-.PHONY: help install dev test test-unit test-int lint fmt typecheck check \
+.PHONY: help install browsers dev test test-unit test-int lint fmt typecheck check \
 	migrate revision downgrade db-up db-down db-reset
 
 UV      ?= uv
@@ -12,9 +12,13 @@ help:  ## show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
 
-install:  ## install all dependencies and the git hooks
+install:  ## install all dependencies, browsers and the git hooks
 	$(UV) sync
+	$(UV) run playwright install chromium
 	$(UV) run pre-commit install
+
+browsers:  ## install the Chromium build Playwright drives
+	$(UV) run playwright install chromium
 
 dev:  ## run the API with autoreload
 	@if [ ! -f app/main.py ]; then \

@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Select</title></head>
+<body>
+  <h1>Sort results</h1>
+  <label for="sort">Sort by</label>
+  <select id="sort" onchange="document.getElementById('chosen').textContent = this.value;">
+    <option value="relevance">Relevance</option>
+    <option value="price">Cheapest</option>
+    <option value="duration">Fastest</option>
+  </select>
+  <p id="chosen">relevance</p>
+</body>
+</html>

@@ -4,6 +4,19 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B08 - Playwright driver and action executor
+
+Added
+
+- `playwright` dependency and Chromium. `make browsers` installs it, `make install` now does too, and the README lists it as a prerequisite.
+- `app/agent/browser/actions.py`: a frozen, `extra="forbid"` Pydantic model per allow-listed action, as a discriminated union. `navigate` and `new_tab` accept only http/https; `wait` is capped at 10 s; `scroll` at 10000 px. `parse_action()` raises `ActionNotAllowedError` for anything outside spec section 4.4.
+- `app/agent/browser/errors.py`: `ActionErrorCode` (TIMEOUT, ELEMENT_NOT_FOUND, NOT_INTERACTABLE, NAVIGATION_FAILED, DOMAIN_NOT_ALLOWED, ACTION_NOT_ALLOWED, TAB_NOT_FOUND, UNKNOWN), `ActionNotAllowedError`, `DomainNotAllowedError`.
+- `app/agent/browser/driver.py`: the `BrowserDriver` protocol and `PlaywrightDriver`. One isolated `BrowserContext` per task with `accept_downloads=False`, viewport 1280x800, locale en-IN, timezone Asia/Kolkata, headless and timeouts from settings. `ActionResult` carries ok, error_code, error_message, duration_ms, url_before, url_after. Popups are tracked as switchable tabs.
+- `host_is_allowed()`: the spec section 4.13 sandbox check, on the parsed hostname. A bare host matches any port; a port-qualified entry matches only that port; an empty allow-list blocks everything.
+- Settings `BROWSER_ACTION_TIMEOUT_MS` and `BROWSER_NAVIGATION_TIMEOUT_MS`; `AGENT_ALLOWED_DOMAINS` now lists the demo port.
+- `tests/fixtures/html/`: simple_form, buttons, long_page, select, download; a session-scoped fixture serving them on a random localhost port. No test reaches the internet.
+- 96 new unit tests (51 action, 45 browser), marked `browser` where they drive Chromium.
+
 ### B07 - Refresh rotation, RBAC, rate limiting
 
 Added
