@@ -4,6 +4,35 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B09 - Screenshots, storage, budgets
+
+Added
+
+- `pillow` dependency.
+- `app/agent/browser/screenshots.py`: `capture(page)` grabs the viewport as PNG, downscales to `SCREENSHOT_MAX_WIDTH` (1280) preserving aspect ratio, and encodes JPEG at `SCREENSHOT_JPEG_QUALITY` (60), matching spec section 6.1. `Screenshot` carries the image and the viewport dimensions separately so a client can map a bbox onto a scaled frame. `to_base64()` for the WebSocket payload. Compression runs off the event loop.
+- `app/services/storage.py`: the `ScreenshotStorage` protocol and `LocalFileStorage` under `STORAGE_DIR/screenshots/{task_id}/{step:04d}.jpg`. Refs are opaque relative strings validated against an anchored pattern, with a containment check behind it for symlinks. Writes go to a temporary name and are renamed, so no reader sees a partial file. All filesystem calls run in a worker thread.
+- `app/agent/budget.py`: `TaskBudget` with `check()`, `consume_step()` and `reset()`, raising `BudgetExceeded(reason=MAX_STEPS|MAX_TIME)`. Monotonic, injectable clock.
+- Settings `SCREENSHOT_MAX_WIDTH` and `SCREENSHOT_JPEG_QUALITY`.
+- `make test-fast` (`pytest tests/unit -m "not browser"`) for a tight edit loop, documented in the README.
+- 71 new unit tests (19 budget, 17 screenshot, 35 storage).
+
+Changed
+
+- `STORAGE_LOCAL_PATH` renamed to `STORAGE_DIR`.
+
+### B08 - Playwright driver and action executor
+
+Added
+
+- `playwright` dependency and Chromium. `make browsers` installs it, `make install` now does too, and the README lists it as a prerequisite.
+- `app/agent/browser/actions.py`: a frozen, `extra="forbid"` Pydantic model per allow-listed action, as a discriminated union. `navigate` and `new_tab` accept only http/https; `wait` is capped at 10 s; `scroll` at 10000 px. `parse_action()` raises `ActionNotAllowedError` for anything outside spec section 4.4.
+- `app/agent/browser/errors.py`: `ActionErrorCode` (TIMEOUT, ELEMENT_NOT_FOUND, NOT_INTERACTABLE, NAVIGATION_FAILED, DOMAIN_NOT_ALLOWED, ACTION_NOT_ALLOWED, TAB_NOT_FOUND, UNKNOWN), `ActionNotAllowedError`, `DomainNotAllowedError`.
+- `app/agent/browser/driver.py`: the `BrowserDriver` protocol and `PlaywrightDriver`. One isolated `BrowserContext` per task with `accept_downloads=False`, viewport 1280x800, locale en-IN, timezone Asia/Kolkata, headless and timeouts from settings. `ActionResult` carries ok, error_code, error_message, duration_ms, url_before, url_after. Popups are tracked as switchable tabs.
+- `host_is_allowed()`: the spec section 4.13 sandbox check, on the parsed hostname. A bare host matches any port; a port-qualified entry matches only that port; an empty allow-list blocks everything.
+- Settings `BROWSER_ACTION_TIMEOUT_MS` and `BROWSER_NAVIGATION_TIMEOUT_MS`; `AGENT_ALLOWED_DOMAINS` now lists the demo port.
+- `tests/fixtures/html/`: simple_form, buttons, long_page, select, download; a session-scoped fixture serving them on a random localhost port. No test reaches the internet.
+- 96 new unit tests (51 action, 45 browser), marked `browser` where they drive Chromium.
+
 ### B07 - Refresh rotation, RBAC, rate limiting
 
 Added

@@ -12,16 +12,18 @@ See [docs/PROJECT_SPEC.md](docs/PROJECT_SPEC.md) for the full specification and 
 
 - Python 3.12
 - [uv](https://docs.astral.sh/uv/)
-- Docker and Docker Compose (for Postgres, from a later part)
+- Docker and Docker Compose (for Postgres)
+- Chromium for Playwright: `uv run playwright install chromium`, or `make browsers`
 
 ## Quick start
 
 ```bash
 cp .env.example .env     # then edit if you need to
-make install             # sync dependencies, install git hooks
+make install             # sync dependencies, install Chromium, install git hooks
 make db-up               # start Postgres, wait until it accepts connections
 make migrate             # apply migrations
-make check               # lint, typecheck, unit tests
+make check               # lint, typecheck, unit tests (drives Chromium, ~50s)
+make test-fast           # same tests without Chromium, for a tight loop
 make test-int            # integration tests, against agent_core_test
 ```
 
@@ -53,10 +55,12 @@ Run `make help` for every target.
 
 | Target | What it does |
 |---|---|
-| `install` | Sync dependencies, install pre-commit hooks |
+| `install` | Sync dependencies, install Chromium, install pre-commit hooks |
+| `browsers` | Install the Chromium build Playwright drives |
 | `dev` | Run the API with autoreload on :8000 |
 | `test` | Whole suite with coverage |
-| `test-unit` | Unit tests only |
+| `test-unit` | Unit tests only, including the ones that drive Chromium |
+| `test-fast` | Unit tests without Chromium, for a tight edit loop |
 | `test-int` | Integration tests (needs `make db-up`) |
 | `lint` / `fmt` | ruff check / autofix and format |
 | `typecheck` | mypy strict on `app/` |

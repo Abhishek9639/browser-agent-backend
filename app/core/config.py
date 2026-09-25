@@ -121,8 +121,23 @@ class Settings(BaseSettings):
     AGENT_MAX_CONCURRENT_TASKS: int = 3
     AGENT_MAX_CONCURRENT_TASKS_PER_USER: int = 2
     AGENT_DOM_TOKEN_BUDGET: int = 3000
-    AGENT_ALLOWED_DOMAINS: CsvList = Field(default_factory=lambda: ["localhost", "127.0.0.1"])
+    # Spec section 4.13. A bare host matches any port on that host; add a port
+    # to pin one. The demo sites on :8200 are listed explicitly even though the
+    # bare entries already cover them, because that is the intended target.
+    AGENT_ALLOWED_DOMAINS: CsvList = Field(
+        default_factory=lambda: ["localhost", "127.0.0.1", "localhost:8200"]
+    )
     AGENT_HEADLESS: bool = True
+
+    # ---------------------------------------------------------------- browser
+    BROWSER_ACTION_TIMEOUT_MS: int = 10_000
+    BROWSER_NAVIGATION_TIMEOUT_MS: int = 30_000
+
+    # ---------------------------------------------------------------- screenshots
+    # Spec section 6.1: base64 JPEG, no wider than 1280, quality about 60.
+    # Those numbers are a bandwidth budget for the live view, not a guess.
+    SCREENSHOT_MAX_WIDTH: int = 1280
+    SCREENSHOT_JPEG_QUALITY: int = 60
 
     # ---------------------------------------------------------------- billing (B12, B30)
     BILLING_ENABLED: bool = False
@@ -132,7 +147,7 @@ class Settings(BaseSettings):
 
     # ---------------------------------------------------------------- storage (B15)
     STORAGE_BACKEND: str = "local"
-    STORAGE_LOCAL_PATH: str = "storage"
+    STORAGE_DIR: str = "storage"
     STORAGE_S3_BUCKET: str | None = None
     STORAGE_S3_ENDPOINT_URL: str | None = None
     STORAGE_S3_ACCESS_KEY: SecretStr | None = None

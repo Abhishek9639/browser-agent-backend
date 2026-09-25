@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Simple form</title></head>
+<body>
+  <h1>Search flights</h1>
+  <form id="search" onsubmit="event.preventDefault(); document.getElementById('result').textContent = 'Searched: ' + document.getElementById('from').value;">
+    <label for="from">From</label>
+    <input id="from" name="from" type="text" placeholder="From">
+    <label for="to">To</label>
+    <input id="to" name="to" type="text" placeholder="To" value="Bengaluru">
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password">
+    <button id="submit" type="submit">Search flights</button>
+  </form>
+  <p id="result"></p>
+  <a id="next" href="buttons.html">Go to buttons</a>
+</body>
+</html>
