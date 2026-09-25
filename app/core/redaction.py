@@ -11,7 +11,7 @@ masks identically. Two use it today: the structlog processor in
 
 from typing import Any, Final
 
-__all__ = ["REDACTED", "SENSITIVE_KEY_PARTS", "is_sensitive_key", "redact"]
+__all__ = ["REDACTED", "SAFE_KEYS", "SENSITIVE_KEY_PARTS", "is_sensitive_key", "redact"]
 
 REDACTED: Final = "[REDACTED]"
 
@@ -37,11 +37,33 @@ SENSITIVE_KEY_PARTS: Final[frozenset[str]] = frozenset(
     }
 )
 
+# Exact key names that contain a sensitive-looking word but are never secret.
+# Kept tiny and exact, never a substring rule: every entry is a measurement,
+# and these are the names our own schema uses (`llm_decisions.input_tokens`),
+# so renaming them to dodge the filter would be worse than listing them.
+#
+# Add to this only for a value that is a count or a size. Never for anything
+# that could carry a credential.
+SAFE_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "prompt_tokens",
+        "completion_tokens",
+        "max_tokens",
+        "token_budget",
+        "tokens",
+    }
+)
+
 MAX_DEPTH: Final = 6
 
 
 def is_sensitive_key(key: object) -> bool:
     lowered = str(key).lower()
+    if lowered in SAFE_KEYS:
+        return False
     return any(part in lowered for part in SENSITIVE_KEY_PARTS)
 
 

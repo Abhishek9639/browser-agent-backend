@@ -4,6 +4,24 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B13 - Anthropic, OpenAI and Gemini providers
+
+Added
+
+- Dependencies: `anthropic`, `openai`, `google-genai`.
+- `app/agent/llm/anthropic.py`, `openai.py`, `gemini.py`, each implementing `LLMClient.generate_json` with JPEG images, schema-constrained JSON, token usage, latency, and SDK errors mapped onto our own types. API shapes were checked against current documentation and the installed SDKs rather than recalled.
+- Per-provider keys as `SecretStr`: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`. A selected provider without its key raises `MissingApiKeyError` at startup, naming the variable to set.
+- `merge_images` and `parse_json_payload` in `app/agent/llm/base.py`, shared by all three adapters. The parser tolerates a fenced code block and rejects anything that is not a JSON object.
+- `scripts/llm_smoke.py`: one text prompt and one image prompt against the configured provider, printing parsed JSON, token counts and latency.
+- A `live` pytest marker for tests that call a real API, skipped unless `LIVE_LLM=1`.
+- 38 unit tests, all against fake SDK clients. Nothing in the suite calls a real API.
+
+Changed
+
+- A mock provider in production is now fatal rather than a logged error. An agent on the mock accepts tasks and reports success while making no real decisions.
+- `app/core/redaction.py` gained `SAFE_KEYS`, a small exact-match allowlist so token counts (`input_tokens`, `output_tokens` and similar) are not masked. They contain "token" but are measurements, and they are the column names `llm_decisions` already uses.
+- `LLM_API_KEY` replaced by the three per-provider keys.
+
 ### B12 - LLM adapter base and mock provider
 
 Added

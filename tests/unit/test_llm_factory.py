@@ -3,7 +3,13 @@
 import pytest
 
 from app.agent.llm.base import FallbackLLM, LLMClient, RetryingLLM
-from app.agent.llm.factory import KNOWN_PROVIDERS, UnknownProviderError, build_llm
+from app.agent.llm.factory import (
+    KNOWN_PROVIDERS,
+    MissingApiKeyError,
+    MockInProductionError,
+    UnknownProviderError,
+    build_llm,
+)
 from app.core.config import AppEnv, Settings
 
 
@@ -28,11 +34,39 @@ def test_the_model_name_comes_from_settings() -> None:
     assert client.model_name == "some-model-9"
 
 
-@pytest.mark.parametrize("name", ["anthropic", "openai", "gemini"])
-def test_known_but_unbuilt_providers_say_so(name: str) -> None:
-    """Different message from a typo, because it is a different problem."""
-    with pytest.raises(UnknownProviderError, match="not implemented yet"):
+@pytest.mark.parametrize(
+    ("name", "env_var"),
+    [
+        ("anthropic", "ANTHROPIC_API_KEY"),
+        ("openai", "OPENAI_API_KEY"),
+        ("gemini", "GOOGLE_API_KEY"),
+    ],
+)
+def test_a_provider_without_its_key_fails_at_startup(name: str, env_var: str) -> None:
+    """Named in the message, so the fix is obvious. Better than discovering it
+    on the first task."""
+    with pytest.raises(MissingApiKeyError, match=env_var):
         build_llm(Settings(LLM_PROVIDER=name))
+
+
+@pytest.mark.parametrize(
+    ("name", "key_field"),
+    [
+        ("anthropic", "ANTHROPIC_API_KEY"),
+        ("openai", "OPENAI_API_KEY"),
+        ("gemini", "GOOGLE_API_KEY"),
+    ],
+)
+def test_a_provider_with_its_key_builds(name: str, key_field: str) -> None:
+    client = build_llm(Settings(LLM_PROVIDER=name, **{key_field: "test-key"}))
+
+    assert client.provider == name
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_a_blank_key_counts_as_missing(blank: str) -> None:
+    with pytest.raises(MissingApiKeyError):
+        build_llm(Settings(LLM_PROVIDER="openai", OPENAI_API_KEY=blank))
 
 
 @pytest.mark.parametrize("name", ["llama", "gpt", "", "mockk"])
@@ -66,19 +100,32 @@ def test_no_fallback_by_default() -> None:
     assert not isinstance(build_llm(Settings()), FallbackLLM)
 
 
-def test_an_unbuilt_fallback_fails_loudly_at_startup() -> None:
+def test_a_fallback_without_a_key_fails_at_startup() -> None:
     """Better than discovering it during the first outage."""
-    with pytest.raises(UnknownProviderError):
+    with pytest.raises(MissingApiKeyError):
         build_llm(Settings(LLM_PROVIDER="mock", LLM_FALLBACK_PROVIDER="anthropic"))
 
 
-def test_a_mock_in_production_is_allowed_but_flagged() -> None:
-    """Deliberately not fatal: a production smoke test might want it.
+def test_a_configured_fallback_wraps_the_primary() -> None:
+    client = build_llm(
+        Settings(
+            LLM_PROVIDER="mock",
+            LLM_FALLBACK_PROVIDER="anthropic",
+            ANTHROPIC_API_KEY="test-key",
+        )
+    )
 
-    The factory logs at error level, because an agent running on the mock
-    appears to work while making no real decisions, which is the kind of thing
-    nobody notices until a demo.
-    """
-    client = build_llm(Settings(APP_ENV=AppEnv.PROD, LLM_PROVIDER="mock"))
-
+    assert isinstance(client, FallbackLLM)
     assert client.provider == "mock"
+
+
+def test_a_mock_in_production_refuses_to_start() -> None:
+    """An agent on the mock accepts tasks, streams steps and reports success
+    while making no real decisions. Refusing to boot is the smaller failure."""
+    with pytest.raises(MockInProductionError, match="APP_ENV is 'prod'"):
+        build_llm(Settings(APP_ENV=AppEnv.PROD, LLM_PROVIDER="mock"))
+
+
+@pytest.mark.parametrize("env", [AppEnv.DEV, AppEnv.TEST])
+def test_the_mock_is_fine_outside_production(env: AppEnv) -> None:
+    assert build_llm(Settings(APP_ENV=env, LLM_PROVIDER="mock")).provider == "mock"

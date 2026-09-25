@@ -1,5 +1,7 @@
 """B02: settings behaviour that later parts depend on."""
 
+import pytest
+
 from app.core.config import AppEnv, Settings, get_settings
 
 
@@ -20,12 +22,14 @@ def test_defaults_match_the_spec() -> None:
     assert settings.BILLING_ENABLED is False
 
 
-def test_secrets_do_not_appear_in_repr() -> None:
-    settings = Settings(LLM_API_KEY="sk-should-never-be-printed")
+@pytest.mark.parametrize(
+    "field", ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY", "POSTGRES_PASSWORD"]
+)
+def test_secrets_do_not_appear_in_repr(field: str) -> None:
+    settings = Settings(**{field: "sk-should-never-be-printed"})
 
     assert "sk-should-never-be-printed" not in repr(settings)
-    assert settings.LLM_API_KEY is not None
-    assert settings.LLM_API_KEY.get_secret_value() == "sk-should-never-be-printed"
+    assert getattr(settings, field).get_secret_value() == "sk-should-never-be-printed"
 
 
 def test_list_settings_accept_comma_separated_values() -> None:

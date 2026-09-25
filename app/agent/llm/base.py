@@ -34,6 +34,8 @@ __all__ = [
     "MessageRole",
     "RetryingLLM",
     "is_retryable",
+    "merge_images",
+    "parse_json_payload",
 ]
 
 logger = get_logger(__name__)
@@ -319,6 +321,63 @@ class FallbackLLM:
             return await self._fallback.generate_json(
                 system, messages, json_schema, images=images, timeout_s=timeout_s
             )
+
+
+def merge_images(
+    messages: Sequence[LLMMessage],
+    images: Sequence[bytes] | None,
+) -> list[LLMMessage]:
+    """Attach loose images to the last user turn.
+
+    ``generate_json`` accepts images either on a message or as a convenience
+    argument. Normalising here means every adapter sees one shape.
+    """
+    turns = list(messages)
+    if not images:
+        return turns
+
+    for position in range(len(turns) - 1, -1, -1):
+        if turns[position].role is MessageRole.USER:
+            turn = turns[position]
+            turns[position] = LLMMessage(
+                role=turn.role,
+                text=turn.text,
+                images=[*turn.images, *images],
+            )
+            return turns
+
+    turns.append(LLMMessage(role=MessageRole.USER, text="", images=list(images)))
+    return turns
+
+
+def parse_json_payload(text: str, *, provider: str) -> dict[str, Any]:
+    """Decode what the model returned, or raise :class:`LLMBadOutput`.
+
+    Tolerates a fenced code block, because a provider without schema
+    enforcement will sometimes wrap JSON in markdown however firmly the prompt
+    asks it not to. Anything else is a bad answer, and the planner's single
+    repair retry is the right response.
+    """
+    import json
+
+    candidate = text.strip()
+    if candidate.startswith("```"):
+        candidate = candidate.split("\n", 1)[-1] if "\n" in candidate else ""
+        candidate = candidate.rsplit("```", 1)[0].strip()
+
+    if not candidate:
+        raise LLMBadOutput(f"{provider} returned an empty response.")
+
+    try:
+        parsed = json.loads(candidate)
+    except ValueError as exc:
+        # The text itself is never logged or attached: it is model output
+        # derived from page content.
+        raise LLMBadOutput(f"{provider} did not return valid JSON.") from exc
+
+    if not isinstance(parsed, dict):
+        raise LLMBadOutput(f"{provider} returned {type(parsed).__name__}, expected an object.")
+    return parsed
 
 
 def elapsed_ms(started: float) -> int:
