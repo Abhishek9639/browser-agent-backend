@@ -60,7 +60,7 @@ __all__ = [
     "ActionResult",
     "BrowserConfig",
     "BrowserDriver",
-    "PageState",
+    "BrowserSnapshot",
     "PlaywrightDriver",
 ]
 
@@ -118,8 +118,12 @@ class ActionResult:
         return self.url_before != self.url_after
 
 
-class PageState(BaseModel):
+class BrowserSnapshot(BaseModel):
     """A cheap snapshot, taken before and after every action.
+
+    Distinct from :class:`app.agent.perception.state.PageState`, which is the
+    expensive one: that carries the element list and the summary. This is what
+    the verifier compares either side of an action.
 
     The compact DOM summary from spec section 4.6 is a separate, more expensive
     thing. This is the part the verifier and the live view need on every step.
@@ -147,7 +151,7 @@ class BrowserDriver(Protocol):
 
     async def execute(self, action: BaseModel) -> ActionResult: ...
 
-    async def capture_state(self) -> PageState: ...
+    async def capture_state(self) -> BrowserSnapshot: ...
 
     async def close(self) -> None: ...
 
@@ -298,6 +302,15 @@ class PlaywrightDriver:
         self._track(page)
 
     @property
+    def tab_ids(self) -> list[str]:
+        """Stable ids for every tracked tab, in the order they appeared."""
+        return list(self._pages)
+
+    @property
+    def active_tab_id(self) -> str:
+        return self._active_tab or ""
+
+    @property
     def page(self) -> Page:
         if self._active_tab is None or self._active_tab not in self._pages:
             raise RuntimeError("The driver has not been launched.")
@@ -305,7 +318,7 @@ class PlaywrightDriver:
 
     # ------------------------------------------------------------ state
 
-    async def capture_state(self) -> PageState:
+    async def capture_state(self) -> BrowserSnapshot:
         page = self.page
         try:
             title = await page.title()
@@ -319,7 +332,7 @@ class PlaywrightDriver:
             "width": self._config.viewport_width,
             "height": self._config.viewport_height,
         }
-        return PageState(
+        return BrowserSnapshot(
             url=page.url,
             title=title,
             tab_ids=list(self._pages),

@@ -42,24 +42,35 @@ Agent code lives in `app/agent/` and never imports FastAPI. It is driven by `app
 
 1. Update `docs/CHANGELOG.md`.
 2. Write `docs/phase-notes/<part-id>.md` covering what was built, the key decisions, and three viva questions with answers.
-3. Commit the part on its branch. Pushing and opening the pull request happen after the *second* part of the pair; see Git workflow below.
+3. Commit the part on its branch. Pushing and opening the pull request happen after the second part of the pair; see Git workflow below.
 
 ## Git workflow
 
-Parts ship in **pairs, on a branch**. Never commit to `main` directly, and never merge the pull request.
+Two parts ship per branch. Never commit to `main` directly, and never merge the pull request.
 
-1. **Pair the parts.** B08+B09 on one branch, B10+B11 on the next, and so on.
+**Part IDs are internal.** They never appear in a branch name, a commit message, a pull request title, or a pull request description. Not `B08`, not `B08+B09`, not a trailing `(B10)`, nothing of that form anywhere in git or on GitHub. Git history describes the change; the part numbering is our scaffolding and means nothing to a reader of the repository.
+
+They stay in `docs/phase-notes/<part-id>.md` filenames and in `docs/CHANGELOG.md` headings, which is where they belong.
+
+1. **Pair the parts.** Two consecutive parts share one branch.
 
 2. **Branch from current `main`** before starting the first part of a pair, so the branch never starts from a stale base:
 
    ```bash
    git fetch origin && git checkout main && git pull
-   git checkout -b feat/bXX-bYY-<short-topic>
+   git checkout -b feat/<topic>
    ```
 
-   For example `feat/b08-b09-browser-driver-perception`.
+   The topic describes the work: `feat/browser-driver`, `feat/dom-perception`. No part ids.
 
-3. **Commit each part separately** on that branch, each with its own Conventional Commit message.
+3. **Commit each part separately** on that branch, each an ordinary Conventional Commit describing what changed:
+
+   ```
+   feat: playwright driver and action executor
+   feat: screenshots, storage and budgets
+   ```
+
+   No trailing part id.
 
 4. **After the second part of the pair**, and only once `make check` passes:
 
@@ -70,7 +81,7 @@ Parts ship in **pairs, on a branch**. Never commit to `main` directly, and never
 
    If the GitHub CLI is unavailable, print the compare URL to open by hand.
 
-5. **The pull request description lists**: both parts and what each delivers, the test counts, any spec or plan changes, and anything needing a decision.
+5. **Title and description are plain.** The title summarises what the branch delivers. The description covers the features, the test counts, any spec or plan changes, and anything needing a decision, all in plain language with no part numbering and no "first part / second part" framing.
 
 6. **Stop at the pull request.** It is merged on GitHub by the user, never by me, and nothing is pushed to `main` directly. Once told it is merged:
 

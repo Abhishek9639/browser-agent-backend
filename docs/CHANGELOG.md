@@ -4,6 +4,38 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B11 - DOM summarizer, BeautifulSoup fallback, untrusted wrapping
+
+Added
+
+- `app/agent/perception/state.py`: `PageState` with url, title, tabs, active tab, scroll, elements, summary text, dom hash and capture time. `compute_dom_hash` fingerprints the URL plus ordered element signatures, deliberately excluding position so scrolling does not change it.
+- `app/agent/perception/summarizer.py`: `build_summary` and `build_header` producing the spec section 4.6 line format. Selection is by priority under a token budget (default 3000, roughly four characters per token): modal-covered elements, then in-viewport form fields, buttons and links, then below the fold. Selected lines are emitted in index order.
+- `app/agent/perception/bs4_fallback.py`: `extract_main_text`, `extract_tables` (row dictionaries), `extract_list_items` and `summarise_static`, with script and hidden content dropped and the same masking rules as the collector, including card-shaped numbers in body text.
+- `app/agent/perception/untrusted.py`: `wrap_page_state`, `neutralize` and `strip_invisible`. A page cannot close its own `<page_state>` fence, whatever the casing or spacing, and zero-width, bidi and control characters are removed first.
+- `app/agent/perception/perceive.py`: `perceive(page, session)` running extraction, summarisation and hashing in one pass.
+- `scripts/perceive.py <url>`: prints the summary, element counts and dom hash, with `--show-fenced` and `--budget`.
+- Dependencies: `beautifulsoup4`, `lxml`.
+- 90 unit tests.
+
+Changed
+
+- `app/agent/browser/driver.py`: `PageState` renamed to `BrowserSnapshot`, so the cheap before/after snapshot is not confused with the full perception state. `PlaywrightDriver` gained public `tab_ids` and `active_tab_id`.
+
+### B10 - DOM extractor
+
+Added
+
+- `app/agent/perception/dom_extractor.js`, loaded as a package resource and run through `page.evaluate`. Collects visible interactive elements: semantic controls, ARIA roles, `[onclick]`, `[contenteditable]`, `tabindex >= 0`, and anything the page styles with `cursor: pointer`. Nested pointer wrappers are dropped in favour of the outermost meaningful target.
+- Per element: index, tag, role, accessible name, text (collapsed, 80 chars), placeholder, input type, value, href (path and query only), bbox in top-level viewport coordinates, `in_viewport`, `covered`, `frame_id`, `css_path`, `xpath`, and disabled/checked/selected/expanded state.
+- Exclusion of everything spec section 4.11 requires: `display:none`, `visibility:hidden`, zero opacity, `aria-hidden` ancestors, the `hidden` attribute, elements off the document, and elements smaller than 8px in either axis.
+- Value masking at the point of collection for `type=password` and for fields whose name, id or autocomplete suggests a card number, CVV, OTP, PIN or similar.
+- Elements covered at their centre point are dropped, unless the thing covering them is a modal, in which case they are kept with `covered=true` so the recovery ladder can dismiss the overlay.
+- Same-origin iframes are walked with their offset applied so every bbox shares one coordinate space; cross-origin iframes are listed as opaque entries.
+- `data-agent-idx` stamping, with stale stamps from previous runs cleared first.
+- `app/agent/perception/dom_extractor.py`: `extract(page) -> list[ElementInfo]` with a time limit and `PageNotReadyError`, plus `locator_for_index(page, index)` which searches every frame.
+- Fixtures: `flight_search`, `results`, `cookie_modal`, `hidden_injection`, `iframe` with `iframe_child`, `password_form`, `dynamic`.
+- 46 unit tests.
+
 ### B09 - Screenshots, storage, budgets
 
 Added
