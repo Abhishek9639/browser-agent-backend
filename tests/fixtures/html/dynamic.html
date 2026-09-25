@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Dynamic</title></head>
+<body>
+  <h1>Dynamic</h1>
+  <button id="add" onclick="
+    var b = document.createElement('button');
+    b.id = 'added';
+    b.textContent = 'Appeared later';
+    document.getElementById('host').appendChild(b);
+  ">Add a button</button>
+  <button id="shuffle" onclick="
+    document.getElementById('add').className = 'renamed-' + Math.random().toString(36).slice(2);
+  ">Rename classes</button>
+  <div id="host"></div>
+</body></html>

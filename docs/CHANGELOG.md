@@ -4,6 +4,21 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B10 - DOM extractor
+
+Added
+
+- `app/agent/perception/dom_extractor.js`, loaded as a package resource and run through `page.evaluate`. Collects visible interactive elements: semantic controls, ARIA roles, `[onclick]`, `[contenteditable]`, `tabindex >= 0`, and anything the page styles with `cursor: pointer`. Nested pointer wrappers are dropped in favour of the outermost meaningful target.
+- Per element: index, tag, role, accessible name, text (collapsed, 80 chars), placeholder, input type, value, href (path and query only), bbox in top-level viewport coordinates, `in_viewport`, `covered`, `frame_id`, `css_path`, `xpath`, and disabled/checked/selected/expanded state.
+- Exclusion of everything spec section 4.11 requires: `display:none`, `visibility:hidden`, zero opacity, `aria-hidden` ancestors, the `hidden` attribute, elements off the document, and elements smaller than 8px in either axis.
+- Value masking at the point of collection for `type=password` and for fields whose name, id or autocomplete suggests a card number, CVV, OTP, PIN or similar.
+- Elements covered at their centre point are dropped, unless the thing covering them is a modal, in which case they are kept with `covered=true` so the recovery ladder can dismiss the overlay.
+- Same-origin iframes are walked with their offset applied so every bbox shares one coordinate space; cross-origin iframes are listed as opaque entries.
+- `data-agent-idx` stamping, with stale stamps from previous runs cleared first.
+- `app/agent/perception/dom_extractor.py`: `extract(page) -> list[ElementInfo]` with a time limit and `PageNotReadyError`, plus `locator_for_index(page, index)` which searches every frame.
+- Fixtures: `flight_search`, `results`, `cookie_modal`, `hidden_injection`, `iframe` with `iframe_child`, `password_form`, `dynamic`.
+- 46 unit tests.
+
 ### B09 - Screenshots, storage, budgets
 
 Added
