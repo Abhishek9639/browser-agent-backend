@@ -4,6 +4,23 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B11 - DOM summarizer, BeautifulSoup fallback, untrusted wrapping
+
+Added
+
+- `app/agent/perception/state.py`: `PageState` with url, title, tabs, active tab, scroll, elements, summary text, dom hash and capture time. `compute_dom_hash` fingerprints the URL plus ordered element signatures, deliberately excluding position so scrolling does not change it.
+- `app/agent/perception/summarizer.py`: `build_summary` and `build_header` producing the spec section 4.6 line format. Selection is by priority under a token budget (default 3000, roughly four characters per token): modal-covered elements, then in-viewport form fields, buttons and links, then below the fold. Selected lines are emitted in index order.
+- `app/agent/perception/bs4_fallback.py`: `extract_main_text`, `extract_tables` (row dictionaries), `extract_list_items` and `summarise_static`, with script and hidden content dropped and the same masking rules as the collector, including card-shaped numbers in body text.
+- `app/agent/perception/untrusted.py`: `wrap_page_state`, `neutralize` and `strip_invisible`. A page cannot close its own `<page_state>` fence, whatever the casing or spacing, and zero-width, bidi and control characters are removed first.
+- `app/agent/perception/perceive.py`: `perceive(page, session)` running extraction, summarisation and hashing in one pass.
+- `scripts/perceive.py <url>`: prints the summary, element counts and dom hash, with `--show-fenced` and `--budget`.
+- Dependencies: `beautifulsoup4`, `lxml`.
+- 90 unit tests.
+
+Changed
+
+- `app/agent/browser/driver.py`: `PageState` renamed to `BrowserSnapshot`, so the cheap before/after snapshot is not confused with the full perception state. `PlaywrightDriver` gained public `tab_ids` and `active_tab_id`.
+
 ### B10 - DOM extractor
 
 Added
