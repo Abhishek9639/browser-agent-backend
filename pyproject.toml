@@ -73,6 +73,8 @@ ignore = [
 "app/core/errors.py" = ["N818"]
 # BudgetExceeded reads better at the raise site than BudgetExceededError.
 "app/agent/budget.py" = ["N818"]
+# LLMTimeout, LLMRateLimited and friends read better at the raise site.
+"app/agent/llm/base.py" = ["N818"]
 # Alembic writes these. `op` and `sa` are always imported whether or not a
 # given revision uses them, and the module docstring is the revision header.
 "migrations/versions/*.py" = ["F401", "INP001"]

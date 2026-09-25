@@ -4,6 +4,18 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B12 - LLM adapter base and mock provider
+
+Added
+
+- `app/agent/llm/base.py`: `LLMMessage` (role, text, JPEG images), `LLMUsage`, `LLMResponse`, and the `LLMClient` protocol with a single `generate_json` method. Errors: `LLMTimeout`, `LLMRateLimited` (carrying a server-supplied `retry_after`), `LLMUnavailable` and `LLMBadOutput`.
+- `RetryingLLM`: exponential backoff with full jitter, three attempts by default, for transport failures only. `LLMBadOutput` is never retried, because re-sending an identical prompt buys an identical bad answer. Sleep and RNG are injectable so tests neither wait nor flake.
+- `FallbackLLM`: tries a second provider when the first is unreachable, but not when the model merely answered badly.
+- `app/agent/llm/mock.py`: `MockLLM` with a scripted mode (a queue of decisions) and a rule-based mode that reads the goal and the page summary and picks a sensible action. It records every call, and can be told to fail N times or to return malformed JSON. Zero network.
+- `app/agent/llm/factory.py`: `build_llm(settings)` over `LLM_PROVIDER`, with `LLM_FALLBACK_PROVIDER`. A typo and a not-yet-implemented provider give different errors, both at startup.
+- Setting `LLM_FALLBACK_PROVIDER`.
+- 64 unit tests.
+
 ### B11 - DOM summarizer, BeautifulSoup fallback, untrusted wrapping
 
 Added

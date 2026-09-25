@@ -106,6 +106,8 @@ class Settings(BaseSettings):
 
     # ---------------------------------------------------------------- llm (B23, B24)
     LLM_PROVIDER: str = "mock"
+    # Used when the primary provider is unreachable. Blank disables it.
+    LLM_FALLBACK_PROVIDER: str | None = None
     LLM_MODEL: str = "claude-sonnet-5"
     LLM_VISION_MODEL: str = "claude-sonnet-5"
     LLM_API_KEY: SecretStr | None = None
