@@ -130,10 +130,16 @@ class Settings(BaseSettings):
     AGENT_MAX_CONCURRENT_TASKS_PER_USER: int = 2
     AGENT_DOM_TOKEN_BUDGET: int = 3000
     # Spec section 4.13. A bare host matches any port on that host; add a port
-    # to pin one. The demo sites on :8200 are listed explicitly even though the
-    # bare entries already cover them, because that is the intended target.
+    # to pin one. SkyFare on :8200 is listed explicitly even though the bare
+    # entries already cover it, because it is the intended target and a reader
+    # should not have to work that out.
     AGENT_ALLOWED_DOMAINS: CsvList = Field(
-        default_factory=lambda: ["localhost", "127.0.0.1", "localhost:8200"]
+        default_factory=lambda: [
+            "localhost",
+            "127.0.0.1",
+            "localhost:8200",  # SkyFare, the demo airline site
+            "127.0.0.1:8200",
+        ]
     )
     AGENT_HEADLESS: bool = True
 

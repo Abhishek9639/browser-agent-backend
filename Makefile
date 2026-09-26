@@ -3,7 +3,7 @@
 
 .DEFAULT_GOAL := help
 .PHONY: help install browsers dev test test-unit test-fast test-int lint fmt typecheck check \
-	check-all migrate revision downgrade db-up db-down db-reset
+	check-all skyfare migrate revision downgrade db-up db-down db-reset
 
 UV      ?= uv
 COMPOSE ?= docker compose -f docker-compose.dev.yml
@@ -55,6 +55,9 @@ check: lint typecheck test-unit  ## the fast gate a part must pass
 
 check-all: lint typecheck test-unit test-int  ## the full gate: adds integration (needs `make db-up`)
 	@echo "check-all passed"
+
+skyfare:  ## serve the SkyFare demo site on :8200
+	$(UV) run uvicorn demo_sites.skyfare.app:app --host 127.0.0.1 --port 8200 --reload
 
 migrate:  ## apply database migrations
 	$(UV) run alembic upgrade head

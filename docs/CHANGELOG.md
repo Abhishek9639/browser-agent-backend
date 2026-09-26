@@ -4,6 +4,23 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B18 - SkyFare demo site
+
+Added
+
+- `demo_sites/skyfare/`: a mock airline search site on port 8200, served by `make skyfare`. Standalone, and nothing in `app/` imports it. Search with autocomplete over ten Indian cities, a results list with sort, stop and airline filters and load-more, a flight detail page, a passenger form ending at a "Pay now" button, and a payment page that makes clear nothing was charged.
+- Deterministic generation: 15 to 30 flights seeded from the origin, destination and date, hashed with sha256 rather than `hash()`, which is salted per process and would give different flights after every restart. The same search returns the same flights on any machine, which is what makes an agent run scorable.
+- Nine chaos toggles, set per request with `?chaos=` or for a session with `SKYFARE_CHAOS`: `delay`, `cookie`, `popup`, `shuffle`, `layoutb`, `iframe`, `newtab`, `inject`, `slowtype`, plus `all`. Toggles carry through every link on the page, so one that switches itself off on the first click cannot happen.
+- `GET /api/cheapest`: ground truth for scoring a run, behind a header and returning 404 without it, so an agent that guesses the path learns nothing from trying.
+- README section with screenshots of the search, results, detail, booking and chaos pages.
+- `127.0.0.1:8200` added to the allowed domains, and SkyFare named in the comment next to them.
+- 46 tests over the site, driven through ASGI rather than a browser.
+
+Fixed
+
+- The collector masked any field whose name contained `pass`, `pin` or `card` as a substring, so a passenger count read as `••••` and a shipping address was treated as a secret. Known benign words are now stripped from the hint before the secret check runs, which keeps `cardNumber` and `newCreditCard` masked while leaving `passengers` alone.
+- README status was still describing the repository as of B06.
+
 ### B17 - Task runner and task API
 
 Added

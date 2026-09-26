@@ -409,3 +409,56 @@ async def test_a_slow_page_times_out() -> None:
 
     with pytest.raises(PageNotReadyError, match="did not respond"):
         await extract(Slow(), timeout_ms=50)
+
+
+# --------------------------------------------------- which values are secrets
+
+
+@pytest.mark.parametrize(
+    ("label", "secret"),
+    [
+        ("Password", "hunter2"),
+        ("Card number", "4111111111111111"),
+        ("CVV", "123"),
+        ("API token", "sk-live-abc123"),
+        # Masked on the "card" in the middle, even though the benign word at
+        # the front is stripped before the check runs.
+        ("Passenger card number", "4000123412341234"),
+    ],
+)
+async def test_a_secret_value_never_leaves_the_page(
+    driver: PlaywrightDriver, html_server: str, label: str, secret: str
+) -> None:
+    elements = await open_page(driver, html_server, "sensitive_fields.html")
+
+    element = named(elements, label)
+
+    assert element.is_masked is True
+    assert element.value == MASK
+    assert all(secret not in (item.value or "") for item in elements)
+
+
+@pytest.mark.parametrize(
+    ("label", "value"),
+    [
+        ("Passengers", "2"),
+        ("Shipping address", "12 MG Road"),
+        ("Email", "someone@example.test"),
+    ],
+)
+async def test_an_ordinary_value_is_not_treated_as_a_secret(
+    driver: PlaywrightDriver, html_server: str, label: str, value: str
+) -> None:
+    """A passenger count is not a password.
+
+    "passengers" contains "pass" and "shipping" contains "pin", so a plain
+    substring rule masks both. Masking a field the agent has to read back
+    makes the page unusable to it, and this is the third time a substring rule
+    on a security check has caught something it was never aimed at.
+    """
+    elements = await open_page(driver, html_server, "sensitive_fields.html")
+
+    element = named(elements, label)
+
+    assert element.is_masked is False
+    assert element.value == value

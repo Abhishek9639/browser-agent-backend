@@ -90,7 +90,10 @@ ignore = [
 # Alembic writes these. `op` and `sa` are always imported whether or not a
 # given revision uses them, and the module docstring is the revision header.
 "migrations/versions/*.py" = ["F401", "INP001"]
-"demo_sites/**" = ["S104"]    # the mock site binds 0.0.0.0 inside docker on purpose
+# S104: the mock site binds 0.0.0.0 inside docker on purpose.
+# S311: its randomness is meant to be reproducible, not secure. The whole
+# point is that the same search returns the same flights every time.
+"demo_sites/**" = ["S104", "S311"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["app", "demo_sites", "tests"]
@@ -102,7 +105,7 @@ docstring-code-format = true
 
 [tool.mypy]
 python_version = "3.12"
-files = ["app"]
+files = ["app", "demo_sites"]
 strict = true
 warn_unreachable = true
 warn_unused_configs = true

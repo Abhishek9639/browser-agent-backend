@@ -90,10 +90,81 @@ tests/        unit, integration, chaos, eval
 docs/         spec, plan, ADRs, phase notes, changelog
 ```
 
+## SkyFare, the demo site
+
+A mock airline search site the agent is pointed at, in `demo_sites/skyfare/`.
+It is deliberately not a bare test page: the agent has to cope with a layout
+that looks like something a person would actually book a flight on.
+
+```bash
+make skyfare
+```
+
+Then open <http://localhost:8200>. Nothing is ever charged and no seat is ever
+reserved.
+
+| Search | Results |
+| --- | --- |
+| ![The search form](docs/images/skyfare-search.png) | ![Flight results](docs/images/skyfare-results.png) |
+
+| Flight detail | Booking |
+| --- | --- |
+| ![One flight in detail](docs/images/skyfare-detail.png) | ![The passenger form and Pay now](docs/images/skyfare-book.png) |
+
+Results are generated from a seed derived from the origin, destination and
+date, so the same search always returns the same flights on any machine. That
+is what makes an agent run scorable: the cheapest fare for a given query is a
+fixed answer rather than whatever was generated that time.
+
+### Chaos toggles
+
+Real sites misbehave. Each of these reproduces something that has broken a
+browser agent in practice. Turn them on per request with `?chaos=` or for a
+whole session with `SKYFARE_CHAOS`.
+
+```bash
+open "http://localhost:8200/results?from=Delhi&to=Bengaluru&date=2026-10-20&chaos=cookie,inject,layoutb"
+```
+
+![Cookie modal, injected instructions and the alternate layout](docs/images/skyfare-chaos.png)
+
+| Toggle | What it does |
+| --- | --- |
+| `delay` | Results render after 0.5 to 3 seconds |
+| `cookie` | A consent modal covers the page |
+| `popup` | A newsletter appears two seconds in, after a fast agent has read the page |
+| `shuffle` | Every id and class name is regenerated on each load |
+| `layoutb` | Filters move to the top and the button becomes "Find flights" |
+| `iframe` | Results move inside an iframe |
+| `newtab` | Flight details open in a new tab |
+| `inject` | Text addressed to the agent, both visible and hidden |
+| `slowtype` | Inputs debounce, so suggestions vanish and come back |
+
+`chaos=all` turns on everything at once.
+
+The `inject` toggle is a test fixture for the spec section 4.11 defences: the
+collector withholds hidden elements, the page state is fenced as untrusted, and
+the planner can only name an element it was shown. A run where the injected
+text changes what the agent does is the finding, not a bug in the site.
+
+### Ground truth
+
+`GET /api/cheapest?from=&to=&date=` returns the correct answer for a query, for
+scoring an agent's run against. It is behind a header and returns 404 without
+it, so an agent that guesses the path learns nothing from trying it. It is a
+measuring instrument, not part of the site.
+
 ## Status
 
-Through B06: app core, database layer and migrations, the data model,
-repositories, and authentication (register, login, JWKS). Parts land one at a
-time.
+The agent runs end to end: submit a task and it drives a browser, plans each
+step against an LLM, verifies what it did, and records every step with a
+screenshot. Built so far are the app core, the database layer and migrations,
+the data model and repositories, authentication, the browser driver, DOM
+perception, the LLM adapters and planner, the task lifecycle and event bus, the
+agent loop, the task runner and API, and the SkyFare demo site.
+
+Still to come: live streaming over WebSocket, verification, recovery, visual
+grounding, approvals, the flow cache, credits, and packaging. Parts land one at
+a time.
 
 Before running: `python scripts/gen_keys.py` to create the JWT signing keypair.
