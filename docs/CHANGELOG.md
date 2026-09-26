@@ -4,6 +4,17 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B15 - Task state machine and event bus
+
+Added
+
+- `app/domain/state_machine.py`: the spec section 4.3 lifecycle as one table. `TRANSITIONS`, `allowed_from`, `can_transition`, `is_terminal`, and `transition(task, new_status)` which returns the previous status because that is what the section 6.1 `status` event carries. An illegal move raises `IllegalTransition` naming what was allowed instead. `CANCELLED` and `TIMED_OUT` are reachable from every live status; terminal statuses have no outgoing edges at all.
+- `app/services/events.py`: frozen, camelCase models for all eight section 6.1 event types, sharing `type`, `taskId`, `seq` and `timestamp`.
+- `EventBus`, an abstract base class, and `InMemoryEventBus`. `publish` stamps a per-task monotonically increasing `seq` and fans out without blocking; `subscribe` returns a bounded buffer that is an async iterator and an async context manager.
+- Load shedding for a subscriber that falls behind, on two separate budgets: screenshots are stripped from the oldest steps first, whole droppable events go only once the item budget is also full, and `status`, `approval_required`, `approval_resolved`, `final` and `error` are never dropped. An approval keeps its screenshot.
+- `docs/agent.md`: the lifecycle as a Mermaid state diagram, the event table, how to subscribe, and what gives way under load.
+- 106 unit tests.
+
 ### B14 - Planner, prompt registry, eval harness
 
 Added

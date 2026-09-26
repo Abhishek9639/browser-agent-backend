@@ -1,6 +1,6 @@
 # BACKEND_PLAN.md: browser-agent-backend (AI-07)
 
-Plan of record for the backend repo. Derived solely from [PROJECT_SPEC.md](PROJECT_SPEC.md); `docs/reference/` is empty, so nothing here is sourced from the original PRD or Complete Documentation PDFs.
+Plan of record for the backend repo. Derived from [PROJECT_SPEC.md](PROJECT_SPEC.md), which consolidates the approved PRD v3.0 and the Complete Documentation and resolves the conflicts between them. It is complete and authoritative on its own.
 
 All 18 open items from the first draft are now decided. Section 4 records each decision and where it is written down.
 
@@ -193,7 +193,7 @@ All 18 items from the first draft are resolved. "Spec" marks the ones now writte
 | A15 | `POST /tasks/{id}/ground` accepts an optional target hint and tab id, returns the grounded index and bbox, and records a grounding invocation for the vision-rate KPI. |
 | A16 | The real value for a `type` action exists only in memory for the duration of that action. `task_steps.value_redacted` and every event carry the masked form. |
 | A17 | Rate limits: 5/min per IP on login and register, 10/min per user on task creation. Page size 20, maximum 100. All configurable. |
-| A18 | `ADR-004` and `BR-008` are cited in the spec but absent from `docs/reference/`. The spec text is treated as the whole requirement; the dangling references are noted, not chased. |
+| A18 | `ADR-004` and `BR-008` are cited in the spec by name. The spec text is the whole requirement; the citations are provenance, not a pointer to anything further. |
 
 ## 5. Dependencies
 
