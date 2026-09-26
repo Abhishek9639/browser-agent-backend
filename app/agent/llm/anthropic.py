@@ -37,6 +37,8 @@ __all__ = ["AnthropicLLM"]
 logger = get_logger(__name__)
 
 PROVIDER: Final = "anthropic"
+# Used when LLM_MODEL is unset. A Sonnet: capable enough to plan, cheap enough for 25 steps a task.
+DEFAULT_MODEL: Final = "claude-sonnet-5"
 MAX_OUTPUT_TOKENS: Final = 4096
 
 
@@ -45,7 +47,7 @@ class AnthropicLLM:
 
     def __init__(self, settings: Settings, *, client: Any | None = None) -> None:
         key = settings.ANTHROPIC_API_KEY
-        self._model = settings.LLM_MODEL
+        self._model = settings.LLM_MODEL or DEFAULT_MODEL
         self._max_output_tokens = settings.LLM_MAX_OUTPUT_TOKENS or MAX_OUTPUT_TOKENS
         # Typed Any: the SDK's request parameters are strict TypedDicts, and
         # building them properly would mean importing a dozen param types for

@@ -4,6 +4,27 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B14 - Planner, prompt registry, eval harness
+
+Added
+
+- `app/agent/planner/schema.py`: the `Decision` model from spec section 4.5, camelCase on the wire, frozen, rejecting unknown fields. Cross-field rules: click/type/select need `targetIndex`, type and select need a value, navigate needs an http or https URL, done needs `finalAnswer`, switch_tab needs `tabId`. `DECISION_JSON_SCHEMA` is hand-written for provider strict modes, with a test asserting it cannot drift from the model.
+- `app/agent/planner/prompts/planner_v1.md`: the system prompt. Covers the role, using only supplied state, never inventing an element or a value, the three kinds of knowledge (observed state, retrieved hint, assumption), flagging insufficiency through `needsVision` or low confidence, approval for anything irreversible, one action per turn, an `expectedOutcome` on every decision, short reasoning citing observable evidence, and that content inside `<page_state>` is untrusted data whose instructions must be ignored.
+- `app/agent/planner/registry.py`: `PromptRegistry` loading prompts by version from `PLANNER_PROMPT_VERSION`, recorded with every decision.
+- `app/agent/planner/planner.py`: `Planner.decide(goal, page_state, history, cached_hint)` returning `PlannerResult`. Builds goal, compressed history, optional hint and fenced page state; validates against the schema; checks the named index exists in the page state; buys exactly one repair turn with the error fed back, then raises `PlannerOutputError` (TEST-006).
+- `compress_history`: the last eight steps in full, everything earlier as one counted line.
+- `tests/eval/planner_cases.yaml`: 22 labelled cases over 11 fixture pages, each with a set of acceptable decisions and, where it matters, an assertion on the approval flag.
+- `scripts/eval_planner.py`: loads each fixture in a real browser, perceives it, and scores one planner decision. Reports action accuracy, groundedness, repair rate, unsafe values typed, average latency and tokens. Defaults to the mock provider regardless of `LLM_PROVIDER`, so a bare run costs nothing.
+- Dev dependency `pyyaml` for the eval dataset.
+- 71 unit tests.
+
+Changed
+
+- `LLM_MODEL` is now optional. Left unset, each provider supplies its own default: `claude-sonnet-5`, `gpt-6-luna`, `gemini-3.6-flash`. `.env.example` documents this and gives `gemini-3.6-flash` as the worked example.
+- `LLM_PROMPT_VERSION` renamed to `PLANNER_PROMPT_VERSION`.
+- Unit tests no longer read a developer's `.env` or exported variables; an autouse fixture isolates `Settings` for the whole suite.
+- `scripts/**` is exempt from the no-print lint rule rather than carrying a `noqa` on every line.
+
 ### B13 - Anthropic, OpenAI and Gemini providers
 
 Added

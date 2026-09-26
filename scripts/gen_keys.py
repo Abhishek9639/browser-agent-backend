@@ -71,12 +71,12 @@ def main() -> int:
 
     private_path, public_path = generate(args.dir, key_size=args.size, force=args.force)
 
-    print(f"Wrote {private_path} (0600) and {public_path}\n")  # noqa: T201
-    print("Add to .env:\n")  # noqa: T201
-    print(f"JWT_PRIVATE_KEY_PATH={private_path}")  # noqa: T201
-    print(f"JWT_PUBLIC_KEY_PATH={public_path}")  # noqa: T201
-    print(f"JWT_KID={args.kid}")  # noqa: T201
-    print("\nkeys/ is gitignored. Never commit the private key.")  # noqa: T201
+    print(f"Wrote {private_path} (0600) and {public_path}\n")
+    print("Add to .env:\n")
+    print(f"JWT_PRIVATE_KEY_PATH={private_path}")
+    print(f"JWT_PUBLIC_KEY_PATH={public_path}")
+    print(f"JWT_KID={args.kid}")
+    print("\nkeys/ is gitignored. Never commit the private key.")
     return 0
 
 

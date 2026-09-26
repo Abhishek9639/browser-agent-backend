@@ -43,16 +43,16 @@ async def run(url: str, *, headed: bool, show_fenced: bool, budget: int) -> int:
     try:
         result = await driver.execute(NavigateAction(url=url))
         if not result.ok:
-            print(f"Could not open {url}: {result.error_code} {result.error_message}")  # noqa: T201
+            print(f"Could not open {url}: {result.error_code} {result.error_message}")
             return 1
 
         state = await perceive(driver.page, driver, token_budget=budget)
     finally:
         await driver.close()
 
-    print(state.summary_text)  # noqa: T201
-    print()  # noqa: T201
-    print(  # noqa: T201
+    print(state.summary_text)
+    print()
+    print(
         f"{state.element_count} elements "
         f"({sum(1 for e in state.elements if e.in_viewport)} in viewport, "
         f"{sum(1 for e in state.elements if e.covered)} covered)  "
@@ -62,9 +62,9 @@ async def run(url: str, *, headed: bool, show_fenced: bool, budget: int) -> int:
     )
 
     if show_fenced:
-        print()  # noqa: T201
-        print("--- as the prompt receives it ---")  # noqa: T201
-        print(wrap_page_state(state.summary_text))  # noqa: T201
+        print()
+        print("--- as the prompt receives it ---")
+        print(wrap_page_state(state.summary_text))
     return 0
 
 

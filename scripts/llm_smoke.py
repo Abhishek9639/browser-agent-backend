@@ -47,9 +47,9 @@ def red_square() -> bytes:
 def report(label: str, response: object) -> None:
     parsed = getattr(response, "parsed", {})
     usage = getattr(response, "usage", None)
-    print(f"\n--- {label} ---")  # noqa: T201
-    print(json.dumps(parsed, indent=2))  # noqa: T201
-    print(  # noqa: T201
+    print(f"\n--- {label} ---")
+    print(json.dumps(parsed, indent=2))
+    print(
         f"provider={getattr(response, 'provider', '?')} "
         f"model={getattr(response, 'model_name', '?')} "
         f"in={getattr(usage, 'input_tokens', 0)} "
@@ -61,7 +61,7 @@ def report(label: str, response: object) -> None:
 async def run(*, skip_image: bool) -> int:
     settings = get_settings()
     client = build_llm(settings)
-    print(f"provider={client.provider} model={client.model_name}")  # noqa: T201
+    print(f"provider={client.provider} model={client.model_name}")
 
     text_turn = LLMMessage(
         role=MessageRole.USER,
@@ -88,7 +88,7 @@ def main() -> int:
     try:
         return asyncio.run(run(skip_image=args.skip_image))
     except Exception as exc:
-        print(f"\nFAILED: {type(exc).__name__}: {exc}")  # noqa: T201
+        print(f"\nFAILED: {type(exc).__name__}: {exc}")
         return 1
 
 

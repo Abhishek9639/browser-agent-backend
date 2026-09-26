@@ -34,6 +34,8 @@ __all__ = ["OpenAILLM"]
 logger = get_logger(__name__)
 
 PROVIDER: Final = "openai"
+# Used when LLM_MODEL is unset. The efficient tier: high volume, low cost per step.
+DEFAULT_MODEL: Final = "gpt-6-luna"
 SCHEMA_NAME: Final = "agent_decision"
 
 
@@ -42,7 +44,7 @@ class OpenAILLM:
 
     def __init__(self, settings: Settings, *, client: Any | None = None) -> None:
         key = settings.OPENAI_API_KEY
-        self._model = settings.LLM_MODEL
+        self._model = settings.LLM_MODEL or DEFAULT_MODEL
         self._client: Any = client or openai.AsyncOpenAI(
             api_key=key.get_secret_value() if key else None,
             # RetryingLLM owns the backoff; two layers would multiply.
