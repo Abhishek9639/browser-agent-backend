@@ -4,6 +4,24 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B16 - Orchestrator core loop
+
+Added
+
+- `app/agent/orchestrator.py`: the spec section 4.2 loop. Perceive, plan, ground, assess risk, act, verify, record, repeat, ending at `COMPLETED`, `EXECUTION_FAILED`, `TIMED_OUT`, `REJECTED` or `CANCELLED`. Every status change goes through the state machine and publishes a `status` event; a `final` event is published whatever happens, including when the settling write itself fails.
+- `app/agent/contracts.py`: the collaborators the loop depends on, each a protocol with a do-nothing default. Verification, recovery, visual grounding, risk policy, approval gate, flow cache and session manager. The approval gate is the exception: its default refuses, because a stub that waves high-risk actions through is a hole that looks like working software.
+- `app/agent/browser/agent_browser.py`: `DriverBrowser`, binding the Playwright driver to what the loop asks for (perceive, screenshot, capture state, execute).
+- Per step, in one transaction: the screenshot goes to storage first, then `task_steps`, `llm_decisions` and `verifications`, then commit. The `step` event is published only after the commit, so the database is never behind the live view and a reconnecting client can always be caught up.
+- `RiskLevel.rank` and `RiskLevel.highest`, because these are strings and `max(HIGH, MEDIUM)` compares alphabetically and answers `MEDIUM`.
+- Values typed into password or masked fields are stored and sent as the mask, in `task_steps.value_redacted` and in `llm_decisions.raw_output`, which carries the model's own copy of the value.
+- Failure reasons are written by us, never taken from an exception message: a message can carry a URL with a token in it.
+- `docs/agent.md`: a sequence diagram of one iteration, why the write order is what it is, and a table of what is still a stand-in.
+- 43 tests, 34 unit against fakes and 9 integration against real Postgres and real Chromium.
+
+Fixed
+
+- The whole integration suite. The settings isolation added in B14 also hid `.env` from `integration_settings`, so every integration test tried to reach a Postgres that is not there. Integration settings now read the real environment through a `real_environment` helper, and `api_app` takes its database URL from them.
+
 ### B15 - Task state machine and event bus
 
 Added
