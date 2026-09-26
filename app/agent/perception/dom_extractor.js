@@ -43,8 +43,18 @@
   ].join(",");
 
   // name, id or autocomplete hinting at something that must never be echoed.
+  // Substring matching on purpose: field names run words together, so
+  // "cardNumber" and "newCreditCard" both have to match.
   const SECRET_HINT =
     /(pass|pwd|card|cc[-_]?num|credit|cvv|cvc|csc|otp|pin|passcode|security[-_]?code|secret|token)/i;
+
+  // Ordinary words that happen to contain one of those substrings. Stripped
+  // from the hint before it is tested, rather than vetoing the whole field, so
+  // "passenger_card_number" is still masked on the "card" in the middle of it.
+  // Without this a passenger count reads as "••••" because it starts with
+  // "pass", and a shipping address is a secret because "shipping" contains
+  // "pin".
+  const BENIGN = /(passenger|shipping|campaign|spinner|tokeni[sz]|discard|placard)/gi;
 
   const collapse = (value) => (value || "").replace(/\s+/g, " ").trim();
   const clip = (value) => {
@@ -93,7 +103,7 @@
     ]
       .filter(Boolean)
       .join(" ");
-    return SECRET_HINT.test(hints);
+    return SECRET_HINT.test(hints.replace(BENIGN, " "));
   }
 
   function valueOf(el) {

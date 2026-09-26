@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Field masking</title></head>
+<body>
+  <h1>Which values are secrets?</h1>
+  <form id="f">
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" value="hunter2">
+
+    <label for="cardNumber">Card number</label>
+    <input id="cardNumber" name="cardNumber" type="text" value="4111111111111111">
+
+    <label for="cvv">CVV</label>
+    <input id="cvv" name="cvv" type="text" value="123">
+
+    <label for="apiToken">API token</label>
+    <input id="apiToken" name="apiToken" type="text" value="sk-live-abc123">
+
+    <label for="passengers">Passengers</label>
+    <input id="passengers" name="passengers" type="text" value="2">
+
+    <label for="shipping_address">Shipping address</label>
+    <input id="shipping_address" name="shipping_address" type="text" value="12 MG Road">
+
+    <label for="passenger_card_number">Passenger card number</label>
+    <input id="passenger_card_number" name="passenger_card_number" type="text" value="4000123412341234">
+
+    <label for="email">Email</label>
+    <input id="email" name="email" type="text" value="someone@example.test">
+  </form>
+</body>
+</html>

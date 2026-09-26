@@ -8,7 +8,7 @@ and repair paths are tested with.
 import pytest
 
 from app.agent.llm.base import LLMBadOutput, LLMMessage, LLMTimeout, MessageRole
-from app.agent.llm.mock import MockLLM, parse_summary
+from app.agent.llm.mock import _PRICE, MockLLM, parse_summary
 
 GOAL = "find the cheapest flight from Delhi to Bengaluru on 20 Oct"
 
@@ -308,3 +308,25 @@ async def test_an_unknown_page_still_produces_a_valid_action() -> None:
     decision = await decide(MockLLM(), "do something", 'URL: http://x.test\n\n[0] div "?"')
 
     assert decision["action"] in {"extract", "done"}
+
+
+# ----------------------------------------------------- reading a fare
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("₹4,810 and ₹5,260", ["4,810", "5,260"]),
+        ("Rs 4,210", ["4,210"]),
+        ("Rs. 1,299.50", ["1,299.50"]),
+        ("INR 999", ["999"]),
+        # The one that matters: "filters" ends in "rs", and an unanchored
+        # pattern read "Apply filters 28 flights" as a fare of 28 rupees and
+        # reported it as the cheapest flight on the page.
+        ("Apply filters 28 flights", []),
+        ("hotels 12 rooms", []),
+        ("Cars 4 available", []),
+    ],
+)
+def test_a_fare_needs_a_currency_token_of_its_own(text: str, expected: list[str]) -> None:
+    assert _PRICE.findall(text) == expected

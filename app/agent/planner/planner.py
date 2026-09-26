@@ -48,6 +48,27 @@ HISTORY_WINDOW: Final = 8
 
 # Enough for a list of results, not enough to bury the current page state.
 MAX_EXTRACT_CHARS: Final = 600
+
+
+def _clip(text: str) -> str:
+    """Shorten extracted text without cutting a word in half.
+
+    Cutting on the character count alone turned a fare of Rs 5,260 into Rs 5
+    and the agent reported it as the cheapest. Truncation that changes what a
+    token means is worse than truncation that drops it, so the cut falls back
+    to the last space before the limit.
+    """
+    body = " ".join(text.split())
+    if len(body) <= MAX_EXTRACT_CHARS:
+        return body
+
+    cut = body[:MAX_EXTRACT_CHARS]
+    boundary = cut.rfind(" ")
+    if boundary > 0:
+        cut = cut[:boundary]
+    return cut + " ..."
+
+
 # One initial attempt plus one repair (spec section 4.5).
 MAX_ATTEMPTS: Final = 2
 
@@ -85,12 +106,7 @@ class StepSummary:
         line = f"{self.step_number}. {self.action}{target} -> {outcome}"
 
         if self.extracted:
-            # Capped: a whole page of extracted text would crowd out the page
-            # state itself, which is the part that is actually current.
-            body = " ".join(self.extracted.split())
-            if len(body) > MAX_EXTRACT_CHARS:
-                body = body[:MAX_EXTRACT_CHARS] + "..."
-            line += f"\n   extracted: {body}"
+            line += f"\n   extracted: {_clip(self.extracted)}"
         return line
 
 

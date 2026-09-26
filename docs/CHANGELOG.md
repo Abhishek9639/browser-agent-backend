@@ -4,6 +4,43 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B19 - WebSocket live stream
+
+Added
+
+- `app/services/ws_tickets.py`: single-use tickets bound to one user and one task, valid for 60 seconds. `POST /api/v1/tasks/{id}/stream-ticket` returns `{ticket, expiresIn}`. A browser cannot set headers on a WebSocket handshake, so the only alternative is an access token in the URL, where it reaches the server log, the proxy log and the browser history. A ticket is redeemed before any other check, so a refused connection still burns it.
+- `WS /api/v1/tasks/{id}/stream?ticket=&after_step=`: validates and consumes the ticket, sends the current status, replays every step after the cursor with its screenshot loaded from storage, adds any pending approval, then streams live events. Close codes 4401 invalid ticket, 4403 not the owner, 4404 no such task, 1000 for a task that has already finished.
+- `app/services/stream.py`: rebuilds a task's events from its rows. Replayed events carry `seq` 0, because the original sequence number is not stored and inventing one would break the promise that a task's sequence only goes up; steps resume on `stepNumber`, which is stored.
+- Deduplication between replay and live, keyed on step number and approval id, so a step published while the replay was being built is not shown twice. The subscription is opened before the database is read, which closes the window where a step could be published and seen by nobody.
+- Heartbeat every 15 seconds, and `{"type":"ping"}` from the client is answered with `{"type":"pong"}`. A heartbeat takes no sequence number, since it is not part of the task's history.
+- Publish-to-send latency logged per step as `stream_step_latency`, for the spec section 9 live-view target. Replayed events are excluded: their timestamp is when the replay rebuilt them, not when anything happened.
+- `scripts/ws_watch.py`: logs in, takes a ticket, and prints the stream. Screenshots are reported by size. `--after-step` reconnects as a returning client would.
+- `WS_TICKET_TTL_SECONDS` and `WS_HEARTBEAT_SECONDS` settings.
+- 52 tests: 13 for tickets, 13 driving a real WebSocket handshake, 19 for replay against real rows, and 7 pinning the fare pattern.
+
+Fixed
+
+- App-state dependencies took a `Request`, which FastAPI cannot inject into a WebSocket route, so every socket failed at connect. They now take `HTTPConnection`, the base class of both.
+- The mock provider read "Apply filters 28 flights" as a fare of 28 rupees, because "filters" ends in "rs" and the currency token was unanchored. It reported that as the cheapest flight on the page.
+- Extracted text was truncated on a character count, which turned a fare of Rs 5,260 into Rs 5. The cut now falls back to the last word boundary.
+
+### B18 - SkyFare demo site
+
+Added
+
+- `demo_sites/skyfare/`: a mock airline search site on port 8200, served by `make skyfare`. Standalone, and nothing in `app/` imports it. Search with autocomplete over ten Indian cities, a results list with sort, stop and airline filters and load-more, a flight detail page, a passenger form ending at a "Pay now" button, and a payment page that makes clear nothing was charged.
+- Deterministic generation: 15 to 30 flights seeded from the origin, destination and date, hashed with sha256 rather than `hash()`, which is salted per process and would give different flights after every restart. The same search returns the same flights on any machine, which is what makes an agent run scorable.
+- Nine chaos toggles, set per request with `?chaos=` or for a session with `SKYFARE_CHAOS`: `delay`, `cookie`, `popup`, `shuffle`, `layoutb`, `iframe`, `newtab`, `inject`, `slowtype`, plus `all`. Toggles carry through every link on the page, so one that switches itself off on the first click cannot happen.
+- `GET /api/cheapest`: ground truth for scoring a run, behind a header and returning 404 without it, so an agent that guesses the path learns nothing from trying.
+- README section with screenshots of the search, results, detail, booking and chaos pages.
+- `127.0.0.1:8200` added to the allowed domains, and SkyFare named in the comment next to them.
+- 46 tests over the site, driven through ASGI rather than a browser.
+
+Fixed
+
+- The collector masked any field whose name contained `pass`, `pin` or `card` as a substring, so a passenger count read as `••••` and a shipping address was treated as a secret. Known benign words are now stripped from the hint before the secret check runs, which keeps `cardNumber` and `newCreditCard` masked while leaving `passengers` alone.
+- README status was still describing the repository as of B06.
+
 ### B17 - Task runner and task API
 
 Added

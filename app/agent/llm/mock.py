@@ -52,7 +52,13 @@ _QUOTED: Final = re.compile(r'"([^"]*)"')
 _URL_LINE: Final = re.compile(r"^URL:\s*(\S+)", re.MULTILINE)
 
 # Prices as the demo sites print them.
-_PRICE: Final = re.compile(r"(?:Rs\.?|₹|INR)\s?([\d,]+(?:\.\d{1,2})?)", re.IGNORECASE)
+# The letters have to start a word. Without the lookbehind, "Apply filters 28
+# flights" reads as a fare of 28 rupees, because "filters" ends in "rs", and
+# the agent then reports it as the cheapest.
+_PRICE: Final = re.compile(
+    r"(?:(?<![A-Za-z])(?:Rs\.?|INR)|₹)\s?([\d,]+(?:\.\d{1,2})?)",
+    re.IGNORECASE,
+)
 
 # Goal slots. Deliberately small: enough for "from X to Y on DATE".
 _FROM: Final = re.compile(r"\bfrom\s+([A-Za-z][\w'\- ]*?)(?=\s+\bto\b|\s*$|,)", re.IGNORECASE)
