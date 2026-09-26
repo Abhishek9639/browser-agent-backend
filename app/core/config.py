@@ -106,9 +106,14 @@ class Settings(BaseSettings):
 
     # ---------------------------------------------------------------- llm (B23, B24)
     LLM_PROVIDER: str = "mock"
+    # Used when the primary provider is unreachable. Blank disables it.
+    LLM_FALLBACK_PROVIDER: str | None = None
     LLM_MODEL: str = "claude-sonnet-5"
     LLM_VISION_MODEL: str = "claude-sonnet-5"
-    LLM_API_KEY: SecretStr | None = None
+    # One key per provider, so switching providers does not mean re-keying.
+    ANTHROPIC_API_KEY: SecretStr | None = None
+    OPENAI_API_KEY: SecretStr | None = None
+    GOOGLE_API_KEY: SecretStr | None = None
     LLM_TIMEOUT_SECONDS: int = 60
     LLM_MAX_OUTPUT_TOKENS: int = 2048
     LLM_PROMPT_VERSION: str = "v1"

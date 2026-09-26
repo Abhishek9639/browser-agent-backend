@@ -62,3 +62,24 @@ def test_nested_structures_are_scrubbed() -> None:
 
 def test_the_log_message_itself_is_untouched() -> None:
     assert scrub({"event": "request_completed", "token": "t"})["event"] == "request_completed"
+
+
+# ------------------------------------------------------------------ counts
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["input_tokens", "output_tokens", "total_tokens", "max_tokens", "token_budget"],
+)
+def test_token_counts_are_not_redacted(key: str) -> None:
+    """These contain "token" but are measurements, and they are the names our
+    own schema uses. Redacting them would make the cost metrics unreadable."""
+    assert scrub({key: 1234})[key] == 1234
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["access_token", "refresh_token", "id_token", "token", "bearer_token", "token_hash"],
+)
+def test_actual_tokens_are_still_redacted(key: str) -> None:
+    assert scrub({key: "secret-value"})[key] == REDACTED
