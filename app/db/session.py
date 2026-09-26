@@ -6,7 +6,7 @@ those settings, and a test must be able to swap the whole thing out.
 """
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Annotated
 
@@ -97,13 +97,44 @@ def get_database(request: Request) -> Database:
     return database
 
 
+def after_commit_hooks(request: Request) -> list[Callable[[], None]]:
+    """The callbacks to run once this request's transaction has committed.
+
+    Get-or-create, so it does not matter whether the session or a route asks
+    for it first. Dependency resolution order is not something to build on.
+    """
+    hooks = getattr(request.state, "after_commit", None)
+    if hooks is None:
+        hooks = []
+        request.state.after_commit = hooks
+    return hooks
+
+
 async def get_session(
+    request: Request,
     database: Annotated[Database, Depends(get_database)],
 ) -> AsyncIterator[AsyncSession]:
-    """Request-scoped session. One transaction per request."""
+    """Request-scoped session. One transaction per request.
+
+    Anything appended to the after-commit hooks runs once the transaction has
+    committed, and never runs if it did not.
+
+    FastAPI's ``BackgroundTasks`` is not a substitute, however much it reads
+    like one. Those run inside the exit stack that still owns this
+    transaction, so work scheduled there can read a row that has not been
+    written yet, and an exception in one of them rolls the request back after
+    the client has already been told it succeeded.
+    """
+    hooks = after_commit_hooks(request)
+
     async with database.session() as session:
         yield session
 
+    # Reached only on a clean commit: the context manager re-raises otherwise.
+    for hook in hooks:
+        hook()
 
+
+AfterCommitDep = Annotated[list[Callable[[], None]], Depends(after_commit_hooks)]
 DatabaseDep = Annotated[Database, Depends(get_database)]
 SessionDep = Annotated[AsyncSession, Depends(get_session)]

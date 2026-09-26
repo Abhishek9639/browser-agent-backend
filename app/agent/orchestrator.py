@@ -37,11 +37,13 @@ from app.agent.contracts import (
     AgentBrowser,
     ApprovalGate,
     CachedHint,
+    CancelSignal,
     DecisionRiskPolicy,
     DenyApprovals,
     FlowCache,
     Grounder,
     GroundingOutcome,
+    NeverCancelled,
     NoCache,
     NoGrounding,
     NoRecovery,
@@ -185,6 +187,7 @@ class Orchestrator:
         approvals: ApprovalGate | None = None,
         recovery: RecoveryStrategy | None = None,
         sessions: SessionManager | None = None,
+        cancel_signal: CancelSignal | None = None,
         budget: TaskBudget | None = None,
     ) -> None:
         self._browser = browser
@@ -205,6 +208,10 @@ class Orchestrator:
         self._approvals: ApprovalGate = approvals or DenyApprovals()
         self._recovery: RecoveryStrategy = recovery or NoRecovery()
         self._sessions: SessionManager = sessions or PageStateSessions()
+
+        # Not a stand-in for a later part: a run nobody supervises genuinely
+        # has nothing that could cancel it.
+        self._cancel: CancelSignal = cancel_signal or NeverCancelled()
 
     # ------------------------------------------------------------- the run
 
@@ -238,8 +245,16 @@ class Orchestrator:
             status, failure_reason = _budget_outcome(exc)
             logger.info("task_budget_exceeded", task_id=str(task_id), reason=exc.reason.value)
         except Exception as exc:
-            status = TaskStatus.EXECUTION_FAILED
-            failure_reason = _safe_reason(exc)
+            if self._cancel.is_cancelled():
+                # Closing the context under a running action raises, and that
+                # exception is a consequence of the cancel rather than a
+                # failure of the task. Reporting it as one would show the user
+                # an error for something they asked for.
+                status = TaskStatus.CANCELLED
+                failure_reason = "The task was cancelled."
+            else:
+                status = TaskStatus.EXECUTION_FAILED
+                failure_reason = _safe_reason(exc)
             # The detail stays here, where it is useful and nobody untrusted
             # reads it. Only the sanitised sentence above reaches the client.
             logger.exception("task_failed", task_id=str(task_id), error=type(exc).__name__)
@@ -272,15 +287,20 @@ class Orchestrator:
 
         while True:
             budget.check()
+            self._stop_if_cancelled()
 
-            # Cancellation arrives as a status write from the API, not as a
-            # signal, so this is where the loop notices it.
+            # A cancel can also arrive as a status write from another worker,
+            # which the flag above knows nothing about.
             current = await self._current_status(task_id)
             if current.is_terminal:
                 raise _Stop(current, failure_reason="The task was stopped.")
 
             state = await self._browser.perceive()
+            self._stop_if_cancelled()
+
             planned = await self._planner.decide(instruction, state, history, _hint_text(hint))
+            self._stop_if_cancelled()
+
             grounded = await self._grounder.resolve(planned.decision, state)
             decision = grounded.decision
             if grounded.used_vision:
@@ -299,6 +319,7 @@ class Orchestrator:
             result = await self._browser.execute(action)
 
             await self._set_status(task_id, TaskStatus.VERIFYING)
+            self._stop_if_cancelled()
             after = await self._browser.capture_state()
             verdict = await self._verify(decision, result, before, after, state)
 
@@ -323,6 +344,10 @@ class Orchestrator:
                     action=decision.action.value,
                     target=decision.target,
                     verified=verdict.verified,
+                    # An extract whose result never reaches the planner is an
+                    # action the agent cannot act on. It reads the page and
+                    # then has no idea what it read.
+                    extracted=result.extracted,
                 )
             )
 
@@ -339,6 +364,16 @@ class Orchestrator:
             await self._set_status(task_id, TaskStatus.PLANNING)
 
     # -------------------------------------------------------- loop helpers
+
+    def _stop_if_cancelled(self) -> None:
+        """Leave the loop at a phase boundary if a cancel has arrived.
+
+        Deliberately not checked in the middle of a step: a step that has run
+        still has to be recorded, or the activity log disagrees with what the
+        browser actually did.
+        """
+        if self._cancel.is_cancelled():
+            raise _Stop(TaskStatus.CANCELLED, failure_reason="The task was cancelled.")
 
     def _resolve_target(self, decision: Decision, state: PageState) -> ElementInfo | None:
         """Find the element the decision named, or refuse to act.

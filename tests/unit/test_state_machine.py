@@ -21,7 +21,7 @@ TERMINAL = {S.COMPLETED, S.EXECUTION_FAILED, S.REJECTED, S.CANCELLED, S.TIMED_OU
 # The table as the spec describes it, written out by hand rather than derived
 # from the module. A test that recomputes the thing it checks proves nothing.
 EXPECTED: dict[TaskStatus, set[TaskStatus]] = {
-    S.SUBMITTED: {S.PLANNING, S.CANCELLED, S.TIMED_OUT},
+    S.SUBMITTED: {S.PLANNING, S.EXECUTION_FAILED, S.CANCELLED, S.TIMED_OUT},
     S.PLANNING: {
         S.ACTING,
         S.AWAITING_APPROVAL,

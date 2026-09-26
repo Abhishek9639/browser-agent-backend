@@ -35,7 +35,8 @@ Agent code lives in `app/agent/` and never imports FastAPI. It is driven by `app
 ## Definition of done
 
 - Every new module ships with unit tests.
-- A part is done only when `make check` passes (lint, typecheck, unit tests).
+- A part is done only when `make check` passes (lint, typecheck, unit tests). That is the fast loop and it does not touch Postgres.
+- `make check-all` adds the integration suite and is what CI runs. **It must pass before a pull request is opened.** `make check` alone once let the whole integration suite sit broken across two parts, because nothing in the fast loop connects to a database.
 - Conventional Commits. One part is one or a few focused commits.
 
 ## After each part

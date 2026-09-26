@@ -29,11 +29,13 @@ __all__ = [
     "ApprovalGate",
     "ApprovalOutcome",
     "CachedHint",
+    "CancelSignal",
     "DecisionRiskPolicy",
     "DenyApprovals",
     "FlowCache",
     "Grounder",
     "GroundingOutcome",
+    "NeverCancelled",
     "NoCache",
     "NoGrounding",
     "NoRecovery",
@@ -186,6 +188,18 @@ class SessionManager(Protocol):
     def tab_id(self, state: PageState) -> str: ...
 
 
+class CancelSignal(Protocol):
+    """Has someone asked for this task to stop?
+
+    Checked between phases rather than relied on through task cancellation,
+    because ``asyncio.CancelledError`` arriving at an arbitrary await would
+    leave the run with no chance to settle its status or publish a final event.
+    A flag the loop reads at known points stops it at a known point.
+    """
+
+    def is_cancelled(self) -> bool: ...
+
+
 # --------------------------------------------------------------- defaults
 
 
@@ -219,6 +233,17 @@ class StubVerifier:
                 "urlAfter": after.url,
             },
         )
+
+
+class NeverCancelled:
+    """Nothing ever asks this run to stop.
+
+    The default for a run nobody is supervising, such as an evaluation or a
+    test. The task runner supplies a real one.
+    """
+
+    def is_cancelled(self) -> bool:
+        return False
 
 
 class NoCache:

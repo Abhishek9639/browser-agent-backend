@@ -18,6 +18,7 @@ stateDiagram-v2
     [*] --> SUBMITTED
 
     SUBMITTED --> PLANNING: runner picks the task up
+    SUBMITTED --> EXECUTION_FAILED: could not be started at all
 
     PLANNING --> ACTING: decision is an action
     PLANNING --> AWAITING_APPROVAL: action is high risk
@@ -70,6 +71,11 @@ approval is a gate, so there is no path that walks around it.
 `RECOVERING` returns to `ACTING` or `VERIFYING` rather than to `PLANNING`.
 Recovery works on the step that failed; giving up on the step is
 `EXECUTION_FAILED`, not a fresh plan.
+
+`SUBMITTED` reaches `EXECUTION_FAILED` without ever planning. A task whose
+browser will not launch, or one left queued when the process died, failed before
+it began; without that edge it would have no legal terminal state and would sit
+live forever.
 
 Terminal states have no outgoing edges at all, including to `CANCELLED`. A
 finished task cannot be cancelled, and a failed one cannot be retried in place:

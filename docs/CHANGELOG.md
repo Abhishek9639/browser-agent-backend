@@ -4,6 +4,28 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B17 - Task runner and task API
+
+Added
+
+- `app/services/task_runner.py`: one runner per process, started and stopped by the lifespan. Owns Playwright and the Chromium it launches, a semaphore for `AGENT_MAX_CONCURRENT_TASKS`, and the per-task cancel flags. A queued task stays `SUBMITTED` because the orchestrator writes `PLANNING` as its first act. The browser is shared and the context is per task, so one run's cookies and storage cannot reach another's.
+- Cooperative cancellation: `CancelSignal` in `app/agent/contracts.py`, checked by the orchestrator at phase boundaries, plus closing the task's browser context so an action already in flight fails at once. Writing `CANCELLED` to the row is what actually stops the task; the signal only makes it prompt.
+- Shutdown cancels running tasks and marks anything that did not settle `CANCELLED` with reason "server shutdown". Startup finishes off tasks abandoned by a crash: `EXECUTION_FAILED` with reason "interrupted by restart", or `TIMED_OUT` for one left `AWAITING_APPROVAL`, since nobody answered.
+- `app/services/task_service.py`: instruction normalisation, the start-URL allow-list check, duplicate detection, ownership, and the cancel rules. Routers hold no logic.
+- `app/api/v1/tasks.py`: `POST /tasks`, `GET /tasks`, `GET /tasks/{id}`, `POST /tasks/{id}/cancel`, `GET /tasks/{id}/steps`, `GET /tasks/{id}/steps/{stepId}` and `GET /tasks/{id}/steps/{stepId}/screenshot`, each with a summary, description and error responses.
+- `app/schemas/task.py`: camelCase request and response models with examples on every field, since the frontend generates its TypeScript from `/openapi.json`.
+- Duplicate protection: the same user submitting the same normalised instruction while an earlier one is still live gets 409 with the existing task id in the message.
+- Screenshots are served only to the owner or an admin, as `image/jpeg` with `Cache-Control: private, max-age=0, no-store`.
+- An after-commit hook list on the request session, so work handed to a background worker starts only once the row it will read has been committed.
+- `SUBMITTED -> EXECUTION_FAILED` in the task lifecycle, for a task whose browser will not launch and one left queued by a crash. Without it neither had a legal terminal state.
+- `make check-all` (lint, typecheck, unit and integration) as the gate before a pull request, with `make check` unchanged as the fast loop.
+- 52 tests.
+
+Fixed
+
+- The loop discarded whatever an `extract` action read. `ActionResult.extracted` now reaches the planner through `StepSummary`, capped so a page of text cannot crowd out the current page state. Before this an agent would read the results list, learn nothing, and read it again until the step budget ran out.
+- `GET /tasks/{id}/steps/{stepId}` tried to lazy-load three `lazy="raise"` relationships while serialising. Built explicitly from the pieces the service loaded instead.
+
 ### B16 - Orchestrator core loop
 
 Added

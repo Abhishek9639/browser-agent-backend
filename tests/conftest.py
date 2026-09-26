@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -29,7 +29,7 @@ import tests.integration._models  # noqa: F401  (registers the sample table)
 from app.core.config import AppEnv, Settings
 from app.core.jwt_keys import load_key_pair
 from app.db.base import Base
-from app.db.session import Database, get_database, get_session
+from app.db.session import Database, after_commit_hooks, get_database, get_session
 from app.main import create_app
 
 
@@ -233,7 +233,22 @@ def api_app(
     database = Database(settings, url=integration_settings.test_database_url)
     application.state.db = database
 
-    application.dependency_overrides[get_session] = lambda: db_session
+    async def session_with_hooks(request: Request) -> AsyncIterator[AsyncSession]:
+        """The test session, with the production commit contract.
+
+        A bare `lambda: db_session` would skip the after-commit hooks, so a
+        route that schedules work for once the transaction lands would look
+        like it never scheduled anything. The commit here releases a savepoint
+        rather than ending the outer transaction, which the test still rolls
+        back.
+        """
+        hooks = after_commit_hooks(request)
+        yield db_session
+        await db_session.commit()
+        for hook in hooks:
+            hook()
+
+    application.dependency_overrides[get_session] = session_with_hooks
     application.dependency_overrides[get_database] = lambda: database
 
     yield application

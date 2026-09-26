@@ -20,6 +20,9 @@ from app.core.logging import configure_logging, get_logger
 from app.core.middleware import RequestContextMiddleware
 from app.core.rate_limit import InMemoryRateLimiter
 from app.db.session import Database
+from app.services.events import InMemoryEventBus
+from app.services.storage import LocalFileStorage
+from app.services.task_runner import TaskRunner
 
 __all__ = ["app", "create_app"]
 
@@ -30,8 +33,10 @@ logger = get_logger(__name__)
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     """Startup and shutdown.
 
-    The database pool, the Playwright browser and the task runner attach here in
-    later parts; each one starts up in order and is torn down in reverse.
+    Each dependency starts up in order and is torn down in reverse. The task
+    runner is last up and first down, because it is the only one that holds
+    work in flight: stopping it first gives running tasks a chance to write
+    their own terminal status while the database is still there to write to.
     """
     settings: Settings = application.state.settings
     logger.info(
@@ -53,15 +58,28 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     # Per process. See the note in app/core/rate_limit.py before scaling out.
     application.state.rate_limiter = InMemoryRateLimiter()
 
-    # B19: await browser_pool.start()
-    # B30: await task_runner.start()
+    # One bus per process. A client connected to another worker will not see
+    # these events; see the note in app/services/events.py.
+    application.state.event_bus = InMemoryEventBus()
+    application.state.screenshot_storage = LocalFileStorage(settings)
+
+    runner = TaskRunner(
+        settings,
+        database,
+        events=application.state.event_bus,
+        storage=application.state.screenshot_storage,
+    )
+    application.state.task_runner = runner
+
+    # Chromium takes a second or so to launch, and a failure here should stop
+    # the process rather than surface as every task failing one by one.
+    await runner.start()
 
     try:
         yield
     finally:
         # Torn down in reverse order of startup.
-        # B30: await task_runner.stop()
-        # B19: await browser_pool.stop()
+        await runner.stop()
         await database.dispose()
         logger.info("shutdown", app=settings.APP_NAME)
 
