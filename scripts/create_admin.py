@@ -70,7 +70,7 @@ async def create(*, name: str, email: str, password: str, role: UserRole) -> Non
                 actor_id=user.id,
                 metadata={"email": email, "role": role.value, "created_by": "cli"},
             )
-        print(f"Created {role.value} {email} ({user.id})")  # noqa: T201
+        print(f"Created {role.value} {email} ({user.id})")
     finally:
         await database.dispose()
 

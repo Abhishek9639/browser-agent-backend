@@ -35,6 +35,8 @@ __all__ = ["GeminiLLM"]
 logger = get_logger(__name__)
 
 PROVIDER: Final = "gemini"
+# Used when LLM_MODEL is unset. A flash model: the fast, inexpensive tier.
+DEFAULT_MODEL: Final = "gemini-3.6-flash"
 TOO_MANY_REQUESTS: Final = 429
 SERVER_ERROR: Final = 500
 
@@ -44,7 +46,7 @@ class GeminiLLM:
 
     def __init__(self, settings: Settings, *, client: Any | None = None) -> None:
         key = settings.GOOGLE_API_KEY
-        self._model = settings.LLM_MODEL
+        self._model = settings.LLM_MODEL or DEFAULT_MODEL
         self._client: Any = client or genai.Client(
             api_key=key.get_secret_value() if key else None,
         )

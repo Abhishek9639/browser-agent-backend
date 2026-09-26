@@ -12,6 +12,7 @@ Starlette 1.6 deprecates TestClient-on-httpx, so the suite drives the ASGI app
 directly with ``httpx.AsyncClient``.
 """
 
+import os
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
@@ -38,6 +39,32 @@ class StubDatabase:
 
     async def healthcheck(self) -> bool:
         return self.healthy
+
+
+@pytest.fixture(autouse=True, scope="session")
+def isolate_settings_from_the_environment() -> Iterator[None]:
+    """Make `Settings()` in a test depend on nothing outside the repo.
+
+    Without this, a unit test that constructs `Settings()` reads the
+    developer's `.env` and any exported variable, so the suite passes or fails
+    depending on whose machine it runs on. That already bit once: adding
+    `LLM_PROVIDER=gemini` to a local `.env` broke two factory tests that assert
+    the committed defaults, while CI stayed green.
+
+    Tests that want a non-default value pass it explicitly.
+    """
+    original_env_file = Settings.model_config.get("env_file")
+    Settings.model_config["env_file"] = None
+
+    # Exported variables would still win over the defaults, so they go too.
+    saved = {
+        name: os.environ.pop(name) for name in list(Settings.model_fields) if name in os.environ
+    }
+    try:
+        yield
+    finally:
+        Settings.model_config["env_file"] = original_env_file
+        os.environ.update(saved)
 
 
 @pytest.fixture(scope="session")

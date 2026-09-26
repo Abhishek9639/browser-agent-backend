@@ -108,15 +108,18 @@ class Settings(BaseSettings):
     LLM_PROVIDER: str = "mock"
     # Used when the primary provider is unreachable. Blank disables it.
     LLM_FALLBACK_PROVIDER: str | None = None
-    LLM_MODEL: str = "claude-sonnet-5"
-    LLM_VISION_MODEL: str = "claude-sonnet-5"
+    # Optional. Left unset, each provider picks its own sensible default, so
+    # switching LLM_PROVIDER does not also require knowing that vendor's model
+    # names. Set it to pin a specific model.
+    LLM_MODEL: str | None = None
+    LLM_VISION_MODEL: str | None = None
     # One key per provider, so switching providers does not mean re-keying.
     ANTHROPIC_API_KEY: SecretStr | None = None
     OPENAI_API_KEY: SecretStr | None = None
     GOOGLE_API_KEY: SecretStr | None = None
     LLM_TIMEOUT_SECONDS: int = 60
     LLM_MAX_OUTPUT_TOKENS: int = 2048
-    LLM_PROMPT_VERSION: str = "v1"
+    PLANNER_PROMPT_VERSION: str = "v1"
 
     # ---------------------------------------------------------------- agent (B19 onwards)
     AGENT_MAX_STEPS: int = 25

@@ -63,7 +63,7 @@ class MissingApiKeyError(ValueError):
 
 
 def _build_mock(settings: Settings) -> LLMClient:
-    return MockLLM(model_name=settings.LLM_MODEL)
+    return MockLLM(model_name=settings.LLM_MODEL or "mock-1")
 
 
 def _require_key(name: str, key: SecretStr | None, env_var: str) -> None:
