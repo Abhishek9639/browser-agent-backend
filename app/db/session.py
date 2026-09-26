@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from starlette.requests import HTTPConnection
 
 from app.core.config import Settings
 from app.core.errors import DependencyUnavailable
@@ -89,9 +90,13 @@ class Database:
         await self._engine.dispose()
 
 
-def get_database(request: Request) -> Database:
-    """The app's Database, or a 503 if the lifespan never attached one."""
-    database = getattr(request.app.state, "db", None)
+def get_database(connection: HTTPConnection) -> Database:
+    """The app's Database, or a 503 if the lifespan never attached one.
+
+    ``HTTPConnection`` rather than ``Request``: WebSocket routes resolve this
+    too, and FastAPI cannot inject a ``Request`` into one.
+    """
+    database = getattr(connection.app.state, "db", None)
     if not isinstance(database, Database):
         raise DependencyUnavailable("The database is not configured.")
     return database

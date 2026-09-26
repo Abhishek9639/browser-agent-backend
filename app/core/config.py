@@ -143,6 +143,12 @@ class Settings(BaseSettings):
     )
     AGENT_HEADLESS: bool = True
 
+    # ----------------------------------------------------------- live view
+    # Spec section 6.1. The ticket is short-lived because it travels in a URL,
+    # which is the one place an access token must never go.
+    WS_TICKET_TTL_SECONDS: int = 60
+    WS_HEARTBEAT_SECONDS: int = 15
+
     # ---------------------------------------------------------------- browser
     BROWSER_ACTION_TIMEOUT_MS: int = 10_000
     BROWSER_NAVIGATION_TIMEOUT_MS: int = 30_000

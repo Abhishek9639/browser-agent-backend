@@ -10,7 +10,9 @@ from typing import Annotated, Any
 
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from starlette.requests import HTTPConnection
 
+from app.agent.orchestrator import database_unit_of_work
 from app.core.config import Settings, get_settings
 from app.core.errors import DependencyUnavailable, Forbidden, RateLimited, Unauthorized
 from app.core.jwt_keys import KeyPair
@@ -21,25 +23,34 @@ from app.domain.enums import UserRole
 from app.models.user import User
 from app.repositories.unit_of_work import UnitOfWorkDep
 from app.services.auth import AuthService
+from app.services.events import EventBus, InMemoryEventBus
 from app.services.storage import LocalFileStorage, ScreenshotStorage
+from app.services.stream import StreamService
 from app.services.task_runner import TaskRunner
 from app.services.task_service import TaskService
+from app.services.ws_tickets import InMemoryTicketStore, TicketStore
 
 __all__ = [
     "AuthServiceDep",
     "CurrentUser",
+    "EventBusDep",
     "KeyPairDep",
     "ScreenshotStorageDep",
     "SettingsDep",
+    "StreamServiceDep",
     "TaskRunnerDep",
     "TaskServiceDep",
+    "TicketStoreDep",
     "TokenServiceDep",
     "get_app_settings",
     "get_current_user",
+    "get_event_bus",
     "get_key_pair",
     "get_screenshot_storage",
+    "get_stream_service",
     "get_task_runner",
     "get_task_service",
+    "get_ticket_store",
     "get_token_service",
 ]
 
@@ -48,8 +59,15 @@ __all__ = [
 _bearer = HTTPBearer(auto_error=False, description="Access token from POST /auth/login")
 
 
-def get_app_settings(request: Request) -> Settings:
-    settings = getattr(request.app.state, "settings", None)
+def get_app_settings(connection: HTTPConnection) -> Settings:
+    """Settings for this app.
+
+    Typed as ``HTTPConnection`` rather than ``Request`` because it is also
+    resolved for WebSocket routes, and a websocket is not a request. FastAPI
+    cannot inject a ``Request`` there at all, so anything a socket depends on
+    has to take the common base class.
+    """
+    settings = getattr(connection.app.state, "settings", None)
     if isinstance(settings, Settings):
         return settings
     return get_settings()
@@ -87,13 +105,13 @@ def get_auth_service(
 AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
 
 
-def get_screenshot_storage(request: Request, settings: SettingsDep) -> ScreenshotStorage:
+def get_screenshot_storage(connection: HTTPConnection, settings: SettingsDep) -> ScreenshotStorage:
     """The app's storage backend, built once at startup.
 
     Falls back to a local one rather than failing, so a unit test that builds a
     bare app can still reach a route that declares this dependency.
     """
-    storage = getattr(request.app.state, "screenshot_storage", None)
+    storage = getattr(connection.app.state, "screenshot_storage", None)
     if isinstance(storage, ScreenshotStorage):
         return storage
     return LocalFileStorage(settings)
@@ -111,6 +129,52 @@ def get_task_service(
 
 
 TaskServiceDep = Annotated[TaskService, Depends(get_task_service)]
+
+
+def get_event_bus(connection: HTTPConnection) -> EventBus:
+    """The bus the lifespan created, or a fresh one for a bare test app."""
+    bus = getattr(connection.app.state, "event_bus", None)
+    if isinstance(bus, EventBus):
+        return bus
+    bus = InMemoryEventBus()
+    connection.app.state.event_bus = bus
+    return bus
+
+
+EventBusDep = Annotated[EventBus, Depends(get_event_bus)]
+
+
+def get_ticket_store(connection: HTTPConnection, settings: SettingsDep) -> TicketStore:
+    """One store per process, held on app state.
+
+    Built lazily rather than in the lifespan so a test app that never started
+    one can still issue a ticket.
+    """
+    store = getattr(connection.app.state, "ticket_store", None)
+    if isinstance(store, TicketStore):
+        return store
+    store = InMemoryTicketStore(settings.WS_TICKET_TTL_SECONDS)
+    connection.app.state.ticket_store = store
+    return store
+
+
+TicketStoreDep = Annotated[TicketStore, Depends(get_ticket_store)]
+
+
+def get_stream_service(
+    database: DatabaseDep,
+    storage: ScreenshotStorageDep,
+) -> StreamService:
+    """Opens its own short sessions.
+
+    Deliberately not the request session: a WebSocket lives for the whole run
+    of a task, and holding a database connection open for that long would tie
+    up the pool for nothing.
+    """
+    return StreamService(database_unit_of_work(database), storage)
+
+
+StreamServiceDep = Annotated[StreamService, Depends(get_stream_service)]
 
 
 def get_task_runner(request: Request) -> TaskRunner:
