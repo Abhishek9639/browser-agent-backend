@@ -105,6 +105,28 @@ class RiskLevel(StrEnum):
     MEDIUM = "MEDIUM"
     HIGH = "HIGH"
 
+    @property
+    def rank(self) -> int:
+        """Severity order, for taking the higher of two assessments.
+
+        Needed because these are strings: ``max(HIGH, MEDIUM)`` compares
+        alphabetically and answers ``MEDIUM``, quietly turning an action that
+        needed a human into one that does not.
+        """
+        return _RISK_ORDER[self]
+
+    @classmethod
+    def highest(cls, *levels: "RiskLevel") -> "RiskLevel":
+        """The most severe of the levels given."""
+        return max(levels, key=lambda level: level.rank)
+
+
+_RISK_ORDER: dict[RiskLevel, int] = {
+    RiskLevel.LOW: 0,
+    RiskLevel.MEDIUM: 1,
+    RiskLevel.HIGH: 2,
+}
+
 
 class ApprovalStatus(StrEnum):
     """Spec section 5, approvals.approval_status.

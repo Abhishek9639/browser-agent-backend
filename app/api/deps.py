@@ -12,7 +12,7 @@ from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.core.config import Settings, get_settings
-from app.core.errors import Forbidden, RateLimited, Unauthorized
+from app.core.errors import DependencyUnavailable, Forbidden, RateLimited, Unauthorized
 from app.core.jwt_keys import KeyPair
 from app.core.rate_limit import InMemoryRateLimiter, RateLimiter
 from app.core.security import TokenClaims, TokenService
@@ -21,16 +21,25 @@ from app.domain.enums import UserRole
 from app.models.user import User
 from app.repositories.unit_of_work import UnitOfWorkDep
 from app.services.auth import AuthService
+from app.services.storage import LocalFileStorage, ScreenshotStorage
+from app.services.task_runner import TaskRunner
+from app.services.task_service import TaskService
 
 __all__ = [
     "AuthServiceDep",
     "CurrentUser",
     "KeyPairDep",
+    "ScreenshotStorageDep",
     "SettingsDep",
+    "TaskRunnerDep",
+    "TaskServiceDep",
     "TokenServiceDep",
     "get_app_settings",
     "get_current_user",
     "get_key_pair",
+    "get_screenshot_storage",
+    "get_task_runner",
+    "get_task_service",
     "get_token_service",
 ]
 
@@ -76,6 +85,48 @@ def get_auth_service(
 
 
 AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
+
+
+def get_screenshot_storage(request: Request, settings: SettingsDep) -> ScreenshotStorage:
+    """The app's storage backend, built once at startup.
+
+    Falls back to a local one rather than failing, so a unit test that builds a
+    bare app can still reach a route that declares this dependency.
+    """
+    storage = getattr(request.app.state, "screenshot_storage", None)
+    if isinstance(storage, ScreenshotStorage):
+        return storage
+    return LocalFileStorage(settings)
+
+
+ScreenshotStorageDep = Annotated[ScreenshotStorage, Depends(get_screenshot_storage)]
+
+
+def get_task_service(
+    uow: UnitOfWorkDep,
+    settings: SettingsDep,
+    storage: ScreenshotStorageDep,
+) -> TaskService:
+    return TaskService(uow, settings, storage)
+
+
+TaskServiceDep = Annotated[TaskService, Depends(get_task_service)]
+
+
+def get_task_runner(request: Request) -> TaskRunner:
+    """The runner the lifespan started.
+
+    A 503 rather than a silent no-op when it is missing: a task accepted by an
+    API whose runner never started would sit in SUBMITTED forever, and the
+    client would have no way to tell that from a queue that is merely busy.
+    """
+    runner = getattr(request.app.state, "task_runner", None)
+    if not isinstance(runner, TaskRunner):
+        raise DependencyUnavailable("The task runner is not available.")
+    return runner
+
+
+TaskRunnerDep = Annotated[TaskRunner, Depends(get_task_runner)]
 
 
 async def get_token_claims(

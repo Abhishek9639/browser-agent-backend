@@ -45,6 +45,9 @@ logger = get_logger(__name__)
 # its tokens: what matters is the last few actions and their outcomes, plus the
 # fact that earlier ones happened.
 HISTORY_WINDOW: Final = 8
+
+# Enough for a list of results, not enough to bury the current page state.
+MAX_EXTRACT_CHARS: Final = 600
 # One initial attempt plus one repair (spec section 4.5).
 MAX_ATTEMPTS: Final = 2
 
@@ -71,11 +74,24 @@ class StepSummary:
     action: str
     target: str | None = None
     verified: bool | None = None
+    # What an `extract` action read. Without this the planner can see that it
+    # read the page and not what it read, so a task that has to answer a
+    # question about the content can never finish.
+    extracted: str | None = None
 
     def render(self) -> str:
         outcome = {True: "verified", False: "failed", None: "pending"}[self.verified]
         target = f" {self.target}" if self.target else ""
-        return f"{self.step_number}. {self.action}{target} -> {outcome}"
+        line = f"{self.step_number}. {self.action}{target} -> {outcome}"
+
+        if self.extracted:
+            # Capped: a whole page of extracted text would crowd out the page
+            # state itself, which is the part that is actually current.
+            body = " ".join(self.extracted.split())
+            if len(body) > MAX_EXTRACT_CHARS:
+                body = body[:MAX_EXTRACT_CHARS] + "..."
+            line += f"\n   extracted: {body}"
+        return line
 
 
 @dataclass(frozen=True, slots=True)

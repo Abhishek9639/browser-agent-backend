@@ -18,6 +18,7 @@ stateDiagram-v2
     [*] --> SUBMITTED
 
     SUBMITTED --> PLANNING: runner picks the task up
+    SUBMITTED --> EXECUTION_FAILED: could not be started at all
 
     PLANNING --> ACTING: decision is an action
     PLANNING --> AWAITING_APPROVAL: action is high risk
@@ -71,6 +72,11 @@ approval is a gate, so there is no path that walks around it.
 Recovery works on the step that failed; giving up on the step is
 `EXECUTION_FAILED`, not a fresh plan.
 
+`SUBMITTED` reaches `EXECUTION_FAILED` without ever planning. A task whose
+browser will not launch, or one left queued when the process died, failed before
+it began; without that edge it would have no legal terminal state and would sit
+live forever.
+
 Terminal states have no outgoing edges at all, including to `CANCELLED`. A
 finished task cannot be cancelled, and a failed one cannot be retried in place:
 spec section 6 says a replay creates a new task row.
@@ -78,6 +84,116 @@ spec section 6 says a replay creates a new task row.
 An illegal transition raises `IllegalTransition` rather than being ignored. A
 silent no-op would leave a task sitting in a state nobody chose while the loop
 carried on regardless.
+
+## One iteration
+
+Implemented in [`app/agent/orchestrator.py`](../app/agent/orchestrator.py), following
+the spec section 4.2 pseudo-code.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant L as Orchestrator
+    participant B as Browser
+    participant P as Planner
+    participant G as Grounding
+    participant A as Risk and approval
+    participant V as Verifier
+    participant S as Screenshot store
+    participant D as Postgres
+    participant E as Event bus
+
+    L->>D: still running, or cancelled?
+    D-->>L: status
+
+    L->>B: perceive
+    B-->>L: page state, elements, summary
+
+    L->>P: decide(goal, state, history, hint)
+    P-->>L: decision, tokens, latency
+
+    L->>G: resolve ambiguous target
+    G-->>L: decision, usedVision
+
+    L->>L: check the named index is on the page
+    L->>A: risk = higher of policy and planner
+    opt risk is HIGH, or the planner asked
+        L->>D: status AWAITING_APPROVAL
+        L->>E: status event
+        L->>A: request approval
+        A-->>L: approved or not
+    end
+
+    L->>B: capture state (before)
+    L->>D: status ACTING
+    L->>E: status event
+    L->>B: execute the action
+    B-->>L: result
+
+    L->>D: status VERIFYING
+    L->>E: status event
+    L->>B: capture state (after)
+    L->>V: did it do what was expected?
+    V-->>L: verdict
+    opt verdict failed
+        L->>L: recovery gets a turn
+    end
+
+    L->>B: screenshot
+    L->>S: save the image
+    S-->>L: reference
+
+    note over L,D: one transaction
+    L->>D: task_steps row
+    L->>D: llm_decisions row
+    L->>D: verifications row
+    L->>D: commit
+
+    L->>E: step event
+    note over L,E: only after the commit, never before
+```
+
+### Why the write order is what it is
+
+**Screenshot before rows.** Storage is not transactional, so one of the two has
+to go first. If the transaction rolls back after the image is written, an
+orphaned file sits in the store until `delete_task` sweeps it, and nothing else
+notices. The other order leaves a committed row whose `screenshot_ref` points at
+a file that was never written, which is a broken page in the live view and in
+every replay of that task afterwards.
+
+**Rows before the event.** Spec section 6.1 lets a client reconnect with
+`after_step=<last seen>` and be caught up from the database. That only works if
+the database is never behind the live stream. Publishing first opens a window,
+however short, where a client can be told about a step it can never fetch again,
+and a client that reconnects inside that window is told the step does not exist.
+
+### What is not built yet
+
+Six collaborators are interfaces with do-nothing defaults, listed in
+[`app/agent/contracts.py`](../app/agent/contracts.py). Each later part replaces
+one default and touches nothing else in the loop.
+
+| Collaborator | Default now | Replaced by |
+| --- | --- | --- |
+| `Verifier` | Passes everything, recording `verifier: stub` | Real verification |
+| `RecoveryStrategy` | Attempts nothing | The recovery ladder |
+| `Grounder` | Hands the decision back unchanged | Visual grounding |
+| `RiskPolicy` | Adds no rules of its own | The deterministic risk policy |
+| `ApprovalGate` | **Refuses everything** | The approval flow |
+| `FlowCache` | Never a hit | The flow cache |
+| `SessionManager` | Uses the tab id perception found | The tab registry |
+
+The approval gate is the one default that is not a no-op, and deliberately so. A
+stub that waves high-risk actions through looks like working software right up
+to the day somebody forgets to replace it and an agent buys something. Refusing
+fails the task, which is visible immediately and costs nothing.
+
+The stub verifier reports the outcome type the planner asked for, because
+`verifications.verification_method` is a Postgres enum of the six section 4.5
+types and widening it for a scaffold would mean a migration now and a harder one
+to reverse it later. That a check did not really happen is recorded in
+`actual_outcome`, which is the free-form column that exists for exactly this.
 
 ## Live events
 

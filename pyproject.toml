@@ -80,6 +80,9 @@ ignore = [
 "app/agent/budget.py" = ["N818"]
 # IllegalTransition reads better at the raise site than IllegalTransitionError.
 "app/domain/state_machine.py" = ["N818"]
+# Deliberate no-op stand-ins. Their arguments are the contract the real
+# implementations will honour, not dead weight to be trimmed.
+"app/agent/contracts.py" = ["ARG002"]
 # CLI tools whose whole job is printing to a terminal.
 "scripts/**" = ["T201"]
 # LLMTimeout, LLMRateLimited and friends read better at the raise site.

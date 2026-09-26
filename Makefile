@@ -3,7 +3,7 @@
 
 .DEFAULT_GOAL := help
 .PHONY: help install browsers dev test test-unit test-fast test-int lint fmt typecheck check \
-	migrate revision downgrade db-up db-down db-reset
+	check-all migrate revision downgrade db-up db-down db-reset
 
 UV      ?= uv
 COMPOSE ?= docker compose -f docker-compose.dev.yml
@@ -50,8 +50,11 @@ fmt:  ## autofix and format
 typecheck:  ## mypy strict on app/
 	$(UV) run mypy
 
-check: lint typecheck test-unit  ## the gate a part must pass
+check: lint typecheck test-unit  ## the fast gate a part must pass
 	@echo "check passed"
+
+check-all: lint typecheck test-unit test-int  ## the full gate: adds integration (needs `make db-up`)
+	@echo "check-all passed"
 
 migrate:  ## apply database migrations
 	$(UV) run alembic upgrade head

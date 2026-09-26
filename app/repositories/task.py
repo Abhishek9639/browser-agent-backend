@@ -94,6 +94,31 @@ class TaskRepository(BaseRepository[Task]):
         stmt = select(Task).where(Task.status.not_in(terminal)).order_by(Task.created_at.asc())
         return list((await self.session.scalars(stmt)).all())
 
+    async def find_active_duplicate(self, user_id: uuid.UUID, instruction: str) -> Task | None:
+        """The same request from the same user that has not finished yet.
+
+        Compared case-insensitively against the stored instruction, which is
+        already whitespace-normalised on the way in, so the comparison stays a
+        plain equality rather than anything fuzzy.
+
+        Only live tasks count. Asking for the same thing again tomorrow is a
+        new task; asking twice while the first one is still running is almost
+        always a double-submitted form.
+        """
+        terminal = [status for status in TaskStatus if status.is_terminal]
+        stmt = (
+            select(Task)
+            .where(
+                Task.created_by == user_id,
+                Task.status.not_in(terminal),
+                func.lower(Task.instruction) == instruction.lower(),
+            )
+            .order_by(Task.created_at.asc())
+            .limit(1)
+        )
+        duplicate: Task | None = await self.session.scalar(stmt)
+        return duplicate
+
     async def count_active_for_user(self, user_id: uuid.UUID) -> int:
         """Backs the per-user concurrency cap (decision A13)."""
         terminal = [s for s in TaskStatus if s.is_terminal]

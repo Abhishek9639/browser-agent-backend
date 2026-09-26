@@ -40,8 +40,11 @@ _ALWAYS_AVAILABLE: Final[frozenset[TaskStatus]] = frozenset(
 )
 
 _TRANSITIONS: Final[dict[TaskStatus, frozenset[TaskStatus]]] = {
-    # Accepted, queued, not yet picked up by the runner.
-    TaskStatus.SUBMITTED: frozenset({TaskStatus.PLANNING}),
+    # Accepted, queued, not yet picked up by the runner. EXECUTION_FAILED is
+    # reachable without ever planning: a task whose browser will not launch,
+    # or one left queued by a crash, has failed before it began. Without this
+    # edge those tasks have no legal terminal state and stay live forever.
+    TaskStatus.SUBMITTED: frozenset({TaskStatus.PLANNING, TaskStatus.EXECUTION_FAILED}),
     # Perceiving and asking the planner. A decision can be to finish, so
     # COMPLETED is reachable without ever touching the browser. A planner that
     # cannot produce a valid decision fails the task here.
