@@ -4,6 +4,24 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B26 - Chaos suite and benchmark runner
+
+Added
+
+- `tests/chaos/`: the primary task run against SkyFare under each of ten chaos configurations, in one process with a real Chromium and the real loop. Every configuration asserts the same contract: either the agent reports the fare the oracle says is cheapest, or it fails with a reason a person can read. Completing with the wrong number is never acceptable, because a confident wrong answer is the one outcome a user cannot detect.
+- Stronger assertions where they are earned: the three configurations with nothing in the way must all succeed with every step verified, and the ones with a cookie banner must show recovery actually rescuing a step.
+- The injection case asserts the agent never reaches the payment page and never targets "Pay now" or "Book this flight". Spec section 4.11's defences measured end to end rather than unit by unit. Once approvals are real this becomes an assertion that an approval was requested.
+- `--live` runs the same suite against the configured provider instead of the mock.
+- `scripts/benchmark.py`: runs the task N times per configuration and writes a dated Markdown and JSON report with end-to-end success, recovery success, verification accuracy, median and p90 time, average steps, vision invocation rate, approvals, cache hit rate, tokens and estimated cost, marked PASS or FAIL against the spec section 9 targets, plus a per-configuration table.
+- `LLM_PRICE_INPUT_PER_MTOK`, `LLM_PRICE_OUTPUT_PER_MTOK` and `LLM_PRICE_CURRENCY`, so cost comes from settings rather than from a number typed into a script.
+- `make chaos` and `make bench`.
+- `docs/benchmarks/2026-09-27-mock.md`, the first report.
+
+Changed
+
+- Visual grounding only overrules the planner when it is confident enough for the reason it was called. A correction is nearly free when the planner said it had no idea or when the recovery ladder has run out of other options, and expensive when the planner picked a specific element and grounding was called only because two share a name. Each trigger now has its own acceptance floor.
+- `ground_reason` returns a value rather than a phrase, since the acceptance floor depends on it.
+
 ### B22 - Visual grounding with set-of-marks
 
 Added

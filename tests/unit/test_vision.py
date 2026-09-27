@@ -16,7 +16,9 @@ from app.agent.perception.dom_extractor import BoundingBox, ElementInfo
 from app.agent.perception.state import PageState
 from app.agent.planner.schema import Decision
 from app.agent.vision.grounding import (
+    ACCEPT_ABOVE,
     GROUNDING_JSON_SCHEMA,
+    GroundReason,
     VisionGrounder,
     VisionTally,
     VisualGroundingService,
@@ -122,7 +124,7 @@ def test_the_planner_asking_for_vision_is_a_reason() -> None:
         min_elements=MIN_ELEMENTS,
     )
 
-    assert reason == "the planner asked for it"
+    assert reason is GroundReason.PLANNER_ASKED
 
 
 def test_low_confidence_is_a_reason() -> None:
@@ -130,7 +132,7 @@ def test_low_confidence_is_a_reason() -> None:
 
     reason = ground_reason(False, 0.41, state, threshold=THRESHOLD, min_elements=MIN_ELEMENTS)
 
-    assert reason is not None and "0.41" in reason
+    assert reason is GroundReason.LOW_CONFIDENCE
 
 
 def test_identical_names_are_a_reason() -> None:
@@ -144,7 +146,7 @@ def test_identical_names_are_a_reason() -> None:
 
     reason = ground_reason(False, 0.9, state, threshold=THRESHOLD, min_elements=MIN_ELEMENTS)
 
-    assert reason == "several elements share the same name"
+    assert reason is GroundReason.DUPLICATE_NAMES
 
 
 def test_a_page_with_almost_no_markup_is_a_reason() -> None:
@@ -152,7 +154,7 @@ def test_a_page_with_almost_no_markup_is_a_reason() -> None:
 
     reason = ground_reason(False, 0.9, state, threshold=THRESHOLD, min_elements=MIN_ELEMENTS)
 
-    assert reason == "the page has almost no markup"
+    assert reason is GroundReason.NO_MARKUP
 
 
 def test_a_genuinely_blank_page_is_not_a_reason() -> None:
@@ -396,7 +398,7 @@ async def test_two_identical_buttons_trigger_grounding(driver: Any, html_server:
     assert names.count("Select") == 2
 
     reason = ground_reason(False, 0.95, state, threshold=THRESHOLD, min_elements=MIN_ELEMENTS)
-    assert reason == "several elements share the same name"
+    assert reason is GroundReason.DUPLICATE_NAMES
 
 
 @pytest.mark.browser
@@ -429,7 +431,7 @@ async def test_a_canvas_only_page_triggers_grounding(driver: Any, html_server: s
     # Almost nothing to read: the seat map is painted, not marked up.
     assert len(state.elements) < MIN_ELEMENTS
     reason = ground_reason(False, 0.95, state, threshold=THRESHOLD, min_elements=MIN_ELEMENTS)
-    assert reason == "the page has almost no markup"
+    assert reason is GroundReason.NO_MARKUP
 
 
 @pytest.mark.browser
@@ -464,3 +466,69 @@ async def test_a_coordinate_outside_the_viewport_is_refused(
     # exactly the input that should not reach the mouse unchecked.
     assert await browser.click_at(99_999, 5) is False
     assert await browser.click_at(-4, 5) is False
+
+
+# ------------------------------------------- when a correction is accepted
+
+
+async def test_a_shaky_correction_is_declined_when_names_merely_collide() -> None:
+    """Overruling a specific choice on a shaky reading swaps a good target for
+    a bad one, and duplicate names are the case where the planner may well
+    have been right all along."""
+    llm = FakeLLM({"markLabel": 2, "point": None, "confidence": 0.5, "justification": "maybe"})
+    grounder = VisionGrounder(service(llm))
+    state = page(element(0, y=10), element(4, y=200))
+
+    outcome = await grounder.resolve(
+        decision(targetIndex=0), state, screenshot(), GroundReason.DUPLICATE_NAMES
+    )
+
+    assert outcome.decision.target_index == 0, "the planner's target should stand"
+    assert outcome.used_vision is True
+    # The disagreement is still recorded even though it was not acted on.
+    assert outcome.bbox is not None
+    assert outcome.justification == "maybe"
+
+
+async def test_a_confident_correction_is_accepted_even_for_colliding_names() -> None:
+    llm = FakeLLM({"markLabel": 2, "point": None, "confidence": 0.88, "justification": "cheaper"})
+    grounder = VisionGrounder(service(llm))
+    state = page(element(0, y=10), element(4, y=200))
+
+    outcome = await grounder.resolve(
+        decision(targetIndex=0), state, screenshot(), GroundReason.DUPLICATE_NAMES
+    )
+
+    assert outcome.decision.target_index == 4
+
+
+async def test_any_answer_is_accepted_when_the_planner_had_no_idea() -> None:
+    llm = FakeLLM({"markLabel": 2, "point": None, "confidence": 0.2, "justification": "a guess"})
+    grounder = VisionGrounder(service(llm))
+    state = page(element(0, y=10), element(4, y=200))
+
+    outcome = await grounder.resolve(
+        decision(targetIndex=0), state, screenshot(), GroundReason.PLANNER_ASKED
+    )
+
+    # The planner said it could not tell, so a guess beats the target it
+    # admits it is unsure of.
+    assert outcome.decision.target_index == 4
+
+
+async def test_recovery_accepts_whatever_vision_offers() -> None:
+    llm = FakeLLM({"markLabel": 2, "point": None, "confidence": 0.1, "justification": "last hope"})
+    grounder = VisionGrounder(service(llm))
+    state = page(element(0, y=10), element(4, y=200))
+
+    outcome = await grounder.resolve(
+        decision(targetIndex=0), state, screenshot(), GroundReason.RECOVERY
+    )
+
+    # Everything that works by name has already failed.
+    assert outcome.decision.target_index == 4
+
+
+def test_every_reason_has_an_acceptance_floor() -> None:
+    assert set(ACCEPT_ABOVE) == set(GroundReason)
+    assert ACCEPT_ABOVE[GroundReason.DUPLICATE_NAMES] > ACCEPT_ABOVE[GroundReason.PLANNER_ASKED]

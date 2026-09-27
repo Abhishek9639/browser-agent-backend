@@ -18,6 +18,7 @@ down degrades to DOM-only, and TEST-010 is the test for it.
 
 import time
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any, Final
 
 from app.agent.llm.base import LLMClient, LLMError, LLMMessage, MessageRole
@@ -28,9 +29,11 @@ from app.agent.vision.marks import MarkedImage, annotate
 from app.core.logging import get_logger
 
 __all__ = [
+    "ACCEPT_ABOVE",
     "GROUNDING_JSON_SCHEMA",
     "VISION_PROMPT_PACKAGE",
     "EvidenceContext",
+    "GroundReason",
     "GroundingResult",
     "VisionGrounder",
     "VisionTally",
@@ -106,6 +109,39 @@ class GroundingResult:
         return self.element_index is not None or self.point is not None
 
 
+class GroundReason(StrEnum):
+    """Why grounding ran (spec section 4.9).
+
+    A value rather than a phrase because two things depend on it: the vision
+    invocation rate is uninterpretable without knowing what drove it, and how
+    much confidence is needed before the model may overrule the planner
+    depends on how sure the planner was in the first place.
+    """
+
+    PLANNER_ASKED = "the planner asked for it"
+    LOW_CONFIDENCE = "the planner was unsure"
+    DUPLICATE_NAMES = "several elements share the same name"
+    NO_MARKUP = "the page has almost no markup"
+    RECOVERY = "the ladder ran out of names"
+
+
+# How confident vision has to be before it may replace the planner's target.
+#
+# The cost of being wrong is what varies. When the planner said it had no idea,
+# or when everything else has already failed, almost any answer is an
+# improvement on the one that is not working. When the planner picked a
+# specific element and grounding was called only because two share a name, the
+# planner may well be right and overruling it on a shaky reading swaps a good
+# target for a bad one.
+ACCEPT_ABOVE: Final[dict[GroundReason, float]] = {
+    GroundReason.PLANNER_ASKED: 0.0,
+    GroundReason.RECOVERY: 0.0,
+    GroundReason.NO_MARKUP: 0.0,
+    GroundReason.LOW_CONFIDENCE: 0.35,
+    GroundReason.DUPLICATE_NAMES: 0.7,
+}
+
+
 def ground_reason(
     decision_needs_vision: bool,
     confidence: float,
@@ -113,22 +149,16 @@ def ground_reason(
     *,
     threshold: float,
     min_elements: int,
-) -> str | None:
-    """Why this step should be grounded, or None (spec section 4.9).
-
-    Returned as a phrase rather than a boolean because it is recorded and read
-    later: "two elements share a name" and "the page has no markup" are
-    different problems, and a vision invocation rate is uninterpretable
-    without knowing which one is driving it.
-    """
+) -> GroundReason | None:
+    """Why this step should be grounded, or None (spec section 4.9)."""
     if decision_needs_vision:
-        return "the planner asked for it"
+        return GroundReason.PLANNER_ASKED
     if confidence < threshold:
-        return f"confidence {confidence:.2f} is below {threshold:.2f}"
+        return GroundReason.LOW_CONFIDENCE
     if _has_duplicate_names(state.elements):
-        return "several elements share the same name"
+        return GroundReason.DUPLICATE_NAMES
     if len(state.elements) < min_elements and _looks_non_blank(state):
-        return "the page has almost no markup"
+        return GroundReason.NO_MARKUP
     return None
 
 
@@ -400,13 +430,33 @@ class VisionGrounder:
             )
 
         corrected = decision
-        if result.element_index is not None and result.element_index != decision.target_index:
-            logger.info(
-                "grounding_corrected_target",
-                was=decision.target_index,
-                now=result.element_index,
-            )
-            corrected = decision.model_copy(update={"target_index": result.element_index})
+        disagrees = (
+            result.element_index is not None and result.element_index != decision.target_index
+        )
+        if disagrees:
+            known = _as_reason(reason)
+            floor = ACCEPT_ABOVE[known] if known is not None else 0.0
+            if result.confidence >= floor:
+                logger.info(
+                    "grounding_corrected_target",
+                    was=decision.target_index,
+                    now=result.element_index,
+                    confidence=result.confidence,
+                    reason=reason,
+                )
+                corrected = decision.model_copy(update={"target_index": result.element_index})
+            else:
+                # Not confident enough to be worth the swap. The bbox and the
+                # justification are still recorded, so the disagreement is
+                # visible even though it was not acted on.
+                logger.info(
+                    "grounding_correction_declined",
+                    was=decision.target_index,
+                    suggested=result.element_index,
+                    confidence=result.confidence,
+                    floor=floor,
+                    reason=reason,
+                )
 
         return GroundingOutcome(
             decision=corrected,
@@ -419,6 +469,13 @@ class VisionGrounder:
             tokens=result.tokens,
             reason=reason,
         )
+
+
+def _as_reason(reason: str) -> GroundReason | None:
+    try:
+        return GroundReason(reason)
+    except ValueError:
+        return None
 
 
 def _describe(decision: Any, state: PageState) -> str:

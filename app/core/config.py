@@ -128,6 +128,14 @@ class Settings(BaseSettings):
     # A marked frame larger than this is refused rather than sent: providers
     # reject oversized images, and finding out mid-task wastes the step.
     VISION_MAX_IMAGE_BYTES: int = 1_500_000
+
+    # ------------------------------------------------------------- pricing
+    # Rupees per million tokens, for the spec section 9 cost-per-task metric.
+    # Parameters rather than a table baked into the benchmark: prices change,
+    # and a number hardcoded in a script is a number nobody updates.
+    LLM_PRICE_INPUT_PER_MTOK: float = 25.0
+    LLM_PRICE_OUTPUT_PER_MTOK: float = 100.0
+    LLM_PRICE_CURRENCY: str = "INR"
     # One key per provider, so switching providers does not mean re-keying.
     ANTHROPIC_API_KEY: SecretStr | None = None
     OPENAI_API_KEY: SecretStr | None = None
