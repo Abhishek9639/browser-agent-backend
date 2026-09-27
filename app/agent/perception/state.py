@@ -82,6 +82,10 @@ class PageState(BaseModel):
     # The compact section 4.6 rendering. This, not `elements`, is what reaches
     # the model.
     summary_text: str = ""
+    # The page's visible text, clipped. Deliberately not sent to the model:
+    # it exists so the section 4.7 text_present check can look at what a
+    # person would read, rather than only at the interactive elements.
+    text: str = ""
     dom_hash: str = ""
     captured_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 

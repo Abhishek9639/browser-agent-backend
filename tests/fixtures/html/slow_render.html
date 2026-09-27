@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Slow render</title></head>
+<body>
+  <h1>Slow render</h1>
+  <p>The results arrive after the click, not with it.</p>
+  <button id="search" onclick="
+    var host = document.getElementById('results');
+    setTimeout(function () {
+      var row = document.createElement('div');
+      row.id = 'result-row';
+      row.textContent = 'Cheapest fare 4,810';
+      host.appendChild(row);
+      var book = document.createElement('button');
+      book.id = 'book';
+      book.textContent = 'Book this flight';
+      host.appendChild(book);
+    }, 700);
+  ">Search flights</button>
+  <div id="results"></div>
+</body>
+</html>

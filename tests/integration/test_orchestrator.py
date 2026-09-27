@@ -26,7 +26,7 @@ from app.agent.orchestrator import Orchestrator
 from app.agent.perception.dom_extractor import MASK
 from app.agent.planner.planner import Planner
 from app.core.config import Settings
-from app.domain.enums import ActionType, StepStatus, TaskStatus
+from app.domain.enums import ActionType, StepStatus, TaskStatus, VerificationMethod
 from app.models.task import LLMDecision, TaskStep, Verification
 from app.repositories.unit_of_work import UnitOfWork
 from app.services.events import EventType, InMemoryEventBus
@@ -220,7 +220,11 @@ async def test_the_database_holds_a_full_record_of_each_step(rig: dict[str, Any]
     ).scalar_one()
     assert verification.verified is True
     assert verification.actual_outcome is not None
-    assert verification.actual_outcome["verifier"] == "stub"
+    # The real verifier re-read the field rather than taking the model's word.
+    assert verification.verification_method is VerificationMethod.VALUE_EQUALS
+    assert verification.actual_outcome["check"] == "value_equals"
+    assert verification.actual_outcome["value"] == "Delhi"
+    assert verification.expected_outcome["value"] == "Delhi"
 
 
 async def test_the_screenshot_on_disk_matches_the_reference_in_the_row(

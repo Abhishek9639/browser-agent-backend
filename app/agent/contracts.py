@@ -43,8 +43,7 @@ __all__ = [
     "RecoveryStrategy",
     "RiskPolicy",
     "SessionManager",
-    "StubVerifier",
-    "VerificationOutcome",
+    "Verdict",
     "Verifier",
 ]
 
@@ -53,18 +52,24 @@ __all__ = [
 
 
 @dataclass(frozen=True, slots=True)
-class VerificationOutcome:
+class Verdict:
     """Whether a step did what it was supposed to (spec section 4.7).
 
     ``method`` is one of the six section 4.5 outcome types, because that is
-    what the database column stores and what the spec calls canonical. How the
-    check was performed, including "it was not really performed at all", goes
-    in ``actual`` where a free-form record belongs.
+    what ``verifications.verification_method`` stores and what the spec calls
+    canonical. The verifier runs a few more checks than there are enum values,
+    so the precise one is named in ``actual`` under ``check``, where a
+    free-form record belongs.
+
+    ``expected`` and ``actual`` are what the two JSONB columns hold, so a step
+    can be read back later and the decision re-argued from the row alone.
     """
 
-    verified: bool
+    ok: bool
     method: VerificationMethod
-    actual: dict[str, Any] | None = None
+    expected: dict[str, Any] = field(default_factory=dict)
+    actual: dict[str, Any] = field(default_factory=dict)
+    detail: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +112,15 @@ class AgentBrowser(Protocol):
 
     async def perceive(self) -> PageState: ...
 
+    async def settle(self) -> None:
+        """Wait for the page to stop changing before it is read.
+
+        Without this, verification races the page: a click that triggers a
+        fetch is checked before the response lands, and a perfectly good step
+        is recorded as failed.
+        """
+        ...
+
     async def screenshot(self) -> Screenshot: ...
 
     async def capture_state(self) -> BrowserSnapshot: ...
@@ -115,15 +129,25 @@ class AgentBrowser(Protocol):
 
 
 class Verifier(Protocol):
-    """Did the action produce the outcome the planner expected?"""
+    """Did the action produce the outcome the planner expected?
+
+    Takes page states rather than the cheap snapshot, because half the checks
+    need the element list: whether a control is visible, what an input now
+    holds, whether a checkbox is ticked.
+
+    Never calls a model. ADR-004 and spec section 4.7: the model proposes
+    actions and verification stays deterministic, so that a model which is
+    wrong about what happened cannot also be the thing that decides whether it
+    happened.
+    """
 
     async def check(
         self,
         decision: Decision,
+        before: PageState,
+        after: PageState,
         result: ActionResult,
-        before: BrowserSnapshot,
-        after: BrowserSnapshot,
-    ) -> VerificationOutcome: ...
+    ) -> Verdict: ...
 
 
 class FlowCache(Protocol):
@@ -178,8 +202,8 @@ class RecoveryStrategy(Protocol):
         decision: Decision,
         state: PageState,
         result: ActionResult,
-        outcome: VerificationOutcome,
-    ) -> VerificationOutcome | None: ...
+        outcome: Verdict,
+    ) -> Verdict | None: ...
 
 
 class SessionManager(Protocol):
@@ -201,38 +225,6 @@ class CancelSignal(Protocol):
 
 
 # --------------------------------------------------------------- defaults
-
-
-class StubVerifier:
-    """Passes everything. Replaced by the real verifier.
-
-    It reports the method the planner asked for, because that is the honest
-    answer to "what was supposed to be checked", and records ``verifier:
-    stub`` in the actual outcome so no row can later be mistaken for a real
-    check. Nothing writes the word "stub" into
-    ``verifications.verification_method``: that column is a Postgres enum of
-    the six section 4.5 outcome types, and widening it for a scaffold would
-    mean a migration now and a harder one to take it out again.
-    """
-
-    async def check(
-        self,
-        decision: Decision,
-        result: ActionResult,
-        before: BrowserSnapshot,
-        after: BrowserSnapshot,
-    ) -> VerificationOutcome:
-        return VerificationOutcome(
-            verified=True,
-            method=decision.expected_outcome.type,
-            actual={
-                "verifier": "stub",
-                "checked": False,
-                "note": "Not verified. Every step passes until the real verifier lands.",
-                "urlChanged": result.url_changed,
-                "urlAfter": after.url,
-            },
-        )
 
 
 class NeverCancelled:
@@ -310,8 +302,8 @@ class NoRecovery:
         decision: Decision,
         state: PageState,
         result: ActionResult,
-        outcome: VerificationOutcome,
-    ) -> VerificationOutcome | None:
+        outcome: Verdict,
+    ) -> Verdict | None:
         return None
 
 

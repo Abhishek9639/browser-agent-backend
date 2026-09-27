@@ -29,7 +29,7 @@ from typing import Any, Final
 from pydantic import BaseModel
 
 from app.agent.browser.actions import parse_action
-from app.agent.browser.driver import ActionResult, BrowserSnapshot
+from app.agent.browser.driver import ActionResult
 from app.agent.browser.errors import BrowserError
 from app.agent.browser.screenshots import Screenshot, to_base64
 from app.agent.budget import BudgetExceeded, BudgetReason, TaskBudget
@@ -51,14 +51,14 @@ from app.agent.contracts import (
     RecoveryStrategy,
     RiskPolicy,
     SessionManager,
-    StubVerifier,
-    VerificationOutcome,
+    Verdict,
     Verifier,
 )
 from app.agent.perception.dom_extractor import MASK, STAMP_ATTRIBUTE, ElementInfo
 from app.agent.perception.state import PageState
 from app.agent.planner.planner import Planner, PlannerOutputError, PlannerResult, StepSummary
 from app.agent.planner.schema import Decision
+from app.agent.verification.verifier import DeterministicVerifier
 from app.core.config import Settings
 from app.core.logging import get_logger
 from app.db.session import Database
@@ -201,7 +201,7 @@ class Orchestrator:
         # Every one of these is a part that has not been built. The defaults
         # are named after what they do not do, so a stack trace or a log line
         # says which scaffold is still in place.
-        self._verifier: Verifier = verifier or StubVerifier()
+        self._verifier: Verifier = verifier or DeterministicVerifier()
         self._cache: FlowCache = cache or NoCache()
         self._grounder: Grounder = grounder or NoGrounding()
         self._risk: RiskPolicy = risk_policy or DecisionRiskPolicy()
@@ -284,6 +284,10 @@ class Orchestrator:
     ) -> None:
         """The loop proper. Only ever leaves by raising ``_Stop``."""
         history: list[StepSummary] = []
+        # Carried between iterations: the state read after one action is the
+        # state the next one plans against, so a step costs one perception
+        # rather than two.
+        state: PageState | None = None
 
         while True:
             budget.check()
@@ -295,7 +299,8 @@ class Orchestrator:
             if current.is_terminal:
                 raise _Stop(current, failure_reason="The task was stopped.")
 
-            state = await self._browser.perceive()
+            if state is None:
+                state = await self._browser.perceive()
             self._stop_if_cancelled()
 
             planned = await self._planner.decide(instruction, state, history, _hint_text(hint))
@@ -313,15 +318,19 @@ class Orchestrator:
             if risk is RiskLevel.HIGH or decision.requires_approval:
                 await self._gate(task_id, step_number, decision, risk, element)
 
-            before = await self._browser.capture_state()
             await self._set_status(task_id, TaskStatus.ACTING)
             action = _build_action(decision, element)
             result = await self._browser.execute(action)
 
             await self._set_status(task_id, TaskStatus.VERIFYING)
             self._stop_if_cancelled()
-            after = await self._browser.capture_state()
-            verdict = await self._verify(decision, result, before, after, state)
+
+            # Wait for the page to stop moving before reading it. Checking a
+            # click against a page that is still assembling itself fails steps
+            # that worked, and the agent then recovers from a success.
+            await self._browser.settle()
+            after = await self._browser.perceive()
+            verdict = await self._verify(decision, state, after, result)
 
             shot = await self._browser.screenshot()
             await self._record(
@@ -343,7 +352,7 @@ class Orchestrator:
                     step_number=step_number,
                     action=decision.action.value,
                     target=decision.target,
-                    verified=verdict.verified,
+                    verified=verdict.ok,
                     # An extract whose result never reaches the planner is an
                     # action the agent cannot act on. It reads the page and
                     # then has no idea what it read.
@@ -351,16 +360,18 @@ class Orchestrator:
                 )
             )
 
-            if not verdict.verified:
+            if not verdict.ok:
                 reason = (
                     f"Step {step_number} could not be carried out."
                     if not result.ok
-                    else f"Step {step_number} did not do what was expected."
+                    else f"Step {step_number} did not do what was expected. {verdict.detail}"
                 )
-                raise _Stop(TaskStatus.EXECUTION_FAILED, failure_reason=reason)
+                raise _Stop(TaskStatus.EXECUTION_FAILED, failure_reason=reason.strip())
             if decision.action is ActionType.DONE:
                 raise _Stop(TaskStatus.COMPLETED, final_answer=decision.final_answer)
 
+            # The page as it is now is what the next step plans against.
+            state = after
             await self._set_status(task_id, TaskStatus.PLANNING)
 
     # -------------------------------------------------------- loop helpers
@@ -423,33 +434,37 @@ class Orchestrator:
     async def _verify(
         self,
         decision: Decision,
+        before: PageState,
+        after: PageState,
         result: ActionResult,
-        before: BrowserSnapshot,
-        after: BrowserSnapshot,
-        state: PageState,
-    ) -> VerificationOutcome:
+    ) -> Verdict:
         if not result.ok:
-            # Nothing happened, so there is nothing to check. Going through the
-            # verifier anyway invites a stub, or a lenient real one, to call a
-            # step that never ran a success. Recovery still gets its turn: a
-            # click that missed is exactly what spec section 4.8 is for.
-            verdict = VerificationOutcome(
-                verified=False,
+            # Nothing happened, so there is nothing to check. Running the
+            # verifier anyway invites a lenient check to call a step that never
+            # ran a success. Recovery still gets its turn: a click that missed
+            # is exactly what spec section 4.8 is for.
+            verdict = Verdict(
+                ok=False,
                 method=decision.expected_outcome.type,
+                expected={
+                    "type": decision.expected_outcome.type.value,
+                    "value": decision.expected_outcome.value,
+                },
                 actual={
                     "reason": "The action did not run.",
                     "errorCode": result.error_code.value if result.error_code else None,
                 },
+                detail="The action did not run.",
             )
         else:
-            verdict = await self._verifier.check(decision, result, before, after)
+            verdict = await self._verifier.check(decision, before, after, result)
 
-        if verdict.verified:
+        if verdict.ok:
             return verdict
 
         recovered = await self._recovery.run(
             decision=decision,
-            state=state,
+            state=after,
             result=result,
             outcome=verdict,
         )
@@ -467,10 +482,10 @@ class Orchestrator:
         grounded: GroundingOutcome,
         element: ElementInfo | None,
         state: PageState,
-        verdict: VerificationOutcome,
+        verdict: Verdict,
         risk: RiskLevel,
         shot: Screenshot,
-        after: BrowserSnapshot,
+        after: PageState,
     ) -> None:
         """Write the step, then tell anyone watching.
 
@@ -497,7 +512,7 @@ class Orchestrator:
                     selector_used=_selector_for(element),
                     bbox=bbox,
                     screenshot_ref=reference,
-                    status=StepStatus.VERIFIED if verdict.verified else StepStatus.FAILED,
+                    status=StepStatus.VERIFIED if verdict.ok else StepStatus.FAILED,
                 )
             )
             await uow.llm_decisions.add(
@@ -519,9 +534,11 @@ class Orchestrator:
             await uow.verifications.add(
                 Verification(
                     step_id=step.id,
-                    expected_outcome=decision.expected_outcome.model_dump(mode="json"),
+                    # What was compared and what was found, so a step can be
+                    # argued about later from the row alone.
+                    expected_outcome=verdict.expected,
                     actual_outcome=verdict.actual,
-                    verified=verdict.verified,
+                    verified=verdict.ok,
                     verification_method=verdict.method,
                 )
             )
@@ -535,7 +552,7 @@ class Orchestrator:
                 action=decision.action.value,
                 target=decision.target,
                 value=_redacted_value(decision, sensitive),
-                verified=verdict.verified,
+                verified=verdict.ok,
                 screenshot=to_base64(shot),
                 bbox=BoundingBox(**bbox) if bbox else None,
                 viewport=Viewport(width=shot.viewport_width, height=shot.viewport_height),

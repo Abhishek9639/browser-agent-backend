@@ -4,6 +4,26 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B20 - Deterministic verification
+
+Added
+
+- `app/agent/verification/verifier.py`: `DeterministicVerifier.check(decision, before, after, result)` comparing two page states and returning a `Verdict` of `ok`, `method`, `expected`, `actual` and `detail`. It never calls a model, per ADR-004 and spec section 4.7: a model that is wrong about what a click did is exactly the model that will confidently say it worked, so it must not also be what decides whether it did.
+- Checks: `url_contains`, `url_changed`, `element_visible` by name, text or role, `text_present`, `value_equals` which re-reads the field, `dom_changed`, `new_tab_opened`, `element_state` for checked, selected and expanded, plus `scrolled` and `extracted` for the actions that need them.
+- Defaults when the planner's declared expectation cannot be checked, which is any expectation that needs a value and was given an empty one: navigate to the target host, type and select to the value that was sent, go back to the URL changing, click to something on the page having changed, scroll to the position moving, extract to getting text back, done to always passing.
+- `app/agent/browser/stability.py`: waits for network idle or a DOM that has not mutated for 300 ms, capped at 3 seconds. Without it verification races the page, a click that triggers a render is checked before the render happens, and the agent starts recovering from a success.
+- `PageState.text`, the page's visible text, so `text_present` can see a result rendered into a paragraph. Not sent to the model, which still gets only the compact summary.
+- A labelled set of 18 before and after cases scored as precision and recall, evenly split between steps that worked and steps that did not. Both are 1.00. The two errors are reported separately because they are not equally bad: a false positive builds every later step on a wrong premise, a false negative recovers from a success.
+- `AGENT_SETTLE_QUIET_MS` and `AGENT_SETTLE_TIMEOUT_MS` settings.
+- 48 tests: 38 over the checks and defaults, 5 driving the settle race against a real browser, 2 scoring the labelled set, and 3 in the loop suite for the verdict reaching the row.
+
+Changed
+
+- The stub verifier is gone. `VerificationOutcome` is now `Verdict`, carrying what was expected as well as what was found, and both JSONB columns on `verifications` come from it, so a step can be argued about later from the row alone.
+- The loop perceives once per step instead of twice. The state read after an action is the state the next step plans against, and the cheap browser snapshot is no longer taken at all since the page state carries everything the step event needed from it.
+- A failed step's reason now carries the verifier's own account, so a user is told what was checked rather than only that something went wrong.
+- `element_state` is the check for a click whose target carries a checked, selected or expanded flag. `expanded` is not part of the DOM hash, so `dom_changed` would have called a working disclosure toggle a failure.
+
 ### B19 - WebSocket live stream
 
 Added

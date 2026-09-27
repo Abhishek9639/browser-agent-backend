@@ -17,6 +17,7 @@ _METRICS = """() => ({
   url: location.href,
   title: document.title,
   scrollY: Math.round(window.scrollY),
+  text: ((document.body && document.body.innerText) || "").slice(0, 4000),
   maxScrollY: Math.max(
     0,
     Math.round(
@@ -78,6 +79,10 @@ async def perceive(
         scroll=ScrollState(y=metrics["scrollY"], max_y=metrics["maxScrollY"]),
         elements=elements,
         summary_text=summary,
+        # Not sent to the model, which gets the compact summary. This is for
+        # the section 4.7 text_present check, which has to see ordinary page
+        # text and not only the interactive elements.
+        text=metrics.get("text", ""),
         dom_hash=compute_dom_hash(metrics["url"], elements),
     )
 
