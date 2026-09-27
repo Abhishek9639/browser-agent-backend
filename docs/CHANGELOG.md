@@ -4,6 +4,28 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B22 - Visual grounding with set-of-marks
+
+Added
+
+- `app/agent/vision/marks.py`: draws numbered, high-contrast boxes over the on-screen candidates with Pillow, downscales to `VISION_MAX_WIDTH`, and keeps the mapping from label back to element. Labels run from 1 in reading order rather than reusing sparse element indices, are capped at 40, and are placed so none falls outside the picture.
+- `app/agent/vision/grounding.py`: `VisualGroundingService` with `build_evidence_context`, `resolve_target` and `validate_output`, plus `VisionGrounder` implementing the `Grounder` seam. Uses `LLM_VISION_MODEL` through the existing adapter with a versioned prompt, `vision_v1.md`.
+- Asking for a mark number rather than coordinates is the design: a number can be checked against the marks we drew, and a coordinate cannot be checked against anything. A label that is not on the picture is refused however confident the model is, which is the same guard the planner has. A point is accepted only as a fallback and only inside the image.
+- Triggers from spec section 4.9, evaluated in the loop so the screenshot is only paid for when one fires: `needsVision`, confidence below `VISION_CONFIDENCE_THRESHOLD`, several elements sharing an accessible name, and fewer than `VISION_MIN_ELEMENTS` on a page that is visibly not blank. The reason is recorded alongside the result, because a vision rate is uninterpretable without knowing what drove it.
+- Recovery rung seven is now real: it grounds the target and clicks the bbox centre by coordinate, with the verifier still deciding whether that worked. Without a grounder configured it stays not-applicable rather than reporting a hollow success.
+- `POST /api/v1/tasks/{id}/ground` runs grounding against the page a running task is looking at and returns what it found. It never acts.
+- Graceful degradation throughout: a provider that is down, times out, returns an unusable answer, or is handed a page with nothing to mark, returns a result carrying an error and the run continues DOM-only. Grounding can never fail a task.
+- Per-task vision metrics on the run outcome and in the logs: invocation count, failures, total latency and total tokens.
+- `VISION_PROMPT_VERSION`, `VISION_MAX_WIDTH`, `VISION_CONFIDENCE_THRESHOLD`, `VISION_MIN_ELEMENTS` and `VISION_MAX_IMAGE_BYTES` settings.
+- Two fixture pages: two buttons that are identical in the accessibility tree and distinguished only by prices painted onto canvases, and a seat map drawn entirely on a canvas.
+- 28 tests.
+
+Changed
+
+- `PromptRegistry` takes a package and filename, so the vision prompt gets the same versioned loading and the same eager failure as the planner's rather than a second copy of both.
+- `Grounder.resolve` takes the screenshot and the trigger reason, and `GroundingOutcome` carries the point, confidence, justification, latency, tokens and any error.
+- The browser gained `click_at`, which bounds-checks the coordinate before it reaches the mouse.
+
 ### B21 - Error recovery, and the first end-to-end demo
 
 Added

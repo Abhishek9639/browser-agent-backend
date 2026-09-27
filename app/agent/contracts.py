@@ -161,6 +161,16 @@ class GroundingOutcome:
     decision: Decision
     used_vision: bool = False
     bbox: dict[str, int] | None = field(default=None)
+    # Image-space centre of the target, for a click that cannot be expressed
+    # as a selector. Only set when grounding found something.
+    point: tuple[int, int] | None = None
+    confidence: float = 0.0
+    justification: str = ""
+    latency_ms: int = 0
+    tokens: int = 0
+    # Why grounding ran, recorded so a vision invocation rate can be read.
+    reason: str = ""
+    error: str | None = None
 
 
 # -------------------------------------------------------------- protocols
@@ -205,6 +215,14 @@ class AgentBrowser(Protocol):
         """Send a key to the page. Escape closes most modals."""
         ...
 
+    async def click_at(self, x: int, y: int) -> bool:
+        """Click a point in the viewport. Returns whether it was reached.
+
+        The last resort: a target that no selector can name, such as something
+        drawn on a canvas, still has a position on screen.
+        """
+        ...
+
 
 class Verifier(Protocol):
     """Did the action produce the outcome the planner expected?
@@ -235,9 +253,21 @@ class FlowCache(Protocol):
 
 
 class Grounder(Protocol):
-    """Resolve an ambiguous or low-confidence target by looking at pixels."""
+    """Resolve an ambiguous or low-confidence target by looking at pixels.
 
-    async def resolve(self, decision: Decision, state: PageState) -> GroundingOutcome: ...
+    Called only when a trigger has already fired, so the screenshot is taken
+    and paid for at the call site rather than on every step. ``reason`` is
+    passed through so it can be recorded next to the result: a vision rate is
+    uninterpretable without knowing what drove it.
+    """
+
+    async def resolve(
+        self,
+        decision: Decision,
+        state: PageState,
+        screenshot: bytes,
+        reason: str,
+    ) -> GroundingOutcome: ...
 
 
 class RiskPolicy(Protocol):
@@ -326,8 +356,14 @@ class NoGrounding:
     the vision-rate KPI counts.
     """
 
-    async def resolve(self, decision: Decision, state: PageState) -> GroundingOutcome:
-        return GroundingOutcome(decision=decision, used_vision=False)
+    async def resolve(
+        self,
+        decision: Decision,
+        state: PageState,
+        screenshot: bytes,
+        reason: str,
+    ) -> GroundingOutcome:
+        return GroundingOutcome(decision=decision, used_vision=False, reason=reason)
 
 
 class DecisionRiskPolicy:

@@ -465,9 +465,11 @@ async def test_a_page_that_changes_under_the_agent_fails_the_step(
         """Grounding runs after perception and before the action, which makes
         it the one seam where the page can be pulled out from under the loop."""
 
-        async def resolve(self, decision: Any, state: Any) -> GroundingOutcome:
+        async def resolve(
+            self, decision: Any, state: Any, screenshot: bytes, reason: str
+        ) -> GroundingOutcome:
             await driver.page.evaluate("() => document.body.replaceChildren()")
-            return GroundingOutcome(decision=decision, used_vision=False)
+            return GroundingOutcome(decision=decision, used_vision=False, reason=reason)
 
     orchestrator = build(
         rig,
@@ -479,6 +481,10 @@ async def test_a_page_that_changes_under_the_agent_fails_the_step(
                 "reasoning": "Click the origin field.",
                 "expectedOutcome": {"type": "dom_changed", "value": ""},
                 "confidence": 0.9,
+                # Grounding only runs when a trigger fires, and this test needs
+                # it to, because that is the seam where the page is pulled out
+                # from under the loop.
+                "needsVision": True,
             }
         ],
         grounder=ClearsThePage(),

@@ -16,12 +16,12 @@ from typing import Final
 
 from app.core.logging import get_logger
 
-__all__ = ["PROMPT_PACKAGE", "PromptNotFoundError", "PromptRegistry"]
+__all__ = ["PLANNER_FILENAME", "PROMPT_PACKAGE", "PromptNotFoundError", "PromptRegistry"]
 
 logger = get_logger(__name__)
 
 PROMPT_PACKAGE: Final = "app.agent.planner.prompts"
-_FILENAME: Final = "planner_{version}.md"
+PLANNER_FILENAME: Final = "planner_{version}.md"
 
 
 class PromptNotFoundError(RuntimeError):
@@ -33,24 +33,35 @@ class PromptNotFoundError(RuntimeError):
     """
 
 
-@lru_cache(maxsize=8)
-def _read(version: str) -> str:
-    name = _FILENAME.format(version=version)
+@lru_cache(maxsize=16)
+def _read(package: str, pattern: str, version: str) -> str:
+    name = pattern.format(version=version)
     try:
-        return resources.files(PROMPT_PACKAGE).joinpath(name).read_text(encoding="utf-8").strip()
+        return resources.files(package).joinpath(name).read_text(encoding="utf-8").strip()
     except (FileNotFoundError, ModuleNotFoundError) as exc:
         raise PromptNotFoundError(
-            f"No planner prompt for version {version!r} (expected {name})."
+            f"No prompt for version {version!r} (expected {name} in {package})."
         ) from exc
 
 
 class PromptRegistry:
-    """Loads the planner system prompt for a given version."""
+    """Loads a versioned system prompt.
 
-    def __init__(self, version: str = "v1") -> None:
+    Parameterised by package and filename so the vision prompt uses the same
+    loading, the same eager failure and the same recorded version as the
+    planner's, rather than a second copy of all three.
+    """
+
+    def __init__(
+        self,
+        version: str = "v1",
+        *,
+        package: str = PROMPT_PACKAGE,
+        filename: str = PLANNER_FILENAME,
+    ) -> None:
         self._version = version.strip() or "v1"
         # Read eagerly so a bad version fails at construction, not mid-task.
-        self._text = _read(self._version)
+        self._text = _read(package, filename, self._version)
         logger.debug("prompt_loaded", version=self._version, chars=len(self._text))
 
     @property

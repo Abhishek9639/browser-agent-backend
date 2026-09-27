@@ -60,6 +60,7 @@ from app.agent.planner.planner import Planner, PlannerOutputError, PlannerResult
 from app.agent.planner.schema import Decision
 from app.agent.recovery.runner import RecoveryRunner, failure_sentence
 from app.agent.verification.verifier import DeterministicVerifier
+from app.agent.vision.grounding import ground_reason
 from app.core.config import Settings
 from app.core.logging import get_logger
 from app.db.session import Database
@@ -139,6 +140,10 @@ class _Tally:
     """
 
     vision_steps: int = 0
+    vision_calls: int = 0
+    vision_latency_ms: int = 0
+    vision_tokens: int = 0
+    vision_failures: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +157,12 @@ class RunOutcome:
     duration_ms: int = 0
     credits_used: int = 0
     cache_hit: bool = False
+    # Spec section 9 wants a vision invocation rate, its latency and its cost
+    # per task. Logged with the run and carried here for the caller.
+    vision_calls: int = 0
+    vision_latency_ms: int = 0
+    vision_tokens: int = 0
+    vision_failures: int = 0
 
 
 class _Stop(Exception):  # noqa: N818
@@ -279,7 +290,20 @@ class Orchestrator:
             duration_ms=duration_ms,
             credits_used=_credits(budget.steps_used, tally.vision_steps),
             cache_hit=hint is not None,
+            vision_calls=tally.vision_calls,
+            vision_latency_ms=tally.vision_latency_ms,
+            vision_tokens=tally.vision_tokens,
+            vision_failures=tally.vision_failures,
         )
+        if tally.vision_calls:
+            logger.info(
+                "task_vision_summary",
+                task_id=str(task_id),
+                calls=tally.vision_calls,
+                failures=tally.vision_failures,
+                latency_ms=tally.vision_latency_ms,
+                tokens=tally.vision_tokens,
+            )
         await self._publish_final(task_id, outcome)
         return outcome
 
@@ -315,7 +339,7 @@ class Orchestrator:
             planned = await self._planner.decide(instruction, state, history, _hint_text(hint))
             self._stop_if_cancelled()
 
-            grounded = await self._grounder.resolve(planned.decision, state)
+            grounded = await self._ground(planned.decision, state, tally)
             decision = grounded.decision
             if grounded.used_vision:
                 tally.vision_steps += 1
@@ -385,6 +409,38 @@ class Orchestrator:
             await self._set_status(task_id, TaskStatus.PLANNING)
 
     # -------------------------------------------------------- loop helpers
+
+    async def _ground(
+        self, decision: Decision, state: PageState, tally: "_Tally"
+    ) -> GroundingOutcome:
+        """Look at the page, but only when the DOM is not enough.
+
+        The screenshot is taken here rather than on every step, because it is
+        the expensive half: grounding costs a frame, a vision call and a
+        second or two, and the ordinary step needs none of them.
+        """
+        reason = ground_reason(
+            decision.needs_vision,
+            decision.confidence,
+            state,
+            threshold=self._settings.VISION_CONFIDENCE_THRESHOLD,
+            min_elements=self._settings.VISION_MIN_ELEMENTS,
+        )
+        if reason is None:
+            return GroundingOutcome(decision=decision)
+
+        shot = await self._browser.screenshot()
+        outcome = await self._grounder.resolve(decision, state, shot.jpeg_bytes, reason)
+
+        tally.vision_calls += 1
+        tally.vision_latency_ms += outcome.latency_ms
+        tally.vision_tokens += outcome.tokens
+        if outcome.error is not None:
+            # Spec section 4.9: vision being down degrades to DOM-only. It is
+            # recorded and it never fails the task.
+            tally.vision_failures += 1
+
+        return outcome
 
     def _stop_if_cancelled(self) -> None:
         """Leave the loop at a phase boundary if a cancel has arrived.

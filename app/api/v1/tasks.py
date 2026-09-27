@@ -15,13 +15,24 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Response, status
 
-from app.api.deps import CurrentUser, TaskRunnerDep, TaskServiceDep, rate_limit
+from app.agent.llm.factory import build_llm
+from app.agent.vision.grounding import VisualGroundingService
+from app.api.deps import (
+    CurrentUser,
+    SettingsDep,
+    TaskRunnerDep,
+    TaskServiceDep,
+    rate_limit,
+)
+from app.core.errors import Conflict
 from app.db.session import AfterCommitDep
 from app.domain.enums import TaskStatus
 from app.models.task import Task
 from app.repositories.base import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
 from app.schemas.task import (
     CreateTaskRequest,
+    GroundRequest,
+    GroundResponse,
     LlmDecisionResponse,
     RecoveryAttemptResponse,
     StepDetailResponse,
@@ -231,6 +242,60 @@ async def get_step(
         recovery_attempts=[
             RecoveryAttemptResponse.model_validate(attempt) for attempt in detail.recovery_attempts
         ],
+    )
+
+
+@router.post(
+    "/{task_id}/ground",
+    response_model=GroundResponse,
+    summary="Ask vision where something is on the current page",
+    description=(
+        "Runs visual grounding against the page the agent is looking at right "
+        "now and returns what it found. It does not click, type or otherwise "
+        "act. Only works while the task is running on this worker."
+    ),
+    responses={
+        404: _NOT_YOURS,
+        409: {"description": "The task is not running, so it has no current page"},
+    },
+)
+async def ground(
+    task_id: uuid.UUID,
+    payload: GroundRequest,
+    user: CurrentUser,
+    tasks: TaskServiceDep,
+    runner: TaskRunnerDep,
+    settings: SettingsDep,
+) -> GroundResponse:
+    task = await tasks.get(task_id, user)
+    if TaskStatus(task.status).is_terminal:
+        raise Conflict(f"This task has already finished ({task.status.value}).")
+
+    browser = runner.browser_for(task_id)
+    if browser is None:
+        raise Conflict("This task is not running on this worker, so it has no current page.")
+
+    service = VisualGroundingService(
+        build_llm(settings),
+        version=settings.VISION_PROMPT_VERSION,
+        max_width=settings.VISION_MAX_WIDTH,
+        max_image_bytes=settings.VISION_MAX_IMAGE_BYTES,
+    )
+    state = await browser.perceive()
+    shot = await browser.screenshot()
+    context = service.build_evidence_context(state, shot.jpeg_bytes, payload.description)
+    result = await service.resolve_target(context)
+
+    return GroundResponse(
+        resolved=result.resolved,
+        element_index=result.element_index,
+        point={"x": result.point[0], "y": result.point[1]} if result.point else None,
+        bbox=result.bbox,
+        confidence=result.confidence,
+        justification=result.justification,
+        used_vision=result.used_vision,
+        latency_ms=result.latency_ms,
+        error=result.error,
     )
 
 

@@ -24,6 +24,8 @@ from app.schemas.base import CamelModel
 
 __all__ = [
     "CreateTaskRequest",
+    "GroundRequest",
+    "GroundResponse",
     "LlmDecisionResponse",
     "RecoveryAttemptResponse",
     "StepDetailResponse",
@@ -109,6 +111,49 @@ class CreateTaskRequest(CamelModel):
         if not separator or scheme.lower() not in {"http", "https"}:
             raise ValueError("A start URL must begin with http:// or https://.")
         return url
+
+
+class GroundRequest(CamelModel):
+    """Body of ``POST /tasks/{id}/ground``."""
+
+    description: Annotated[
+        str,
+        Field(
+            min_length=2,
+            max_length=400,
+            description="What to look for, in plain language.",
+            examples=["the Select button next to the cheapest fare"],
+        ),
+    ]
+
+
+class GroundResponse(CamelModel):
+    """What visual grounding concluded. It does not act on the page."""
+
+    resolved: bool = Field(description="Whether the target was identified at all.")
+    element_index: int | None = Field(
+        default=None,
+        description="Index into the current page state, if a marked element matched.",
+        examples=[7],
+    )
+    point: dict[str, int] | None = Field(
+        default=None,
+        description="Centre of the target in page coordinates.",
+        examples=[{"x": 640, "y": 412}],
+    )
+    bbox: dict[str, int] | None = Field(
+        default=None, examples=[{"x": 580, "y": 396, "width": 120, "height": 32}]
+    )
+    confidence: float = Field(examples=[0.82])
+    justification: str = Field(
+        default="", examples=["The box sits beside the lowest fare on the page."]
+    )
+    used_vision: bool
+    latency_ms: int = Field(examples=[1840])
+    error: str | None = Field(
+        default=None,
+        description="Set when grounding could not answer. Never fails the task.",
+    )
 
 
 class TaskResponse(CamelModel):

@@ -71,3 +71,19 @@ class DriverBrowser:
     async def press(self, key: str) -> None:
         with suppress(Exception):
             await self._driver.page.keyboard.press(key)
+
+    async def click_at(self, x: int, y: int) -> bool:
+        """Click a viewport coordinate.
+
+        Bounds-checked here rather than trusted: a coordinate that came from a
+        model naming a point on a picture is exactly the input that should not
+        be handed to the mouse without a look.
+        """
+        try:
+            viewport = self._driver.page.viewport_size or {"width": 0, "height": 0}
+            if not (0 <= x < viewport["width"] and 0 <= y < viewport["height"]):
+                return False
+            await self._driver.page.mouse.click(x, y)
+        except Exception:
+            return False
+        return True

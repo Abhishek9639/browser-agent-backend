@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Identical buttons</title>
+<style>
+  .row { display:flex; align-items:center; gap:16px; margin:14px 0; }
+  .fare { width:120px; height:34px; }
+  button { padding:8px 18px; }
+</style></head>
+<body>
+  <h1>Two fares</h1>
+  <p>The prices are drawn, not marked up, so only the picture can tell these apart.</p>
+  <div class="row">
+    <canvas class="fare" id="fare-a" width="120" height="34"></canvas>
+    <button onclick="document.getElementById('out').textContent='picked A'">Select</button>
+  </div>
+  <div class="row">
+    <canvas class="fare" id="fare-b" width="120" height="34"></canvas>
+    <button onclick="document.getElementById('out').textContent='picked B'">Select</button>
+  </div>
+  <p id="out"></p>
+  <script>
+    function price(id, text) {
+      var c = document.getElementById(id).getContext('2d');
+      c.fillStyle = '#fff'; c.fillRect(0, 0, 120, 34);
+      c.fillStyle = '#101828'; c.font = 'bold 20px sans-serif';
+      c.fillText(text, 6, 24);
+    }
+    price('fare-a', 'Rs 9,900');
+    price('fare-b', 'Rs 4,420');
+  </script>
+</body></html>

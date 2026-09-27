@@ -113,6 +113,21 @@ class Settings(BaseSettings):
     # names. Set it to pin a specific model.
     LLM_MODEL: str | None = None
     LLM_VISION_MODEL: str | None = None
+
+    # ------------------------------------------------------ visual grounding
+    # Spec section 4.9. Grounding is the expensive path, so every one of these
+    # is a threshold for when it is worth paying for.
+    VISION_PROMPT_VERSION: str = "v1"
+    VISION_MAX_WIDTH: int = 1024
+    # Below this the planner is guessing, and a guess about which button to
+    # press is worth a picture.
+    VISION_CONFIDENCE_THRESHOLD: float = 0.6
+    # A page with fewer interactive elements than this, that is plainly not
+    # blank, is probably drawing its interface rather than marking it up.
+    VISION_MIN_ELEMENTS: int = 5
+    # A marked frame larger than this is refused rather than sent: providers
+    # reject oversized images, and finding out mid-task wastes the step.
+    VISION_MAX_IMAGE_BYTES: int = 1_500_000
     # One key per provider, so switching providers does not mean re-keying.
     ANTHROPIC_API_KEY: SecretStr | None = None
     OPENAI_API_KEY: SecretStr | None = None
