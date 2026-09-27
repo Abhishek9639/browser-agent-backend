@@ -21,7 +21,7 @@ import difflib
 from typing import Final, Protocol
 
 from app.agent.browser.action_builder import build_action, selector_for
-from app.agent.contracts import AttemptResult, RecoveryContext
+from app.agent.contracts import AttemptResult, Grounder, RecoveryContext
 from app.agent.perception.dom_extractor import ElementInfo
 from app.agent.perception.state import PageState
 from app.agent.planner.schema import Decision
@@ -38,6 +38,7 @@ __all__ = [
     "StoredSelector",
     "TextLocator",
     "VisualGrounding",
+    "strategies_with_grounding",
 ]
 
 logger = get_logger(__name__)
@@ -427,20 +428,63 @@ class DismissOverlay:
 
 
 class VisualGrounding:
-    """Look at the pixels. Arrives with the grounding part.
+    """Look at the pixels, then click where they say (spec section 4.8, rung 7).
 
-    Deliberately not applicable rather than silently passing: a rung that
-    always reports success would end the ladder before the rungs below it ran.
+    The last rung for a reason: it costs a screenshot, a vision call and a
+    second or two, and it is the only one that can act on a target no selector
+    can name. Clicking a coordinate skips every guard that a selector goes
+    through, so it runs after everything that works by name has failed.
     """
 
     name = "visual_grounding"
     label = "looking at the screenshot"
 
-    def applicable(self, ctx: RecoveryContext) -> bool:  # noqa: ARG002
-        return False
+    def __init__(self, grounder: Grounder | None = None) -> None:
+        self._grounder = grounder
 
-    async def attempt(self, ctx: RecoveryContext) -> AttemptResult:  # noqa: ARG002
-        return AttemptResult(RecoveryOutcome.SKIPPED, error="Visual grounding is not built yet.")
+    def applicable(self, ctx: RecoveryContext) -> bool:
+        # Without a grounder this is the placeholder it used to be, and a rung
+        # that always reported success would end the ladder before the rungs
+        # below it ran.
+        return self._grounder is not None and ctx.targets_an_element
+
+    async def attempt(self, ctx: RecoveryContext) -> AttemptResult:
+        if self._grounder is None:
+            return AttemptResult(
+                RecoveryOutcome.SKIPPED, error="Visual grounding is not configured."
+            )
+
+        shot = await ctx.browser.screenshot()
+        current = await ctx.browser.perceive()
+        outcome = await self._grounder.resolve(
+            ctx.decision, current, shot.jpeg_bytes, "the ladder ran out of names"
+        )
+
+        if outcome.error is not None or outcome.point is None:
+            return AttemptResult(
+                RecoveryOutcome.SKIPPED,
+                error=outcome.error or "Vision could not find the target.",
+            )
+
+        baseline = current
+        x, y = outcome.point
+        if not await ctx.browser.click_at(x, y):
+            return AttemptResult(
+                RecoveryOutcome.FAILED, error=f"The point ({x}, {y}) is off screen."
+            )
+
+        await ctx.browser.settle()
+        after = await ctx.browser.perceive()
+        ctx.after = after
+
+        # Still the verifier's call. A click landing somewhere is not the same
+        # as the step having worked, and that is truer here than anywhere: a
+        # coordinate click always "succeeds" as far as the mouse is concerned.
+        verdict = await ctx.verifier.check(ctx.decision, baseline, after, ctx.result)
+        outcome_kind = RecoveryOutcome.SUCCEEDED if verdict.ok else RecoveryOutcome.FAILED
+        return AttemptResult(
+            outcome_kind, verdict=verdict, error=None if verdict.ok else verdict.detail
+        )
 
 
 def _click_like(decision: Decision) -> Decision:
@@ -457,3 +501,13 @@ ORDERED_STRATEGIES: Final[tuple[RecoveryStrategy, ...]] = (
     DismissOverlay(),
     VisualGrounding(),
 )
+
+
+def strategies_with_grounding(grounder: Grounder) -> tuple[RecoveryStrategy, ...]:
+    """The ladder with rung seven able to look at the page.
+
+    Same order; the last rung just has something behind it. Without a grounder
+    it stays not-applicable, which is what keeps a run with no vision provider
+    from ending the ladder on a rung that cannot do anything.
+    """
+    return (*ORDERED_STRATEGIES[:-1], VisualGrounding(grounder))

@@ -87,7 +87,9 @@ ignore = [
 # real bound is the asyncio.timeout around the call, not this argument.
 "app/agent/browser/stability.py" = ["ASYNC109"]
 # CLI tools whose whole job is printing to a terminal.
-"scripts/**" = ["T201"]
+# A command line tool writing a report file blocks on purpose; there is
+# no event loop starved by it.
+"scripts/**" = ["T201", "ASYNC240"]
 # LLMTimeout, LLMRateLimited and friends read better at the raise site.
 "app/agent/llm/base.py" = ["N818"]
 # Alembic writes these. `op` and `sa` are always imported whether or not a

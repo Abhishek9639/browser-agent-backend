@@ -3,7 +3,7 @@
 
 .DEFAULT_GOAL := help
 .PHONY: help install browsers dev test test-unit test-fast test-int lint fmt typecheck check \
-	check-all skyfare migrate revision downgrade db-up db-down db-reset
+	check-all chaos bench skyfare migrate revision downgrade db-up db-down db-reset
 
 UV      ?= uv
 COMPOSE ?= docker compose -f docker-compose.dev.yml
@@ -55,6 +55,13 @@ check: lint typecheck test-unit  ## the fast gate a part must pass
 
 check-all: lint typecheck test-unit test-int  ## the full gate: adds integration (needs `make db-up`)
 	@echo "check-all passed"
+
+chaos:  ## run the chaos suite against SkyFare (needs `make db-up` and browsers)
+	$(UV) run pytest tests/chaos -m chaos
+
+bench:  ## benchmark the agent: make bench runs=3 provider=mock
+	$(UV) run python scripts/benchmark.py --runs $(or $(runs),1) \
+		$(if $(provider),--provider $(provider),) $(if $(chaos),--chaos $(chaos),)
 
 skyfare:  ## serve the SkyFare demo site on :8200
 	$(UV) run uvicorn demo_sites.skyfare.app:app --host 127.0.0.1 --port 8200 --reload

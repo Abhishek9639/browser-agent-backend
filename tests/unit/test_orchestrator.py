@@ -966,9 +966,13 @@ async def test_a_vision_grounded_step_is_counted_and_costs_more(
     settings: Settings,
 ) -> None:
     class Grounds:
-        async def resolve(self, decision: Decision, state: PageState) -> GroundingOutcome:
+        async def resolve(
+            self, decision: Decision, state: PageState, screenshot: bytes, reason: str
+        ) -> GroundingOutcome:
             used = decision.action is not ActionType.DONE
-            return GroundingOutcome(decision=decision, used_vision=used)
+            return GroundingOutcome(
+                decision=decision, used_vision=used, reason=reason, latency_ms=40, tokens=120
+            )
 
     rig = build(
         script=[decision_payload(), done_payload()],
@@ -986,10 +990,13 @@ async def test_a_vision_grounded_step_is_counted_and_costs_more(
 
 async def test_grounding_choosing_a_missing_element_is_refused(settings: Settings) -> None:
     class GroundsWrong:
-        async def resolve(self, decision: Decision, state: PageState) -> GroundingOutcome:
+        async def resolve(
+            self, decision: Decision, state: PageState, screenshot: bytes, reason: str
+        ) -> GroundingOutcome:
             return GroundingOutcome(
                 decision=decision.model_copy(update={"target_index": 99}),
                 used_vision=True,
+                reason=reason,
             )
 
     rig = build(

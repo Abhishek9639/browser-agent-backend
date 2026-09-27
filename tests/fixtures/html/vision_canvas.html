@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Canvas only</title></head>
+<body>
+  <h1>Seat map</h1>
+  <p>The whole interface is painted onto a canvas. There is almost nothing to
+     read in the accessibility tree, which is what makes this a vision case.</p>
+  <canvas id="map" width="600" height="220"></canvas>
+  <p id="out"></p>
+  <script>
+    var c = document.getElementById('map').getContext('2d');
+    c.fillStyle = '#eef2f6'; c.fillRect(0, 0, 600, 220);
+    c.fillStyle = '#0b4f6c'; c.font = '16px sans-serif';
+    ['12A', '12B', '12C'].forEach(function (seat, i) {
+      c.fillStyle = '#fff'; c.fillRect(30 + i * 120, 40, 90, 60);
+      c.strokeStyle = '#0b4f6c'; c.strokeRect(30 + i * 120, 40, 90, 60);
+      c.fillStyle = '#0b4f6c'; c.fillText(seat, 55 + i * 120, 76);
+    });
+    document.getElementById('map').addEventListener('click', function (e) {
+      var r = this.getBoundingClientRect();
+      document.getElementById('out').textContent =
+        'clicked ' + Math.round(e.clientX - r.left) + ',' + Math.round(e.clientY - r.top);
+    });
+  </script>
+</body></html>

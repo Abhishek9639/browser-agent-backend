@@ -28,6 +28,9 @@ from app.agent.browser.driver import PlaywrightDriver
 from app.agent.llm.factory import build_llm
 from app.agent.orchestrator import Orchestrator, UnitOfWorkFactory, database_unit_of_work
 from app.agent.planner.planner import Planner
+from app.agent.recovery.runner import RecoveryRunner
+from app.agent.recovery.strategies import strategies_with_grounding
+from app.agent.vision.grounding import VisionGrounder, VisualGroundingService
 from app.core.config import Settings
 from app.core.logging import get_logger
 from app.db.session import Database
@@ -246,6 +249,16 @@ class TaskRunner:
         closing.add_done_callback(self._closing.discard)
         return True
 
+    def browser_for(self, task_id: uuid.UUID) -> DriverBrowser | None:
+        """The live browser for a task this process is running.
+
+        None when the task is queued, finished, or running on another worker.
+        Used by the grounding endpoint, which asks a question about the page
+        the agent is looking at right now and cannot do that from a row.
+        """
+        driver = self._drivers.get(task_id)
+        return DriverBrowser(driver, self._settings) if driver is not None else None
+
     def is_running(self, task_id: uuid.UUID) -> bool:
         return task_id in self._tasks
 
@@ -325,9 +338,24 @@ class TaskRunner:
                 cancel_signal=cancellation,
             )
 
+        llm = build_llm(self._settings)
+        grounder = VisionGrounder(
+            VisualGroundingService(
+                llm,
+                version=self._settings.VISION_PROMPT_VERSION,
+                max_width=self._settings.VISION_MAX_WIDTH,
+                max_image_bytes=self._settings.VISION_MAX_IMAGE_BYTES,
+            )
+        )
+
         return Orchestrator(
             browser=DriverBrowser(driver, self._settings),
-            planner=Planner(build_llm(self._settings)),
+            planner=Planner(llm),
+            grounder=grounder,
+            recovery=RecoveryRunner(
+                max_attempts=self._settings.AGENT_MAX_RETRIES_PER_STEP,
+                strategies=strategies_with_grounding(grounder),
+            ),
             storage=self._storage or LocalFileStorage(self._settings),
             events=self._events,
             unit_of_work=self._open_unit_of_work,
