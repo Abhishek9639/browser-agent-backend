@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Re-render</title></head>
+<body>
+  <h1>Re-render</h1>
+  <p>The list rebuilds itself, so a stamped index goes stale.</p>
+  <div id="host">
+    <button class="row" onclick="document.getElementById('out').textContent='clicked Book AI-812'">Book AI-812</button>
+    <button class="row" onclick="document.getElementById('out').textContent='clicked Book 6E-334'">Book 6E-334</button>
+  </div>
+  <p id="out"></p>
+  <script>
+    // Rebuilds the same buttons as brand new nodes, which drops the stamps.
+    setTimeout(function () {
+      var host = document.getElementById('host');
+      var html = host.innerHTML;
+      host.innerHTML = '';
+      host.innerHTML = '<span></span>' + html;
+    }, 200);
+  </script>
+</body></html>

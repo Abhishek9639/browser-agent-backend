@@ -145,6 +145,18 @@ class TaskService:
         await self._uow.tasks.get_owned(task_id, user)
         return await self._uow.task_steps.list_for_task(task_id)
 
+    async def list_recovery_attempts(
+        self, task_id: uuid.UUID, user: User
+    ) -> Sequence[RecoveryAttempt]:
+        """Every attempt on the task, in step and then attempt order.
+
+        Across the whole task rather than per step, because the question this
+        answers is "where did this run struggle", and that is not a question
+        you ask one step at a time.
+        """
+        await self._uow.tasks.get_owned(task_id, user)
+        return await self._uow.recovery_attempts.list_for_task(task_id)
+
     async def get_step(self, task_id: uuid.UUID, step_id: uuid.UUID, user: User) -> StepDetail:
         step = await self._step_of(task_id, step_id, user)
         return StepDetail(

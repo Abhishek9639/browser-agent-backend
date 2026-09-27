@@ -4,6 +4,49 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B21 - Error recovery, and the first end-to-end demo
+
+Added
+
+- `app/agent/recovery/`: the seven ordered strategies from spec section 4.8 behind one `Recovery` collaborator. Re-perceive and re-find by role, name and text; a role and accessible-name locator; a text locator that tries exact, then case-insensitive, then a difflib match at 0.8; the stored CSS path and XPath; scroll into view and retry; dismiss overlays and retry; and a visual grounding placeholder that is deliberately never applicable.
+- Every rung works the same way: find a better locator, run the original action against it, and let the verifier decide. A strategy that graded its own attempt would report success whenever Playwright did not raise.
+- `RecoveryRunner` walks the ladder until the verifier is satisfied or `AGENT_MAX_RETRIES_PER_STEP` attempts are spent. Skipped rungs do not spend the budget but are still recorded and numbered, because `attempt_number` is the ordering key on the row.
+- Each attempt writes a `recovery_attempts` row and publishes a `recovery` event as it happens. The task sits in `RECOVERING` while the ladder is climbed.
+- A failure that survives the ladder says what was tried: "Step 5: Could not click 'Search flights': tried scrolling to it and closing a popup."
+- `GET /api/v1/tasks/{id}/recovery-attempts`.
+- Overlay close buttons are ranked so that "Reject non-essential" beats "Accept all cookies", and matched on the whole label so "Accept" cannot also match "Accept and book this flight".
+- `app/agent/browser/action_builder.py`, shared by the loop and recovery, plus `scroll_into_view` and `press` on the browser interface.
+- Three fixture pages that each break in one specific way, and 25 tests.
+
+Fixed
+
+- Strategies that re-locate an element now stand down while the target is covered. A cookie banner made them runnable and useless, and they spent the whole retry budget before the rung that closes overlays was reached.
+- A recovery attempt is verified against the page as it is immediately before the retry, not the page that failed. Closing a modal changes the DOM, so the old baseline let `dom_changed` pass whether or not the retried click landed.
+- The overlay rung clears every overlay it recognises. A cookie banner and a newsletter popup together left the click blocked after one was closed.
+- After a successful rescue the loop carries the page the retry ended on. It was carrying the page that failed, so the agent navigated to the results page and then planned its next step against the search form it had already left.
+- Provider rate limits, timeouts and outages have their own failure reasons instead of reading as an internal error.
+- The mock provider fills any field whose value is not what the goal asks for, rather than only empty ones, and keys the date slot on the input type. A pre-filled date meant the first demo searched the wrong day and returned a confidently wrong answer; "Departure" as a label is the date on one page and the origin city on another.
+
+### B20 - Deterministic verification
+
+Added
+
+- `app/agent/verification/verifier.py`: `DeterministicVerifier.check(decision, before, after, result)` comparing two page states and returning a `Verdict` of `ok`, `method`, `expected`, `actual` and `detail`. It never calls a model, per ADR-004 and spec section 4.7: a model that is wrong about what a click did is exactly the model that will confidently say it worked, so it must not also be what decides whether it did.
+- Checks: `url_contains`, `url_changed`, `element_visible` by name, text or role, `text_present`, `value_equals` which re-reads the field, `dom_changed`, `new_tab_opened`, `element_state` for checked, selected and expanded, plus `scrolled` and `extracted` for the actions that need them.
+- Defaults when the planner's declared expectation cannot be checked, which is any expectation that needs a value and was given an empty one: navigate to the target host, type and select to the value that was sent, go back to the URL changing, click to something on the page having changed, scroll to the position moving, extract to getting text back, done to always passing.
+- `app/agent/browser/stability.py`: waits for network idle or a DOM that has not mutated for 300 ms, capped at 3 seconds. Without it verification races the page, a click that triggers a render is checked before the render happens, and the agent starts recovering from a success.
+- `PageState.text`, the page's visible text, so `text_present` can see a result rendered into a paragraph. Not sent to the model, which still gets only the compact summary.
+- A labelled set of 18 before and after cases scored as precision and recall, evenly split between steps that worked and steps that did not. Both are 1.00. The two errors are reported separately because they are not equally bad: a false positive builds every later step on a wrong premise, a false negative recovers from a success.
+- `AGENT_SETTLE_QUIET_MS` and `AGENT_SETTLE_TIMEOUT_MS` settings.
+- 48 tests: 38 over the checks and defaults, 5 driving the settle race against a real browser, 2 scoring the labelled set, and 3 in the loop suite for the verdict reaching the row.
+
+Changed
+
+- The stub verifier is gone. `VerificationOutcome` is now `Verdict`, carrying what was expected as well as what was found, and both JSONB columns on `verifications` come from it, so a step can be argued about later from the row alone.
+- The loop perceives once per step instead of twice. The state read after an action is the state the next step plans against, and the cheap browser snapshot is no longer taken at all since the page state carries everything the step event needed from it.
+- A failed step's reason now carries the verifier's own account, so a user is told what was checked rather than only that something went wrong.
+- `element_state` is the check for a click whose target carries a checked, selected or expanded flag. `expanded` is not part of the DOM hash, so `dom_changed` would have called a working disclosure toggle a failure.
+
 ### B19 - WebSocket live stream
 
 Added

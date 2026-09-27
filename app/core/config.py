@@ -142,6 +142,10 @@ class Settings(BaseSettings):
         ]
     )
     AGENT_HEADLESS: bool = True
+    # Spec section 4.7. How long the page must stop changing before it is read
+    # for verification, and how long to wait for that before reading anyway.
+    AGENT_SETTLE_QUIET_MS: int = 300
+    AGENT_SETTLE_TIMEOUT_MS: int = 3000
 
     # ----------------------------------------------------------- live view
     # Spec section 6.1. The ticket is short-lived because it travels in a URL,

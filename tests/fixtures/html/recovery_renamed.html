@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Renamed ids</title></head>
+<body>
+  <h1>Renamed ids</h1>
+  <p>Every id changes on each deploy. The button is still a button.</p>
+  <button id="search">Search flights</button>
+  <p id="out"></p>
+  <script>
+    // References captured at load, so renaming ids later does not break the
+    // page itself. What is being tested is finding the control, not the
+    // page's own wiring.
+    var out = document.getElementById('out');
+    document.getElementById('search').addEventListener('click', function () {
+      out.textContent = 'searched';
+    });
+  </script>
+</body></html>

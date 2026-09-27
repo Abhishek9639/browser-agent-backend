@@ -651,3 +651,77 @@ async def test_restart_recovery_finishes_tasks_the_last_process_abandoned(
     assert acting.failure_reason == interrupted_reason
     assert acting.finished_at is not None
     assert done.failure_reason is None
+
+
+# ------------------------------------------------------- recovery attempts
+
+
+async def test_recovery_attempts_are_listed_in_order(
+    client: AsyncClient, auth: dict[str, str], db_session: AsyncSession
+) -> None:
+    from app.domain.enums import RecoveryOutcome
+    from app.models.task import RecoveryAttempt
+
+    created = await create(client, auth)
+    task_id = uuid.UUID(created.json()["id"])
+
+    step = TaskStep(task_id=task_id, step_number=1, action="click", status=StepStatus.FAILED)
+    db_session.add(step)
+    await db_session.flush()
+    for number, (strategy, outcome) in enumerate(
+        [
+            ("reperceive_by_index", RecoveryOutcome.FAILED),
+            ("role_name_locator", RecoveryOutcome.FAILED),
+            ("text_locator", RecoveryOutcome.SUCCEEDED),
+        ],
+        start=1,
+    ):
+        db_session.add(
+            RecoveryAttempt(
+                step_id=step.id,
+                attempt_number=number,
+                strategy_used=strategy,
+                outcome=outcome,
+                error=None if outcome is RecoveryOutcome.SUCCEEDED else "did not work",
+            )
+        )
+    await db_session.commit()
+
+    response = await client.get(f"/api/v1/tasks/{task_id}/recovery-attempts", headers=auth)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [row["attemptNumber"] for row in body] == [1, 2, 3]
+    assert [row["strategyUsed"] for row in body] == [
+        "reperceive_by_index",
+        "role_name_locator",
+        "text_locator",
+    ]
+    assert body[-1]["outcome"] == "SUCCEEDED"
+    assert body[0]["error"] == "did not work"
+
+
+async def test_a_task_that_never_struggled_has_no_attempts(
+    client: AsyncClient, auth: dict[str, str]
+) -> None:
+    created = await create(client, auth)
+
+    response = await client.get(
+        f"/api/v1/tasks/{created.json()['id']}/recovery-attempts", headers=auth
+    )
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+async def test_someone_elses_recovery_attempts_are_404(
+    client: AsyncClient, auth: dict[str, str]
+) -> None:
+    mine = await create(client, auth)
+    other = await sign_in(client, email="nosy-recovery@example.test")
+
+    response = await client.get(
+        f"/api/v1/tasks/{mine.json()['id']}/recovery-attempts", headers=other
+    )
+
+    assert response.status_code == 404

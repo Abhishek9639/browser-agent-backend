@@ -19,9 +19,11 @@ from app.agent.browser.screenshots import Screenshot
 from app.agent.budget import TaskBudget
 from app.agent.contracts import (
     ApprovalOutcome,
+    Attempt,
     CachedHint,
     GroundingOutcome,
-    VerificationOutcome,
+    RecoveryContext,
+    Verdict,
 )
 from app.agent.llm.mock import MockLLM
 from app.agent.perception.dom_extractor import MASK, BoundingBox, ElementInfo
@@ -29,7 +31,14 @@ from app.agent.perception.state import PageState
 from app.agent.planner.planner import Planner
 from app.agent.planner.schema import Decision
 from app.core.config import Settings
-from app.domain.enums import ActionType, RiskLevel, StepStatus, TaskStatus, VerificationMethod
+from app.domain.enums import (
+    ActionType,
+    RecoveryOutcome,
+    RiskLevel,
+    StepStatus,
+    TaskStatus,
+    VerificationMethod,
+)
 from app.services.events import EventType, InMemoryEventBus
 
 from app.agent.orchestrator import Orchestrator, RunOutcome  # isort: skip
@@ -97,10 +106,23 @@ class FakeBrowser:
         self._ok = ok
         self.executed: list[Any] = []
         self.perceive_calls = 0
+        self.settle_calls = 0
+        self.scrolled: list[str] = []
+        self.pressed: list[str] = []
 
     async def perceive(self) -> PageState:
         self.perceive_calls += 1
         return self._state
+
+    async def settle(self) -> None:
+        self.settle_calls += 1
+
+    async def scroll_into_view(self, selector: str) -> bool:
+        self.scrolled.append(selector)
+        return False
+
+    async def press(self, key: str) -> None:
+        self.pressed.append(key)
 
     async def screenshot(self) -> Screenshot:
         return shot()
@@ -116,6 +138,29 @@ class FakeBrowser:
             url_before="https://example.test/form",
             url_after="https://example.test/form",
             error_code=None if self._ok else ActionErrorCode.ELEMENT_NOT_FOUND,
+        )
+
+
+class PassingVerifier:
+    """Says yes. These tests are about the loop, not about verification.
+
+    The real verifier compares two page states, and a fake browser that hands
+    back the same state twice would fail every check for reasons that have
+    nothing to do with what is being tested here. Verification itself has its
+    own suite.
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def check(self, decision: Decision, *args: Any) -> Verdict:
+        self.calls += 1
+        return Verdict(
+            ok=True,
+            method=decision.expected_outcome.type,
+            expected={"type": decision.expected_outcome.type.value, "value": "x"},
+            actual={"check": "test"},
+            detail="Passed by the test double.",
         )
 
 
@@ -155,6 +200,7 @@ class FakeStore:
     steps: list[Any] = field(default_factory=list)
     decisions: list[Any] = field(default_factory=list)
     verifications: list[Any] = field(default_factory=list)
+    recovery_attempts: list[Any] = field(default_factory=list)
     # Staged rows only become visible on commit, exactly like a transaction.
     pending: list[tuple[str, Any]] = field(default_factory=list)
     log: list[str] = field(default_factory=list)
@@ -206,6 +252,7 @@ class FakeUnitOfWork:
         self.task_steps = FakeRepo(store, "steps")
         self.llm_decisions = FakeRepo(store, "decisions")
         self.verifications = FakeRepo(store, "verifications")
+        self.recovery_attempts = FakeRepo(store, "recovery_attempts")
 
 
 def unit_of_work_for(store: FakeStore) -> Any:
@@ -299,6 +346,7 @@ def build(
     bus = WatchingBus(store)
     storage = FakeStorage()
 
+    kwargs.setdefault("verifier", PassingVerifier())
     orchestrator = Orchestrator(
         browser=browser,
         planner=Planner(MockLLM(script=script)),
@@ -642,7 +690,12 @@ async def test_an_action_the_browser_rejects_fails_the_task(settings: Settings) 
     outcome = await rig.orchestrator.run(TASK_ID)
 
     assert outcome.status is TaskStatus.EXECUTION_FAILED
-    assert outcome.failure_reason == "Step 1 could not be carried out."
+    # The ladder ran and could not rescue it, so the reason says what was
+    # tried rather than only that something went wrong.
+    assert outcome.failure_reason == (
+        "Step 1: Could not type 'From': tried re-reading the page, "
+        "re-locating by name and matching its text."
+    )
     # The step is still recorded: a failure nobody can see is worse than one
     # that shows up in the log.
     assert rig.store.step_numbers() == [1]
@@ -765,7 +818,7 @@ async def test_an_approving_gate_lets_the_step_run(settings: Settings) -> None:
     assert rig.store.decisions[0].risk_level is RiskLevel.HIGH
 
 
-async def test_the_stub_verifier_records_that_it_did_not_check(settings: Settings) -> None:
+async def test_the_verdict_is_persisted_in_full(settings: Settings) -> None:
     rig = build(
         script=[decision_payload(), done_payload()],
         settings=settings,
@@ -774,21 +827,47 @@ async def test_the_stub_verifier_records_that_it_did_not_check(settings: Setting
     await rig.orchestrator.run(TASK_ID)
     verification = rig.store.verifications[0]
 
+    # Both JSONB columns come from the verdict, so a step can be argued about
+    # later from the row alone rather than by rerunning the agent.
     assert verification.verified is True
-    # The method stays one of the six canonical outcome types, because it is a
-    # Postgres enum. "This was not really checked" belongs in the JSON column.
     assert verification.verification_method is VerificationMethod.VALUE_EQUALS
-    assert verification.actual_outcome["verifier"] == "stub"
-    assert verification.actual_outcome["checked"] is False
+    assert verification.expected_outcome == {"type": "value_equals", "value": "x"}
+    assert verification.actual_outcome == {"check": "test"}
+
+
+async def test_the_page_is_allowed_to_settle_before_it_is_checked(
+    settings: Settings,
+) -> None:
+    rig = build(script=[decision_payload(), done_payload()], settings=settings)
+
+    await rig.orchestrator.run(TASK_ID)
+
+    # Once per step. Checking a click against a page that is still assembling
+    # itself fails steps that worked.
+    assert rig.browser.settle_calls == 2
+
+
+async def test_the_state_read_after_an_action_is_reused_for_the_next_plan(
+    settings: Settings,
+) -> None:
+    rig = build(script=[decision_payload(), done_payload()], settings=settings)
+
+    await rig.orchestrator.run(TASK_ID)
+
+    # One perception to plan the first step, then one after each action. The
+    # after-state of one step is the before-state of the next, so a two step
+    # run perceives three times rather than four.
+    assert rig.browser.perceive_calls == 3
 
 
 async def test_a_failed_verification_ends_the_task(settings: Settings) -> None:
     class AlwaysFails:
-        async def check(self, decision: Decision, *args: Any) -> VerificationOutcome:
-            return VerificationOutcome(
-                verified=False,
+        async def check(self, decision: Decision, *args: Any) -> Verdict:
+            return Verdict(
+                ok=False,
                 method=decision.expected_outcome.type,
                 actual={"reason": "nothing changed"},
+                detail="The page is unchanged.",
             )
 
     rig = build(
@@ -800,27 +879,34 @@ async def test_a_failed_verification_ends_the_task(settings: Settings) -> None:
     outcome = await rig.orchestrator.run(TASK_ID)
 
     assert outcome.status is TaskStatus.EXECUTION_FAILED
-    assert outcome.failure_reason == "Step 1 did not do what was expected."
+    # The reason carries the verifier's own account, so a user is told what
+    # was checked rather than only that something went wrong.
+    # The ladder ran first, so the reason lists the rungs rather than only
+    # the verifier's account.
+    assert outcome.failure_reason.startswith("Step 1: Could not type 'From': tried ")
     assert rig.store.steps[0].status is StepStatus.FAILED
 
 
 async def test_recovery_can_rescue_a_failed_step(settings: Settings) -> None:
     class AlwaysFails:
-        async def check(self, decision: Decision, *args: Any) -> VerificationOutcome:
-            return VerificationOutcome(verified=False, method=decision.expected_outcome.type)
+        async def check(self, decision: Decision, *args: Any) -> Verdict:
+            return Verdict(ok=False, method=decision.expected_outcome.type)
 
     class Rescues:
         def __init__(self) -> None:
             self.calls = 0
 
-        async def run(self, **kwargs: Any) -> VerificationOutcome:
+        async def run(self, ctx: RecoveryContext) -> Verdict:
             self.calls += 1
-            outcome: VerificationOutcome = kwargs["outcome"]
-            return VerificationOutcome(
-                verified=True,
-                method=outcome.method,
-                actual={"strategy": "retry"},
+            ctx.attempts.append(
+                Attempt(
+                    number=1,
+                    strategy="retry",
+                    label="retrying",
+                    outcome=RecoveryOutcome.SUCCEEDED,
+                )
             )
+            return Verdict(ok=True, method=ctx.verdict.method, actual={"strategy": "retry"})
 
     recovery = Rescues()
     rig = build(
@@ -842,7 +928,7 @@ async def test_recovery_is_not_consulted_when_the_step_worked(settings: Settings
         def __init__(self) -> None:
             self.calls = 0
 
-        async def run(self, **kwargs: Any) -> None:
+        async def run(self, ctx: RecoveryContext) -> None:
             self.calls += 1
             return
 

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Overlay</title>
+<style>
+  #veil { position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 50;
+          display: flex; align-items: center; justify-content: center; }
+  #veil .box { background: #fff; padding: 24px; border-radius: 8px; }
+</style></head>
+<body>
+  <h1>Overlay</h1>
+  <button id="search" onclick="document.getElementById('out').textContent='searched'">Search flights</button>
+  <p id="out"></p>
+  <script>
+    // The banner arrives after the page has been read, which is the popup
+    // chaos case: the agent planned against a page it could see.
+    setTimeout(function () {
+      var veil = document.createElement('div');
+      veil.id = 'veil';
+      veil.innerHTML =
+        '<div class="box"><h2>We value your privacy</h2>' +
+        '<button id="reject">Reject non-essential</button>' +
+        '<button id="accept">Accept all cookies</button></div>';
+      document.body.appendChild(veil);
+      document.getElementById('reject').addEventListener('click', function () {
+        document.body.dataset.closedBy = 'reject';
+        veil.remove();
+      });
+      document.getElementById('accept').addEventListener('click', function () {
+        document.body.dataset.closedBy = 'accept';
+        veil.remove();
+      });
+    }, 250);
+  </script>
+</body></html>

@@ -272,12 +272,15 @@ class MockLLM:
             cheapest = min(prices)
             return _done(f"The cheapest option is Rs {cheapest:,.0f}.")
 
-        # Fill any empty field the goal has a value for.
+        # Fill any field whose current value is not what the goal asks for.
+        # Not just the empty ones: a search form that arrives with today's
+        # date already in it would otherwise be searched on the wrong date,
+        # and the answer would be right for a question nobody asked.
         for line in elements:
-            if not (line.is_field and line.is_empty):
+            if not line.is_field:
                 continue
-            wanted = _value_for(line.label, goal)
-            if wanted:
+            wanted = _value_for(line, goal)
+            if wanted and line.value.strip().casefold() != wanted.casefold():
                 return _decision(
                     "type",
                     line.index,
@@ -354,14 +357,23 @@ def _has_extracted(messages: Sequence[LLMMessage]) -> bool:
     return any("extracted:" in message.text.lower() for message in messages)
 
 
-def _value_for(label: str, goal: str) -> str | None:
-    """Map a field label onto a slot in the goal.
+def _value_for(line: SummaryLine, goal: str) -> str | None:
+    """Map a field onto a slot in the goal.
 
     Only the three slots the flight task needs. A real model does this by
     understanding; the mock does it by keyword, which is enough to drive the
     loop and honest about being a stand-in.
+
+    The input type is checked before the label, because the labels collide:
+    SkyFare calls its date field "Departure" and the practice form calls its
+    origin field "Departure city", so matching on the word alone types a city
+    name into a date picker.
     """
-    lowered = label.lower()
+    if line.input_type == "date":
+        match = _ON.search(goal)
+        return match.group(1).strip() if match else None
+
+    lowered = line.label.lower()
     if not lowered:
         return None
 
