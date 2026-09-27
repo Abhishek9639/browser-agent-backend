@@ -20,15 +20,13 @@ cannot be told again.
 
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Final
 
-from pydantic import BaseModel
-
-from app.agent.browser.actions import parse_action
+from app.agent.browser.action_builder import build_action, selector_for
 from app.agent.browser.driver import ActionResult
 from app.agent.browser.errors import BrowserError
 from app.agent.browser.screenshots import Screenshot, to_base64
@@ -36,6 +34,7 @@ from app.agent.budget import BudgetExceeded, BudgetReason, TaskBudget
 from app.agent.contracts import (
     AgentBrowser,
     ApprovalGate,
+    Attempt,
     CachedHint,
     CancelSignal,
     DecisionRiskPolicy,
@@ -46,30 +45,33 @@ from app.agent.contracts import (
     NeverCancelled,
     NoCache,
     NoGrounding,
-    NoRecovery,
     PageStateSessions,
-    RecoveryStrategy,
+    Recovery,
+    RecoveryContext,
     RiskPolicy,
     SessionManager,
     Verdict,
     Verifier,
 )
-from app.agent.perception.dom_extractor import MASK, STAMP_ATTRIBUTE, ElementInfo
+from app.agent.llm.base import LLMRateLimited, LLMTimeout, LLMUnavailable
+from app.agent.perception.dom_extractor import MASK, ElementInfo
 from app.agent.perception.state import PageState
 from app.agent.planner.planner import Planner, PlannerOutputError, PlannerResult, StepSummary
 from app.agent.planner.schema import Decision
+from app.agent.recovery.runner import RecoveryRunner, failure_sentence
 from app.agent.verification.verifier import DeterministicVerifier
 from app.core.config import Settings
 from app.core.logging import get_logger
 from app.db.session import Database
 from app.domain.enums import ActionType, RiskLevel, StepStatus, TaskStatus
 from app.domain.state_machine import transition
-from app.models.task import LLMDecision, TaskStep, Verification
+from app.models.task import LLMDecision, RecoveryAttempt, TaskStep, Verification
 from app.repositories.unit_of_work import UnitOfWork
 from app.services.events import (
     BoundingBox,
     EventBus,
     FinalEvent,
+    RecoveryEvent,
     StatusEvent,
     StepEvent,
     TaskStats,
@@ -101,6 +103,11 @@ CREDITS_PER_VISION_STEP: Final = 2
 _SAFE_REASONS: Final[tuple[tuple[type[BaseException], str], ...]] = (
     (PlannerOutputError, "The planner could not produce a valid decision for this page."),
     (BrowserError, "The browser could not carry out the planned action."),
+    # These three are ordinary weather rather than a bug in the task, and a
+    # user who is told "internal error" has no idea whether to try again.
+    (LLMRateLimited, "The model provider is rate limiting this account. Try again shortly."),
+    (LLMTimeout, "The model did not answer in time."),
+    (LLMUnavailable, "The model provider is unavailable."),
 )
 _FALLBACK_REASON: Final = "The task stopped after an internal error ({name})."
 
@@ -185,7 +192,7 @@ class Orchestrator:
         grounder: Grounder | None = None,
         risk_policy: RiskPolicy | None = None,
         approvals: ApprovalGate | None = None,
-        recovery: RecoveryStrategy | None = None,
+        recovery: Recovery | None = None,
         sessions: SessionManager | None = None,
         cancel_signal: CancelSignal | None = None,
         budget: TaskBudget | None = None,
@@ -206,7 +213,9 @@ class Orchestrator:
         self._grounder: Grounder = grounder or NoGrounding()
         self._risk: RiskPolicy = risk_policy or DecisionRiskPolicy()
         self._approvals: ApprovalGate = approvals or DenyApprovals()
-        self._recovery: RecoveryStrategy = recovery or NoRecovery()
+        self._recovery: Recovery = recovery or RecoveryRunner(
+            max_attempts=settings.AGENT_MAX_RETRIES_PER_STEP
+        )
         self._sessions: SessionManager = sessions or PageStateSessions()
 
         # Not a stand-in for a later part: a run nobody supervises genuinely
@@ -319,7 +328,7 @@ class Orchestrator:
                 await self._gate(task_id, step_number, decision, risk, element)
 
             await self._set_status(task_id, TaskStatus.ACTING)
-            action = _build_action(decision, element)
+            action = build_action(decision, element)
             result = await self._browser.execute(action)
 
             await self._set_status(task_id, TaskStatus.VERIFYING)
@@ -330,7 +339,9 @@ class Orchestrator:
             # that worked, and the agent then recovers from a success.
             await self._browser.settle()
             after = await self._browser.perceive()
-            verdict = await self._verify(decision, state, after, result)
+            verdict, after, attempts, tried = await self._verify(
+                task_id, step_number, decision, element, state, after, result
+            )
 
             shot = await self._browser.screenshot()
             await self._record(
@@ -342,6 +353,7 @@ class Orchestrator:
                 element=element,
                 state=state,
                 verdict=verdict,
+                attempts=attempts,
                 risk=risk,
                 shot=shot,
                 after=after,
@@ -361,12 +373,10 @@ class Orchestrator:
             )
 
             if not verdict.ok:
-                reason = (
-                    f"Step {step_number} could not be carried out."
-                    if not result.ok
-                    else f"Step {step_number} did not do what was expected. {verdict.detail}"
+                raise _Stop(
+                    TaskStatus.EXECUTION_FAILED,
+                    failure_reason=_failure_reason(step_number, decision, element, verdict, tried),
                 )
-                raise _Stop(TaskStatus.EXECUTION_FAILED, failure_reason=reason.strip())
             if decision.action is ActionType.DONE:
                 raise _Stop(TaskStatus.COMPLETED, final_answer=decision.final_answer)
 
@@ -433,11 +443,20 @@ class Orchestrator:
 
     async def _verify(
         self,
+        task_id: uuid.UUID,
+        step_number: int,
         decision: Decision,
+        element: ElementInfo | None,
         before: PageState,
         after: PageState,
         result: ActionResult,
-    ) -> Verdict:
+    ) -> tuple[Verdict, PageState, list[Attempt], list[str]]:
+        """Check the step, and try to rescue it if the check failed.
+
+        Returns the page as it ended up, which is not always the page that
+        failed: a strategy that works has navigated, dismissed something or
+        otherwise moved on, and the next step has to plan against that.
+        """
         if not result.ok:
             # Nothing happened, so there is nothing to check. Running the
             # verifier anyway invites a lenient check to call a step that never
@@ -460,15 +479,58 @@ class Orchestrator:
             verdict = await self._verifier.check(decision, before, after, result)
 
         if verdict.ok:
-            return verdict
+            return verdict, after, [], []
 
-        recovered = await self._recovery.run(
+        await self._set_status(task_id, TaskStatus.RECOVERING)
+        context = RecoveryContext(
             decision=decision,
-            state=after,
+            element=element,
+            before=before,
+            after=after,
             result=result,
-            outcome=verdict,
+            verdict=verdict,
+            browser=self._browser,
+            verifier=self._verifier,
+            on_attempt=self._attempt_announcer(task_id, step_number),
         )
-        return recovered if recovered is not None else verdict
+        recovered = await self._recovery.run(context)
+
+        if recovered is not None:
+            # Back to verifying: the step did in the end do what it should.
+            await self._set_status(task_id, TaskStatus.VERIFYING)
+            # `context.after` is where the successful retry left the browser.
+            # Returning the state that failed instead would have the next step
+            # plan against a page the agent has already navigated away from.
+            return recovered, context.after, context.attempts, context.tried
+
+        return verdict, context.after, context.attempts, context.tried
+
+    def _attempt_announcer(
+        self, task_id: uuid.UUID, step_number: int
+    ) -> Callable[[Attempt], Awaitable[None]]:
+        """Publish each rung as it is tried.
+
+        Deliberately live, ahead of the row. A ladder can take several seconds
+        and the live view exists to show a person what the agent is doing; the
+        durable record is the `recovery_attempts` rows, which are written with
+        the step and served by GET /tasks/{id}/recovery-attempts. A step event
+        is history and leads with the database; an attempt is commentary on
+        one, and the step it belongs to does not exist yet.
+        """
+
+        async def announce(attempt: Attempt) -> None:
+            await self._events.publish(
+                task_id,
+                RecoveryEvent(
+                    task_id=task_id,
+                    step_number=step_number,
+                    attempt_number=attempt.number,
+                    strategy=attempt.label,
+                    outcome=attempt.outcome.value,
+                ),
+            )
+
+        return announce
 
     # ------------------------------------------------------------ persistence
 
@@ -483,6 +545,7 @@ class Orchestrator:
         element: ElementInfo | None,
         state: PageState,
         verdict: Verdict,
+        attempts: list[Attempt],
         risk: RiskLevel,
         shot: Screenshot,
         after: PageState,
@@ -509,7 +572,7 @@ class Orchestrator:
                     target_index=decision.target_index,
                     value_redacted=_redacted_value(decision, sensitive),
                     tab_id=tab_id,
-                    selector_used=_selector_for(element),
+                    selector_used=selector_for(element),
                     bbox=bbox,
                     screenshot_ref=reference,
                     status=StepStatus.VERIFIED if verdict.ok else StepStatus.FAILED,
@@ -531,6 +594,16 @@ class Orchestrator:
                     raw_output=_safe_raw_output(planned.llm_response.parsed, sensitive),
                 )
             )
+            for attempt in attempts:
+                await uow.recovery_attempts.add(
+                    RecoveryAttempt(
+                        step_id=step.id,
+                        attempt_number=attempt.number,
+                        strategy_used=attempt.strategy,
+                        outcome=attempt.outcome,
+                        error=attempt.error,
+                    )
+                )
             await uow.verifications.add(
                 Verification(
                     step_id=step.id,
@@ -656,6 +729,40 @@ class Orchestrator:
 # ----------------------------------------------------------------- helpers
 
 
+def _failure_reason(
+    step_number: int,
+    decision: Decision,
+    element: ElementInfo | None,
+    verdict: Verdict,
+    tried: list[str],
+) -> str:
+    """What a person is told when a step could not be rescued.
+
+    Names the action, the target and what was tried. "Step 3 failed" tells a
+    user nothing they can act on; "could not click Search flights, tried
+    re-reading the page and the stored selector" tells them the button is
+    probably not there any more.
+    """
+    if tried:
+        context = RecoveryContext(
+            decision=decision,
+            element=element,
+            before=_EMPTY_STATE,
+            after=_EMPTY_STATE,
+            result=_NO_RESULT,
+            verdict=verdict,
+            browser=None,  # type: ignore[arg-type]
+            verifier=None,  # type: ignore[arg-type]
+        )
+        return f"Step {step_number}: {failure_sentence(context, tried)}"
+
+    return f"Step {step_number} did not do what was expected. {verdict.detail}".strip()
+
+
+_EMPTY_STATE: Final = PageState(url="")
+_NO_RESULT: Final = ActionResult(ok=False, duration_ms=0, url_before="", url_after="")
+
+
 def _hint_text(hint: CachedHint | None) -> str | None:
     return hint.text if hint else None
 
@@ -716,60 +823,8 @@ def _safe_raw_output(parsed: dict[str, Any], sensitive: bool) -> dict[str, Any]:
     return {**parsed, "value": MASK}
 
 
-def _selector_for(element: ElementInfo | None) -> str | None:
-    """Target by the collector's stamp, not by a stored CSS path.
-
-    The stamp survives a re-render that renames every class, which is one of
-    the chaos cases in spec section 12.
-    """
-    if element is None:
-        return None
-    return f'[{STAMP_ATTRIBUTE}="{element.index}"]'
-
-
 def _bbox_dict(element: ElementInfo | None) -> dict[str, int] | None:
     if element is None:
         return None
     box = element.bbox
     return {"x": box.x, "y": box.y, "width": box.width, "height": box.height}
-
-
-def _build_action(decision: Decision, element: ElementInfo | None) -> BaseModel:
-    """Turn a decision into the typed action the driver will run.
-
-    Routed through ``parse_action`` rather than constructed directly, so the
-    section 4.11 allow-list check runs here as well. An action name that is not
-    one of the twelve is refused before a browser is involved.
-    """
-    selector = _selector_for(element)
-    payload: dict[str, object] = {"action": decision.action.value}
-
-    match decision.action:
-        case ActionType.NAVIGATE | ActionType.NEW_TAB:
-            payload["url"] = decision.value
-        case ActionType.CLICK:
-            payload["selector"] = selector
-        case ActionType.TYPE | ActionType.SELECT:
-            payload["selector"] = selector
-            payload["value"] = decision.value
-        case ActionType.SCROLL:
-            payload["direction"] = decision.value if decision.value in {"up", "down"} else "down"
-        case ActionType.EXTRACT:
-            payload["selector"] = selector
-        case ActionType.WAIT:
-            payload["seconds"] = _wait_seconds(decision.value)
-        case ActionType.SWITCH_TAB | ActionType.CLOSE_TAB:
-            payload["tab_id"] = decision.tab_id
-        case ActionType.DONE:
-            payload["final_answer"] = decision.final_answer
-        case ActionType.GO_BACK:
-            pass
-
-    return parse_action({key: value for key, value in payload.items() if value is not None})
-
-
-def _wait_seconds(value: str | None) -> float:
-    try:
-        return float(value) if value else 1.0
-    except ValueError:
-        return 1.0

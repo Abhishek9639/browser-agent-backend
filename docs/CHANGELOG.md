@@ -4,6 +4,29 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B21 - Error recovery, and the first end-to-end demo
+
+Added
+
+- `app/agent/recovery/`: the seven ordered strategies from spec section 4.8 behind one `Recovery` collaborator. Re-perceive and re-find by role, name and text; a role and accessible-name locator; a text locator that tries exact, then case-insensitive, then a difflib match at 0.8; the stored CSS path and XPath; scroll into view and retry; dismiss overlays and retry; and a visual grounding placeholder that is deliberately never applicable.
+- Every rung works the same way: find a better locator, run the original action against it, and let the verifier decide. A strategy that graded its own attempt would report success whenever Playwright did not raise.
+- `RecoveryRunner` walks the ladder until the verifier is satisfied or `AGENT_MAX_RETRIES_PER_STEP` attempts are spent. Skipped rungs do not spend the budget but are still recorded and numbered, because `attempt_number` is the ordering key on the row.
+- Each attempt writes a `recovery_attempts` row and publishes a `recovery` event as it happens. The task sits in `RECOVERING` while the ladder is climbed.
+- A failure that survives the ladder says what was tried: "Step 5: Could not click 'Search flights': tried scrolling to it and closing a popup."
+- `GET /api/v1/tasks/{id}/recovery-attempts`.
+- Overlay close buttons are ranked so that "Reject non-essential" beats "Accept all cookies", and matched on the whole label so "Accept" cannot also match "Accept and book this flight".
+- `app/agent/browser/action_builder.py`, shared by the loop and recovery, plus `scroll_into_view` and `press` on the browser interface.
+- Three fixture pages that each break in one specific way, and 25 tests.
+
+Fixed
+
+- Strategies that re-locate an element now stand down while the target is covered. A cookie banner made them runnable and useless, and they spent the whole retry budget before the rung that closes overlays was reached.
+- A recovery attempt is verified against the page as it is immediately before the retry, not the page that failed. Closing a modal changes the DOM, so the old baseline let `dom_changed` pass whether or not the retried click landed.
+- The overlay rung clears every overlay it recognises. A cookie banner and a newsletter popup together left the click blocked after one was closed.
+- After a successful rescue the loop carries the page the retry ended on. It was carrying the page that failed, so the agent navigated to the results page and then planned its next step against the search form it had already left.
+- Provider rate limits, timeouts and outages have their own failure reasons instead of reading as an internal error.
+- The mock provider fills any field whose value is not what the goal asks for, rather than only empty ones, and keys the date slot on the input type. A pre-filled date meant the first demo searched the wrong day and returned a confidently wrong answer; "Departure" as a label is the date on one page and the origin city on another.
+
 ### B20 - Deterministic verification
 
 Added

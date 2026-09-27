@@ -235,6 +235,25 @@ async def get_step(
 
 
 @router.get(
+    "/{task_id}/recovery-attempts",
+    response_model=list[RecoveryAttemptResponse],
+    summary="List a task's recovery attempts",
+    description=(
+        "Every rung of the recovery ladder this task climbed, across all "
+        "steps, in order. Empty for a run where nothing needed rescuing."
+    ),
+    responses={404: _NOT_YOURS},
+)
+async def list_recovery_attempts(
+    task_id: uuid.UUID,
+    user: CurrentUser,
+    tasks: TaskServiceDep,
+) -> list[RecoveryAttemptResponse]:
+    attempts = await tasks.list_recovery_attempts(task_id, user)
+    return [RecoveryAttemptResponse.model_validate(attempt) for attempt in attempts]
+
+
+@router.get(
     "/{task_id}/steps/{step_id}/screenshot",
     summary="Get a step's screenshot",
     description=(

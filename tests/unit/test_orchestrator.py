@@ -19,8 +19,10 @@ from app.agent.browser.screenshots import Screenshot
 from app.agent.budget import TaskBudget
 from app.agent.contracts import (
     ApprovalOutcome,
+    Attempt,
     CachedHint,
     GroundingOutcome,
+    RecoveryContext,
     Verdict,
 )
 from app.agent.llm.mock import MockLLM
@@ -29,7 +31,14 @@ from app.agent.perception.state import PageState
 from app.agent.planner.planner import Planner
 from app.agent.planner.schema import Decision
 from app.core.config import Settings
-from app.domain.enums import ActionType, RiskLevel, StepStatus, TaskStatus, VerificationMethod
+from app.domain.enums import (
+    ActionType,
+    RecoveryOutcome,
+    RiskLevel,
+    StepStatus,
+    TaskStatus,
+    VerificationMethod,
+)
 from app.services.events import EventType, InMemoryEventBus
 
 from app.agent.orchestrator import Orchestrator, RunOutcome  # isort: skip
@@ -98,6 +107,8 @@ class FakeBrowser:
         self.executed: list[Any] = []
         self.perceive_calls = 0
         self.settle_calls = 0
+        self.scrolled: list[str] = []
+        self.pressed: list[str] = []
 
     async def perceive(self) -> PageState:
         self.perceive_calls += 1
@@ -105,6 +116,13 @@ class FakeBrowser:
 
     async def settle(self) -> None:
         self.settle_calls += 1
+
+    async def scroll_into_view(self, selector: str) -> bool:
+        self.scrolled.append(selector)
+        return False
+
+    async def press(self, key: str) -> None:
+        self.pressed.append(key)
 
     async def screenshot(self) -> Screenshot:
         return shot()
@@ -182,6 +200,7 @@ class FakeStore:
     steps: list[Any] = field(default_factory=list)
     decisions: list[Any] = field(default_factory=list)
     verifications: list[Any] = field(default_factory=list)
+    recovery_attempts: list[Any] = field(default_factory=list)
     # Staged rows only become visible on commit, exactly like a transaction.
     pending: list[tuple[str, Any]] = field(default_factory=list)
     log: list[str] = field(default_factory=list)
@@ -233,6 +252,7 @@ class FakeUnitOfWork:
         self.task_steps = FakeRepo(store, "steps")
         self.llm_decisions = FakeRepo(store, "decisions")
         self.verifications = FakeRepo(store, "verifications")
+        self.recovery_attempts = FakeRepo(store, "recovery_attempts")
 
 
 def unit_of_work_for(store: FakeStore) -> Any:
@@ -670,7 +690,12 @@ async def test_an_action_the_browser_rejects_fails_the_task(settings: Settings) 
     outcome = await rig.orchestrator.run(TASK_ID)
 
     assert outcome.status is TaskStatus.EXECUTION_FAILED
-    assert outcome.failure_reason == "Step 1 could not be carried out."
+    # The ladder ran and could not rescue it, so the reason says what was
+    # tried rather than only that something went wrong.
+    assert outcome.failure_reason == (
+        "Step 1: Could not type 'From': tried re-reading the page, "
+        "re-locating by name and matching its text."
+    )
     # The step is still recorded: a failure nobody can see is worse than one
     # that shows up in the log.
     assert rig.store.step_numbers() == [1]
@@ -856,7 +881,9 @@ async def test_a_failed_verification_ends_the_task(settings: Settings) -> None:
     assert outcome.status is TaskStatus.EXECUTION_FAILED
     # The reason carries the verifier's own account, so a user is told what
     # was checked rather than only that something went wrong.
-    assert outcome.failure_reason == ("Step 1 did not do what was expected. The page is unchanged.")
+    # The ladder ran first, so the reason lists the rungs rather than only
+    # the verifier's account.
+    assert outcome.failure_reason.startswith("Step 1: Could not type 'From': tried ")
     assert rig.store.steps[0].status is StepStatus.FAILED
 
 
@@ -869,14 +896,17 @@ async def test_recovery_can_rescue_a_failed_step(settings: Settings) -> None:
         def __init__(self) -> None:
             self.calls = 0
 
-        async def run(self, **kwargs: Any) -> Verdict:
+        async def run(self, ctx: RecoveryContext) -> Verdict:
             self.calls += 1
-            outcome: Verdict = kwargs["outcome"]
-            return Verdict(
-                ok=True,
-                method=outcome.method,
-                actual={"strategy": "retry"},
+            ctx.attempts.append(
+                Attempt(
+                    number=1,
+                    strategy="retry",
+                    label="retrying",
+                    outcome=RecoveryOutcome.SUCCEEDED,
+                )
             )
+            return Verdict(ok=True, method=ctx.verdict.method, actual={"strategy": "retry"})
 
     recovery = Rescues()
     rig = build(
@@ -898,7 +928,7 @@ async def test_recovery_is_not_consulted_when_the_step_worked(settings: Settings
         def __init__(self) -> None:
             self.calls = 0
 
-        async def run(self, **kwargs: Any) -> None:
+        async def run(self, ctx: RecoveryContext) -> None:
             self.calls += 1
             return
 

@@ -13,21 +13,26 @@ the protocol.
 """
 
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
+from app.agent.browser.action_builder import SELECTOR_ACTIONS
 from app.agent.browser.driver import ActionResult, BrowserSnapshot
 from app.agent.browser.screenshots import Screenshot
+from app.agent.perception.dom_extractor import ElementInfo
 from app.agent.perception.state import PageState
 from app.agent.planner.schema import Decision
-from app.domain.enums import RiskLevel, VerificationMethod
+from app.domain.enums import RecoveryOutcome, RiskLevel, VerificationMethod
 
 __all__ = [
     "AgentBrowser",
     "ApprovalGate",
     "ApprovalOutcome",
+    "Attempt",
+    "AttemptResult",
     "CachedHint",
     "CancelSignal",
     "DecisionRiskPolicy",
@@ -40,7 +45,8 @@ __all__ = [
     "NoGrounding",
     "NoRecovery",
     "PageStateSessions",
-    "RecoveryStrategy",
+    "Recovery",
+    "RecoveryContext",
     "RiskPolicy",
     "SessionManager",
     "Verdict",
@@ -70,6 +76,65 @@ class Verdict:
     expected: dict[str, Any] = field(default_factory=dict)
     actual: dict[str, Any] = field(default_factory=dict)
     detail: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class AttemptResult:
+    """What one rung of the recovery ladder achieved."""
+
+    outcome: RecoveryOutcome
+    verdict: Verdict | None = None
+    error: str | None = None
+
+    @property
+    def succeeded(self) -> bool:
+        return self.outcome is RecoveryOutcome.SUCCEEDED
+
+
+@dataclass(frozen=True, slots=True)
+class Attempt:
+    """One rung, as it will be recorded and announced."""
+
+    number: int
+    strategy: str
+    label: str
+    outcome: RecoveryOutcome
+    error: str | None = None
+
+
+@dataclass(slots=True)
+class RecoveryContext:
+    """Everything a recovery strategy needs, and what to act with.
+
+    Mutable on purpose. A strategy that changes the page, such as one that
+    closes an overlay, writes the new state back so the rungs below it work
+    from what is actually on screen rather than from the state that failed.
+    """
+
+    decision: Decision
+    element: ElementInfo | None
+    before: PageState
+    after: PageState
+    result: ActionResult
+    verdict: Verdict
+    browser: "AgentBrowser"
+    verifier: "Verifier"
+    attempts: list[Attempt] = field(default_factory=list)
+    tried: list[str] = field(default_factory=list)
+    # Called as each attempt finishes, so a watcher sees the ladder being
+    # climbed rather than a silent pause. The runner knows nothing about the
+    # database or the event bus; the loop supplies this.
+    on_attempt: Callable[[Attempt], Awaitable[None]] | None = None
+
+    @property
+    def targets_an_element(self) -> bool:
+        """Is there an element to re-locate?
+
+        Recovery re-runs the original action against a better locator, so
+        there has to be a locator to improve. Navigating somewhere again is
+        not recovery, it is the same request twice.
+        """
+        return self.decision.action in SELECTOR_ACTIONS and self.element is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +191,19 @@ class AgentBrowser(Protocol):
     async def capture_state(self) -> BrowserSnapshot: ...
 
     async def execute(self, action: BaseModel) -> ActionResult: ...
+
+    async def scroll_into_view(self, selector: str) -> bool:
+        """Bring an element into the viewport. Returns whether it was found.
+
+        Here rather than in recovery because only the browser knows how, and
+        an element below the fold is one of the commonest reasons a click does
+        nothing at all.
+        """
+        ...
+
+    async def press(self, key: str) -> None:
+        """Send a key to the page. Escape closes most modals."""
+        ...
 
 
 class Verifier(Protocol):
@@ -188,22 +266,18 @@ class ApprovalGate(Protocol):
     ) -> ApprovalOutcome: ...
 
 
-class RecoveryStrategy(Protocol):
+class Recovery(Protocol):
     """Try to rescue a step whose verification failed (spec section 4.8).
 
     Returns ``None`` when nothing was attempted, so the caller can tell "no
     recovery ran" apart from "recovery ran and failed". The two mean different
     things to anyone reading the step log.
+
+    The ordered strategies live behind this in ``app/agent/recovery``; the
+    loop only needs to know that something had a go.
     """
 
-    async def run(
-        self,
-        *,
-        decision: Decision,
-        state: PageState,
-        result: ActionResult,
-        outcome: Verdict,
-    ) -> Verdict | None: ...
+    async def run(self, ctx: RecoveryContext) -> Verdict | None: ...
 
 
 class SessionManager(Protocol):
@@ -296,14 +370,7 @@ class DenyApprovals:
 class NoRecovery:
     """Attempts nothing. Replaced by the recovery ladder."""
 
-    async def run(
-        self,
-        *,
-        decision: Decision,
-        state: PageState,
-        result: ActionResult,
-        outcome: Verdict,
-    ) -> Verdict | None:
+    async def run(self, ctx: RecoveryContext) -> Verdict | None:
         return None
 
 

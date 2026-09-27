@@ -26,8 +26,14 @@ from app.agent.orchestrator import Orchestrator
 from app.agent.perception.dom_extractor import MASK
 from app.agent.planner.planner import Planner
 from app.core.config import Settings
-from app.domain.enums import ActionType, StepStatus, TaskStatus, VerificationMethod
-from app.models.task import LLMDecision, TaskStep, Verification
+from app.domain.enums import (
+    ActionType,
+    RecoveryOutcome,
+    StepStatus,
+    TaskStatus,
+    VerificationMethod,
+)
+from app.models.task import LLMDecision, RecoveryAttempt, TaskStep, Verification
 from app.repositories.unit_of_work import UnitOfWork
 from app.services.events import EventType, InMemoryEventBus
 from app.services.storage import LocalFileStorage
@@ -481,11 +487,29 @@ async def test_a_page_that_changes_under_the_agent_fails_the_step(
     outcome = await orchestrator.run(task.id)
 
     assert outcome.status is TaskStatus.EXECUTION_FAILED
-    assert outcome.failure_reason == "Step 1 could not be carried out."
+    # TEST-003: the ladder ran, and the reason says what was tried rather
+    # than only that the step failed.
+    assert outcome.failure_reason.startswith("Step 1: Could not click 'From': tried ")
+    assert "re-reading the page" in outcome.failure_reason
 
     steps = await fetch_steps(session, task.id)
     assert len(steps) == 1
     assert steps[0].status is StepStatus.FAILED
+
+    attempts = (
+        (
+            await session.execute(
+                select(RecoveryAttempt)
+                .where(RecoveryAttempt.step_id == steps[0].id)
+                .order_by(RecoveryAttempt.attempt_number)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert attempts, "recovery was not recorded"
+    assert [a.attempt_number for a in attempts] == list(range(1, len(attempts) + 1))
+    assert all(a.outcome is not RecoveryOutcome.SUCCEEDED for a in attempts)
 
     verification = (
         await session.execute(select(Verification).where(Verification.step_id == steps[0].id))

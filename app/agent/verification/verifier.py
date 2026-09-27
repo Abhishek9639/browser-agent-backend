@@ -295,7 +295,18 @@ def _value_equals(decision: Decision, before: PageState, after: PageState, wante
 
 
 def _dom_changed(before: PageState, after: PageState) -> _Outcome:
-    changed = before.dom_hash != after.dom_hash or before.url != after.url
+    """Did anything about the page change?
+
+    The hash covers interactive elements only, so a click whose whole effect
+    is writing a line into a paragraph would read as nothing having happened.
+    The visible text is compared too, because that is the change a person
+    would see and most results are rendered as text rather than as controls.
+    """
+    hash_changed = before.dom_hash != after.dom_hash
+    url_changed = before.url != after.url
+    text_changed = before.text != after.text
+    changed = hash_changed or url_changed or text_changed
+
     return _Outcome(
         changed,
         Check.DOM_CHANGED,
@@ -303,7 +314,8 @@ def _dom_changed(before: PageState, after: PageState) -> _Outcome:
             "check": Check.DOM_CHANGED.value,
             "before": before.dom_hash,
             "after": after.dom_hash,
-            "urlChanged": before.url != after.url,
+            "urlChanged": url_changed,
+            "textChanged": text_changed,
         },
         "The page changed." if changed else "The page is unchanged.",
     )

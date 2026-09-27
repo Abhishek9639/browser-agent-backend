@@ -6,6 +6,8 @@ vocabularies meet, which is what lets the orchestrator be tested with a fake
 that has no browser behind it at all.
 """
 
+from contextlib import suppress
+
 from pydantic import BaseModel
 
 from app.agent.browser.driver import ActionResult, BrowserSnapshot, PlaywrightDriver
@@ -49,3 +51,23 @@ class DriverBrowser:
 
     async def execute(self, action: BaseModel) -> ActionResult:
         return await self._driver.execute(action)
+
+    async def scroll_into_view(self, selector: str) -> bool:
+        """Scroll an element into the middle of the viewport.
+
+        Centred rather than merely on screen, because a sticky header or a
+        cookie bar sitting at the top is exactly what tends to be covering the
+        thing that would not click.
+        """
+        try:
+            locator = self._driver.page.locator(selector).first
+            if not await locator.count():
+                return False
+            await locator.scroll_into_view_if_needed(timeout=2000)
+        except Exception:
+            return False
+        return True
+
+    async def press(self, key: str) -> None:
+        with suppress(Exception):
+            await self._driver.page.keyboard.press(key)
