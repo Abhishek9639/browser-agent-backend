@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, Query, Response, status
 from app.agent.llm.factory import build_llm
 from app.agent.vision.grounding import VisualGroundingService
 from app.api.deps import (
+    ApprovalServiceDep,
     CurrentUser,
     SettingsDep,
     TaskRunnerDep,
@@ -30,6 +31,8 @@ from app.domain.enums import TaskStatus
 from app.models.task import Task
 from app.repositories.base import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
 from app.schemas.task import (
+    ApprovalDecisionRequest,
+    ApprovalResponse,
     CreateTaskRequest,
     GroundRequest,
     GroundResponse,
@@ -243,6 +246,95 @@ async def get_step(
             RecoveryAttemptResponse.model_validate(attempt) for attempt in detail.recovery_attempts
         ],
     )
+
+
+async def _decide(
+    task_id: uuid.UUID,
+    approved: bool,
+    reason: str | None,
+    user: CurrentUser,
+    approvals: ApprovalServiceDep,
+    after_commit: AfterCommitDep,
+) -> ApprovalResponse:
+    """Answer the approval a task is parked on.
+
+    The decision is committed before it is announced. The run that is waiting
+    wakes and re-reads the row, so it must find the answer that woke it there.
+    """
+    approval = await approvals.decide(task_id, user, approved=approved, reason=reason)
+    response = ApprovalResponse.model_validate(
+        {
+            "id": approval.id,
+            "task_id": approval.task_id,
+            "status": approval.approval_status,
+            "risk_flag": approval.risk_flag,
+            "proposed_action": approval.proposed_action,
+            "reason": approval.reason,
+            "approved_by": approval.approved_by,
+            "decided_at": approval.decided_at,
+            "created_at": approval.created_at,
+        }
+    )
+
+    def announce() -> None:
+        import asyncio
+
+        asyncio.ensure_future(  # noqa: RUF006
+            approvals.announce(approval, approved=approved, by=user.id)
+        )
+
+    after_commit.append(announce)
+    return response
+
+
+@router.post(
+    "/{task_id}/approve",
+    response_model=ApprovalResponse,
+    summary="Approve a high-risk action",
+    description=(
+        "Lets a task that is parked on a human carry on. Allowed for APPROVER "
+        "and ADMIN, and for the task's own submitter when the deployment "
+        "permits it."
+    ),
+    responses={
+        403: {"description": "Your role does not allow approving"},
+        404: {"description": "No such task, or it is not waiting for an approval"},
+        409: {"description": "That approval has already been answered"},
+    },
+)
+async def approve_task(
+    task_id: uuid.UUID,
+    payload: ApprovalDecisionRequest,
+    user: CurrentUser,
+    approvals: ApprovalServiceDep,
+    after_commit: AfterCommitDep,
+) -> ApprovalResponse:
+    return await _decide(task_id, True, payload.reason, user, approvals, after_commit)
+
+
+@router.post(
+    "/{task_id}/reject",
+    response_model=ApprovalResponse,
+    summary="Reject a high-risk action",
+    description=(
+        "Stops the task. A rejection is a person having looked and said no, "
+        "which ends the run as REJECTED; an approval nobody answers is a "
+        "different thing and times out instead."
+    ),
+    responses={
+        403: {"description": "Your role does not allow approving"},
+        404: {"description": "No such task, or it is not waiting for an approval"},
+        409: {"description": "That approval has already been answered"},
+    },
+)
+async def reject_task(
+    task_id: uuid.UUID,
+    payload: ApprovalDecisionRequest,
+    user: CurrentUser,
+    approvals: ApprovalServiceDep,
+    after_commit: AfterCommitDep,
+) -> ApprovalResponse:
+    return await _decide(task_id, False, payload.reason, user, approvals, after_commit)
 
 
 @router.post(

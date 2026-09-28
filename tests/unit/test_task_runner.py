@@ -54,9 +54,15 @@ class FakeTasks:
         return self._store.active()
 
 
+class FakeApprovals:
+    async def get_pending_for_task(self, task_id: uuid.UUID) -> None:
+        return None
+
+
 class FakeUnitOfWork:
     def __init__(self, store: FakeStore) -> None:
         self.tasks = FakeTasks(store)
+        self.approvals = FakeApprovals()
 
 
 def unit_of_work_for(store: FakeStore) -> Any:

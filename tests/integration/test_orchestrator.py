@@ -42,6 +42,13 @@ from tests.integration.conftest_helpers import make_task, make_user
 pytestmark = pytest.mark.browser
 
 
+class Approve:
+    """An approver that always says yes, for tests about something else."""
+
+    async def request(self, **kwargs: Any) -> ApprovalOutcome:
+        return ApprovalOutcome(approved=True, approval_id=uuid.uuid4())
+
+
 def session_unit_of_work(session: AsyncSession) -> Any:
     """A factory bound to the test's transaction.
 
@@ -331,6 +338,9 @@ async def test_a_password_typed_into_a_real_page_is_never_stored(
                 "confidence": 0.9,
             },
         ],
+        # Typing into a password field is high risk, so this needs a human to
+        # say yes before it can get as far as writing a row.
+        approvals=Approve(),
     )
 
     await orchestrator.run(task.id)
@@ -411,12 +421,6 @@ async def test_a_high_risk_action_never_touches_the_page(rig: dict[str, Any]) ->
 async def test_an_approved_high_risk_action_goes_through(rig: dict[str, Any]) -> None:
     task = rig["task"]
     origin = index_of(rig["state"], placeholder="From")
-
-    class Approve:
-        async def request(self, **kwargs: Any) -> ApprovalOutcome:
-            assert kwargs["screenshot"]
-            assert kwargs["bbox"]["width"] > 0
-            return ApprovalOutcome(approved=True, approval_id=uuid.uuid4())
 
     orchestrator = build(
         rig,

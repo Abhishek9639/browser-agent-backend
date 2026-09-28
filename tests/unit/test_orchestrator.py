@@ -141,6 +141,17 @@ class FakeBrowser:
         )
 
 
+class ApprovingGate:
+    """Says yes. For tests about something other than the approval itself."""
+
+    def __init__(self) -> None:
+        self.requests: list[dict[str, Any]] = []
+
+    async def request(self, **kwargs: Any) -> ApprovalOutcome:
+        self.requests.append(kwargs)
+        return ApprovalOutcome(approved=True, approval_id=uuid.uuid4())
+
+
 class PassingVerifier:
     """Says yes. These tests are about the loop, not about verification.
 
@@ -518,6 +529,9 @@ async def test_a_typed_password_never_reaches_the_database_or_the_wire(
         script=[decision_payload(value=secret, target="Password"), done_payload()],
         browser=FakeBrowser(state),
         settings=settings,
+        # Typing into a password field is high risk now, so without a gate
+        # that answers, this stops before it ever writes a row.
+        approvals=ApprovingGate(),
     )
 
     await rig.orchestrator.run(TASK_ID)
@@ -551,6 +565,7 @@ async def test_a_masked_field_value_is_treated_as_sensitive(settings: Settings) 
         script=[decision_payload(value="4111111111111111"), done_payload()],
         browser=FakeBrowser(state),
         settings=settings,
+        approvals=ApprovingGate(),
     )
 
     await rig.orchestrator.run(TASK_ID)

@@ -156,6 +156,7 @@ class RunReport:
     steps: list[StepRecord] = field(default_factory=list)
     attempts: list[AttemptRecord] = field(default_factory=list)
     answer: str | None = None
+    approvals: list[str] = field(default_factory=list)
     expected_price: int = 0
     wall_ms: int = 0
     final_url: str = ""
@@ -322,6 +323,9 @@ async def run_once(
         )
         for attempt in await uow.recovery_attempts.list_for_task(task.id)
     ]
+    approvals = [
+        approval.approval_status.value for approval in await uow.approvals.list_for_task(task.id)
+    ]
     answer = (task.final_answer or {}).get("text") if task.final_answer else None
 
     return RunReport(
@@ -330,6 +334,7 @@ async def run_once(
         steps=steps,
         attempts=attempts,
         answer=answer,
+        approvals=approvals,
         expected_price=int(cheapest_fare(base_url, on)["price"]),
         wall_ms=wall_ms,
         final_url=final_url,

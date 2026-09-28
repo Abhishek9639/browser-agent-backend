@@ -144,6 +144,10 @@ class ApprovalOutcome:
     approved: bool
     approval_id: uuid.UUID | None = None
     reason: str | None = None
+    # Nobody answered, as opposed to somebody saying no. Spec section 4.3
+    # sends these to different terminal states, so the loop has to be able to
+    # tell them apart.
+    expired: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -293,6 +297,8 @@ class ApprovalGate(Protocol):
         risk: RiskLevel,
         screenshot: str | None,
         bbox: dict[str, int] | None,
+        reasons: list[str],
+        site: str,
     ) -> ApprovalOutcome: ...
 
 
@@ -396,6 +402,8 @@ class DenyApprovals:
         risk: RiskLevel,
         screenshot: str | None,
         bbox: dict[str, int] | None,
+        reasons: list[str],
+        site: str,
     ) -> ApprovalOutcome:
         return ApprovalOutcome(
             approved=False,

@@ -22,6 +22,7 @@ from app.db.session import DatabaseDep
 from app.domain.enums import UserRole
 from app.models.user import User
 from app.repositories.unit_of_work import UnitOfWorkDep
+from app.services.approvals import ApprovalRegistry, ApprovalService
 from app.services.auth import AuthService
 from app.services.events import EventBus, InMemoryEventBus
 from app.services.storage import LocalFileStorage, ScreenshotStorage
@@ -31,6 +32,8 @@ from app.services.task_service import TaskService
 from app.services.ws_tickets import InMemoryTicketStore, TicketStore
 
 __all__ = [
+    "ApprovalRegistryDep",
+    "ApprovalServiceDep",
     "AuthServiceDep",
     "CurrentUser",
     "EventBusDep",
@@ -43,6 +46,8 @@ __all__ = [
     "TicketStoreDep",
     "TokenServiceDep",
     "get_app_settings",
+    "get_approval_registry",
+    "get_approval_service",
     "get_current_user",
     "get_event_bus",
     "get_key_pair",
@@ -129,6 +134,40 @@ def get_task_service(
 
 
 TaskServiceDep = Annotated[TaskService, Depends(get_task_service)]
+
+
+def get_approval_registry(connection: HTTPConnection) -> ApprovalRegistry:
+    """The approvals this process is waiting on.
+
+    On app state so the HTTP request that answers one can wake the run that
+    is blocked on it, which is only possible when both are in this process.
+    """
+    registry = getattr(connection.app.state, "approval_registry", None)
+    if isinstance(registry, ApprovalRegistry):
+        return registry
+    registry = ApprovalRegistry()
+    connection.app.state.approval_registry = registry
+    return registry
+
+
+ApprovalRegistryDep = Annotated[ApprovalRegistry, Depends(get_approval_registry)]
+
+
+def get_approval_service(
+    uow: UnitOfWorkDep,
+    registry: ApprovalRegistryDep,
+    bus: "EventBusDep",
+    settings: SettingsDep,
+) -> ApprovalService:
+    return ApprovalService(
+        uow,
+        registry,
+        bus,
+        owner_can_approve=settings.APPROVAL_OWNER_CAN_APPROVE,
+    )
+
+
+ApprovalServiceDep = Annotated[ApprovalService, Depends(get_approval_service)]
 
 
 def get_event_bus(connection: HTTPConnection) -> EventBus:

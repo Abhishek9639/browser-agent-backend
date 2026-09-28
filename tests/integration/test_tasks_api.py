@@ -725,3 +725,168 @@ async def test_someone_elses_recovery_attempts_are_404(
     )
 
     assert response.status_code == 404
+
+
+# ------------------------------------------------------------- approvals
+
+
+async def _pending_approval(
+    session: AsyncSession, task_id: uuid.UUID, *, reason: str = "Click 'Pay now' on SkyFare."
+) -> Any:
+    from app.domain.enums import ApprovalStatus, RiskLevel, TaskStatus
+    from app.models.approval import Approval
+    from app.models.task import Task
+
+    task = await session.get(Task, task_id)
+    assert task is not None
+    task.status = TaskStatus.AWAITING_APPROVAL
+
+    approval = Approval(
+        task_id=task_id,
+        risk_flag=RiskLevel.HIGH,
+        proposed_action={"action": "click", "target": "Pay now"},
+        approval_status=ApprovalStatus.PENDING,
+        reason=reason,
+    )
+    session.add(approval)
+    await session.commit()
+    return approval
+
+
+async def test_the_owner_can_approve_by_default(
+    client: AsyncClient, auth: dict[str, str], db_session: AsyncSession
+) -> None:
+    created = await create(client, auth)
+    task_id = uuid.UUID(created.json()["id"])
+    await _pending_approval(db_session, task_id)
+
+    response = await client.post(
+        f"/api/v1/tasks/{task_id}/approve", json={"approved": True}, headers=auth
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "APPROVED"
+    assert body["approvedBy"]
+    assert body["decidedAt"]
+    assert body["riskFlag"] == "HIGH"
+
+
+async def test_rejecting_records_the_reviewers_reason(
+    client: AsyncClient, auth: dict[str, str], db_session: AsyncSession
+) -> None:
+    created = await create(client, auth)
+    task_id = uuid.UUID(created.json()["id"])
+    await _pending_approval(db_session, task_id)
+
+    response = await client.post(
+        f"/api/v1/tasks/{task_id}/reject",
+        json={"approved": False, "reason": "I did not ask it to buy anything"},
+        headers=auth,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "REJECTED"
+    assert response.json()["reason"] == "I did not ask it to buy anything"
+
+
+async def test_someone_else_cannot_approve_your_task(
+    client: AsyncClient, auth: dict[str, str], db_session: AsyncSession
+) -> None:
+    """TEST-008, from outside.
+
+    404 rather than 403: a stranger must not be able to learn that a task
+    exists, let alone that it is waiting on a decision.
+    """
+    created = await create(client, auth)
+    task_id = uuid.UUID(created.json()["id"])
+    await _pending_approval(db_session, task_id)
+    stranger = await sign_in(client, email="stranger-approver@example.test")
+
+    response = await client.post(
+        f"/api/v1/tasks/{task_id}/approve", json={"approved": True}, headers=stranger
+    )
+
+    assert response.status_code == 404
+
+
+async def test_a_submitter_without_the_role_is_403_when_owners_may_not_approve(
+    api_app: FastAPI,
+    client: AsyncClient,
+    auth: dict[str, str],
+    db_session: AsyncSession,
+    settings: Settings,
+) -> None:
+    """TEST-008 proper: the task is theirs and the role still is not enough.
+
+    403 rather than 404 here, unlike a stranger: the caller has already been
+    shown this task, so there is nothing left to hide and telling them they
+    lack the role is more useful than pretending it does not exist.
+    """
+    from app.api.deps import get_app_settings
+
+    created = await create(client, auth)
+    task_id = uuid.UUID(created.json()["id"])
+    await _pending_approval(db_session, task_id)
+
+    strict = settings.model_copy(update={"APPROVAL_OWNER_CAN_APPROVE": False})
+    api_app.dependency_overrides[get_app_settings] = lambda: strict
+
+    response = await client.post(
+        f"/api/v1/tasks/{task_id}/approve", json={"approved": True}, headers=auth
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "FORBIDDEN"
+
+
+async def test_approving_when_nothing_is_pending_is_404(
+    client: AsyncClient, auth: dict[str, str]
+) -> None:
+    created = await create(client, auth)
+
+    response = await client.post(
+        f"/api/v1/tasks/{created.json()['id']}/approve",
+        json={"approved": True},
+        headers=auth,
+    )
+
+    assert response.status_code == 404
+
+
+async def test_answering_twice_is_409(
+    client: AsyncClient, auth: dict[str, str], db_session: AsyncSession
+) -> None:
+    created = await create(client, auth)
+    task_id = uuid.UUID(created.json()["id"])
+    await _pending_approval(db_session, task_id)
+
+    first = await client.post(
+        f"/api/v1/tasks/{task_id}/approve", json={"approved": True}, headers=auth
+    )
+    again = await client.post(
+        f"/api/v1/tasks/{task_id}/reject", json={"approved": False}, headers=auth
+    )
+
+    assert first.status_code == 200
+    assert again.status_code == 409
+    assert again.json()["error"]["code"] == "CONFLICT"
+
+
+async def test_the_decision_is_audited(
+    client: AsyncClient, auth: dict[str, str], db_session: AsyncSession
+) -> None:
+    from app.models.audit import AuditEvent
+
+    created = await create(client, auth)
+    task_id = uuid.UUID(created.json()["id"])
+    await _pending_approval(db_session, task_id)
+
+    await client.post(f"/api/v1/tasks/{task_id}/approve", json={"approved": True}, headers=auth)
+
+    rows = (
+        (await db_session.execute(select(AuditEvent).where(AuditEvent.task_id == task_id)))
+        .scalars()
+        .all()
+    )
+    assert any(row.action == "APPROVAL_GRANTED" for row in rows)

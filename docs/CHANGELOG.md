@@ -4,6 +4,28 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B23 - Risk policy and human-in-the-loop approval
+
+Added
+
+- `app/agent/safety/risk.py`: deterministic rules returning a level and the reasons for it. A control whose label matches a configurable phrase list, typing into a password or card or CVV or OTP field, or navigating to a path that looks like a till. English plus the Hinglish a real Indian booking site uses, because a button labelled "Abhi kharidein" is not less of a purchase.
+- Final risk is the higher of the rules and the planner's own, so a model that calls a purchase low risk cannot talk its way past a rule that says otherwise.
+- `app/agent/safety/gate.py`: writes a PENDING approval, commits it, announces it with a screenshot, bbox and a plain-language description, then waits. The row is written before the event so a client reconnecting mid-wait is told about the approval by the replay rather than having missed its only announcement.
+- `app/services/approvals.py`: the registry a waiting run blocks on and the service an HTTP request answers through. The answer goes to the database and the event only wakes the run, so losing the event loses the promptness and not the decision.
+- `POST /api/v1/tasks/{id}/approve` and `/reject`. APPROVER or ADMIN, or the task's own submitter when `APPROVAL_OWNER_CAN_APPROVE` allows it. A stranger gets 404 and cannot learn the task exists; the owner without the role gets 403, because by then there is nothing left to hide. No pending approval is 404, answering twice is 409, and every decision writes an audit row and publishes `approval_resolved`.
+- Restart recovery expires a pending approval rather than leaving it PENDING, since the run that would have received the answer died with the process.
+- `RISK_HIGH_PHRASES` and `APPROVAL_OWNER_CAN_APPROVE` settings.
+- 54 tests.
+
+Changed
+
+- The chaos injection case now also asserts that no high-risk action was proposed at all. The first assertion is the injection defence working; the second is what catches it when the defence does not.
+- The default risk policy is the deterministic one rather than a pass-through, so typing a password now needs a human.
+
+Deviation from the brief
+
+- The brief said an approval nobody answers should make the task `REJECTED`. Spec section 4.3 and decision A4 both say `EXPIRED` for the approval and `TIMED_OUT` for the task, and reserve `REJECTED` for an explicit human rejection. The spec is the source of truth, so a timeout times the task out. The two are different events and a run that nobody looked at should not read as one somebody refused.
+
 ### Fixed: iframe targeting
 
 - The driver resolved every selector with `page.locator`, which only ever sees the main frame, so an element inside a same-origin iframe was perceived perfectly well and then could not be clicked, typed into or read. Click, type, select and extract now resolve through a shared frame-aware lookup that tries the main frame first, so a page without frames behaves exactly as before.

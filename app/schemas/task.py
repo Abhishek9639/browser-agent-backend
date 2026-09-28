@@ -14,6 +14,7 @@ from pydantic import Field, field_validator
 
 from app.domain.enums import (
     ActionType,
+    ApprovalStatus,
     RecoveryOutcome,
     RiskLevel,
     StepStatus,
@@ -23,6 +24,8 @@ from app.domain.enums import (
 from app.schemas.base import CamelModel
 
 __all__ = [
+    "ApprovalDecisionRequest",
+    "ApprovalResponse",
     "CreateTaskRequest",
     "GroundRequest",
     "GroundResponse",
@@ -111,6 +114,30 @@ class CreateTaskRequest(CamelModel):
         if not separator or scheme.lower() not in {"http", "https"}:
             raise ValueError("A start URL must begin with http:// or https://.")
         return url
+
+
+class ApprovalDecisionRequest(CamelModel):
+    """Body of ``POST /tasks/{id}/approve`` and ``/reject``."""
+
+    approved: bool = Field(description="Whether the proposed action may go ahead.")
+    reason: Annotated[str | None, Field(default=None, max_length=500)] = None
+
+
+class ApprovalResponse(CamelModel):
+    """An approval, after it has been answered."""
+
+    id: uuid.UUID
+    task_id: uuid.UUID
+    status: ApprovalStatus = Field(examples=[ApprovalStatus.APPROVED])
+    risk_flag: RiskLevel = Field(examples=[RiskLevel.HIGH])
+    proposed_action: dict[str, Any]
+    reason: str | None = Field(
+        default=None,
+        examples=["Click 'Pay now' on SkyFare. Flagged because the control says 'pay now'."],
+    )
+    approved_by: uuid.UUID | None = None
+    decided_at: datetime | None = None
+    created_at: datetime
 
 
 class GroundRequest(CamelModel):
