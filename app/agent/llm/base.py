@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Final, Protocol, runtime_checkable
 
+from app.core import metrics
 from app.core.logging import get_logger
 
 __all__ = [
@@ -36,6 +37,9 @@ __all__ = [
     "is_retryable",
     "merge_images",
     "parse_json_payload",
+    "record_call",
+    "record_failure",
+    "record_response",
 ]
 
 logger = get_logger(__name__)
@@ -383,3 +387,69 @@ def parse_json_payload(text: str, *, provider: str) -> dict[str, Any]:
 def elapsed_ms(started: float) -> int:
     """Milliseconds since a ``time.perf_counter()`` reading."""
     return int((time.perf_counter() - started) * 1000)
+
+
+def record_call(
+    *,
+    provider: str,
+    model: str,
+    purpose: str,
+    seconds: float,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+) -> None:
+    """Publish one model call to the metrics.
+
+    Here rather than in each adapter, because the adapters are the part most
+    likely to be added to and an instrument that has to be remembered in a new
+    file is one that will be missing from it. The two callers are the planner
+    and visual grounding, which between them are every model call the system
+    makes.
+
+    Tokens are counts. Nothing about a prompt or a completion is published.
+    """
+    metrics.llm_request_duration_seconds.labels(
+        provider=provider, model=model, purpose=purpose
+    ).observe(seconds)
+    if input_tokens:
+        metrics.llm_tokens_total.labels(provider=provider, model=model, direction="input").inc(
+            input_tokens
+        )
+    if output_tokens:
+        metrics.llm_tokens_total.labels(provider=provider, model=model, direction="output").inc(
+            output_tokens
+        )
+
+
+def record_response(response: "LLMResponse", *, purpose: str) -> None:
+    """The usual case: a call that came back."""
+    record_call(
+        provider=response.provider,
+        model=response.model_name,
+        purpose=purpose,
+        seconds=response.latency_ms / 1000,
+        input_tokens=response.usage.input_tokens,
+        output_tokens=response.usage.output_tokens,
+    )
+
+
+def record_failure(
+    *,
+    provider: str,
+    model: str,
+    purpose: str,
+    seconds: float,
+    error: Exception,
+) -> None:
+    """A call that raised.
+
+    Timed as well as counted: a timeout is the most important latency
+    observation there is, and dropping it would make the histogram look better
+    the worse the provider got.
+    """
+    metrics.llm_request_duration_seconds.labels(
+        provider=provider, model=model, purpose=purpose
+    ).observe(seconds)
+    metrics.llm_errors_total.labels(
+        provider=provider, model=model, error=type(error).__name__
+    ).inc()

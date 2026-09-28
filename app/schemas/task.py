@@ -7,7 +7,7 @@ example, so what it generates is accurate rather than approximately right.
 
 import re
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated, Any, Final
 
 from pydantic import Field, field_validator
@@ -202,6 +202,51 @@ class TaskResponse(CamelModel):
     )
     created_at: datetime
     finished_at: datetime | None = None
+
+
+class TrendPointResponse(CamelModel):
+    """One day of the history page's chart."""
+
+    day: date
+    tasks: int = Field(examples=[4])
+    completed: int = Field(examples=[3])
+
+
+class StatsOverviewResponse(CamelModel):
+    """The section 9 KPIs for one caller, or for everyone.
+
+    Every rate is null rather than zero when there is nothing to divide by.
+    Zero would claim that nothing succeeded, which is a different thing to show
+    a user than an empty history and indistinguishable once it reaches JSON.
+    """
+
+    scope: str = Field(description="`mine`, or `all` for an administrator.", examples=["mine"])
+    tasks_total: int = Field(description="Tasks that have finished.", examples=[42])
+    tasks_completed: int = Field(examples=[38])
+    completion_rate: float | None = Field(default=None, examples=[0.905])
+    median_duration_seconds: float | None = Field(default=None, examples=[18.4])
+    recovery_success_rate: float | None = Field(
+        default=None,
+        description="Share of failed steps the ladder rescued, counted per step.",
+        examples=[0.8],
+    )
+    recovery_episodes: int = Field(
+        default=0,
+        description="Steps that needed rescuing, which is the denominator above.",
+        examples=[15],
+    )
+    cache_hit_rate: float | None = Field(
+        default=None,
+        description="Share of finished tasks that replayed at least one cached step.",
+        examples=[0.25],
+    )
+    approvals_requested: int = Field(default=0, examples=[2])
+    credits_used: int | None = Field(
+        default=None,
+        description="Null when billing is disabled for this deployment.",
+        examples=[57],
+    )
+    trend: list[TrendPointResponse] = Field(default_factory=list)
 
 
 class CacheMatchResponse(CamelModel):

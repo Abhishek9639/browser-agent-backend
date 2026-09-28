@@ -4,6 +4,34 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B27 - Metrics, stats overview and log hygiene
+
+Added
+
+- `app/core/metrics.py` and `GET /metrics` in Prometheus text, on its own registry and at the root per decision A9. Admin bearer token or `X-Internal-Token` when `METRICS_INTERNAL_TOKEN` is set; the token comparison is constant time. Sixteen collectors covering the API, the agent, the model and the live view, which between them derive every KPI in spec section 9.
+- `GET /api/v1/stats/overview`: completion rate, median duration, recovery success rate, cache hit rate, approvals requested, credits used when billing is enabled, and a seven day trend. Own tasks by default; an ADMIN may pass `scope=all`, and anyone else asking for it gets 403 rather than their own numbers under a global heading.
+- `app/repositories/stats.py` and `app/services/stats.py`: the aggregates, and the arithmetic over them.
+- Log context bound rather than passed: `task_id` for a whole run, `step_number` for a step, alongside the existing `request_id`. A decision logs `model_name`, `provider` and `prompt_version`; a status change logs `status`; a failed action logs `error_code`.
+- `docs/observability.md`: every metric and its labels, useful log queries, and seven Prometheus alert rules covering repeated step failures, API error rate, LLM dependency failure, decision latency, and the completion and recovery benchmarks.
+- `prometheus-client`, and the `METRICS_INTERNAL_TOKEN` setting. The library is not in the spec section 3 stack list; section 6 requires Prometheus text output and the part brief asked for it by name.
+- 30 tests, including a scan of every log line a full mock task produces.
+
+Not labelled, on purpose
+
+- No metric carries a task id, user id or URL. A label taken from user input grows one time series per task, or per probe from whatever is scanning the internet, which is the standard way instrumentation takes down the service it was meant to watch. A test enumerates the registry and fails if any collector gains one.
+- The HTTP metrics use the route template with parameters put back, and label an unmatched request `unmatched` rather than by its path.
+- "Repeated action failures on one task" is therefore not a Prometheus rule. The step budget and the ladder's own budget already stop a task that keeps failing, and the per-task question is answered by a log query on `task_id`, which the observability page documents. The aggregate rule is the metric-shaped version of the same signal.
+
+Changed
+
+- Recovery is counted per failed step rather than per attempt, matching the chaos harness: a step rescued on the third rung is one success, not one success and two failures.
+- `cache_lookups_total` has three outcomes, `hit`, `miss` and `ineligible`. A flow below the success-rate threshold is not a hit; counting it as one would measure how often a signature matched rather than how often the cache helped.
+- Structlog no longer caches bound loggers on first use. Caching binds each module's logger to whatever processor chain existed when it first logged, which makes the pipeline unobservable and the section 10 guarantee untestable. The cost is a dictionary lookup per log call.
+
+Fixed
+
+- `metrics.reset()` left unlabelled counters at their old values, because `clear()` only empties a collector's label map. One test's recovery episodes were appearing in the next test's total.
+
 ### B25 - Task replay and caching
 
 Added

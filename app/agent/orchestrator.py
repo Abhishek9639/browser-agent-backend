@@ -64,8 +64,9 @@ from app.agent.recovery.runner import RecoveryRunner, failure_sentence
 from app.agent.safety.risk import DeterministicRiskPolicy, RiskAssessment
 from app.agent.verification.verifier import DeterministicVerifier
 from app.agent.vision.grounding import ground_reason
+from app.core import metrics
 from app.core.config import Settings
-from app.core.logging import get_logger
+from app.core.logging import get_logger, step_context, task_context
 from app.db.session import Database
 from app.domain.enums import ActionType, RiskLevel, StepStatus, TaskStatus
 from app.domain.state_machine import transition
@@ -254,6 +255,11 @@ class Orchestrator:
         watching a spinner forever, which is a worse failure than the one that
         caused it.
         """
+        with task_context(task_id):
+            return await self._run(task_id)
+
+    async def _run(self, task_id: uuid.UUID) -> RunOutcome:
+        """The run itself, with the task id already bound for logging."""
         started = time.monotonic()
         budget = self._budget or TaskBudget.from_settings(self._settings)
 
@@ -275,7 +281,7 @@ class Orchestrator:
             failure_reason = stop.failure_reason
         except BudgetExceeded as exc:
             status, failure_reason = _budget_outcome(exc)
-            logger.info("task_budget_exceeded", task_id=str(task_id), reason=exc.reason.value)
+            logger.info("task_budget_exceeded", reason=exc.reason.value)
         except Exception as exc:
             if self._cancel.is_cancelled():
                 # Closing the context under a running action raises, and that
@@ -289,7 +295,7 @@ class Orchestrator:
                 failure_reason = _safe_reason(exc)
             # The detail stays here, where it is useful and nobody untrusted
             # reads it. Only the sanitised sentence above reaches the client.
-            logger.exception("task_failed", task_id=str(task_id), error=type(exc).__name__)
+            logger.exception("task_failed", error=type(exc).__name__)
 
         duration_ms = int((time.monotonic() - started) * 1000)
         settled = await self._settle(task_id, status, final_answer, failure_reason)
@@ -312,12 +318,12 @@ class Orchestrator:
         if tally.vision_calls:
             logger.info(
                 "task_vision_summary",
-                task_id=str(task_id),
                 calls=tally.vision_calls,
                 failures=tally.vision_failures,
                 latency_ms=tally.vision_latency_ms,
                 tokens=tally.vision_tokens,
             )
+        _publish_metrics(outcome)
         await self._publish_final(task_id, outcome)
         return outcome
 
@@ -370,42 +376,43 @@ class Orchestrator:
             risk = RiskLevel.highest(assessment.level, decision.risk_level)
             step_number = budget.consume_step()
 
-            if risk is RiskLevel.HIGH or decision.requires_approval:
-                await self._gate(
-                    task_id, step_number, decision, risk, element, assessment.reasons, state
+            with step_context(step_number):
+                if risk is RiskLevel.HIGH or decision.requires_approval:
+                    await self._gate(
+                        task_id, step_number, decision, risk, element, assessment.reasons, state
+                    )
+
+                await self._set_status(task_id, TaskStatus.ACTING)
+                action = build_action(decision, element)
+                result = await self._browser.execute(action)
+
+                await self._set_status(task_id, TaskStatus.VERIFYING)
+                self._stop_if_cancelled()
+
+                # Wait for the page to stop moving before reading it. Checking a
+                # click against a page that is still assembling itself fails
+                # steps that worked, and the agent then recovers from a success.
+                await self._browser.settle()
+                after = await self._browser.perceive()
+                verdict, after, attempts, tried = await self._verify(
+                    task_id, step_number, decision, element, state, after, result
                 )
 
-            await self._set_status(task_id, TaskStatus.ACTING)
-            action = build_action(decision, element)
-            result = await self._browser.execute(action)
-
-            await self._set_status(task_id, TaskStatus.VERIFYING)
-            self._stop_if_cancelled()
-
-            # Wait for the page to stop moving before reading it. Checking a
-            # click against a page that is still assembling itself fails steps
-            # that worked, and the agent then recovers from a success.
-            await self._browser.settle()
-            after = await self._browser.perceive()
-            verdict, after, attempts, tried = await self._verify(
-                task_id, step_number, decision, element, state, after, result
-            )
-
-            shot = await self._browser.screenshot()
-            await self._record(
-                task_id=task_id,
-                step_number=step_number,
-                decision=decision,
-                planned=planned,
-                grounded=grounded,
-                element=element,
-                state=state,
-                verdict=verdict,
-                attempts=attempts,
-                risk=risk,
-                shot=shot,
-                after=after,
-            )
+                shot = await self._browser.screenshot()
+                await self._record(
+                    task_id=task_id,
+                    step_number=step_number,
+                    decision=decision,
+                    planned=planned,
+                    grounded=grounded,
+                    element=element,
+                    state=state,
+                    verdict=verdict,
+                    attempts=attempts,
+                    risk=risk,
+                    shot=shot,
+                    after=after,
+                )
 
             if verdict.ok and decision.action is not ActionType.DONE:
                 # Everything but the answer. A cached `done` would replay last
@@ -485,7 +492,6 @@ class Orchestrator:
             if step.locator is not None and element is None:
                 logger.info(
                     "replay_target_missing",
-                    task_id=str(task_id),
                     step=step.action.value,
                     target=step.locator.described,
                 )
@@ -496,56 +502,57 @@ class Orchestrator:
             risk = RiskLevel.highest(assessment.level, decision.risk_level)
             step_number = budget.consume_step()
 
-            if risk is RiskLevel.HIGH or decision.requires_approval:
-                # A cached step can be a purchase. The gate does not care where
-                # the decision came from, and it must not: a flow that could
-                # replay a payment unattended would be the worst thing in here.
-                await self._gate(
-                    task_id, step_number, decision, risk, element, assessment.reasons, state
+            with step_context(step_number):
+                if risk is RiskLevel.HIGH or decision.requires_approval:
+                    # A cached step can be a purchase. The gate does not care where
+                    # the decision came from, and it must not: a flow that could
+                    # replay a payment unattended would be the worst thing in here.
+                    await self._gate(
+                        task_id, step_number, decision, risk, element, assessment.reasons, state
+                    )
+
+                await self._set_status(task_id, TaskStatus.ACTING)
+                phase = TaskStatus.ACTING
+                result = await self._browser.execute(build_action(decision, element))
+
+                await self._set_status(task_id, TaskStatus.VERIFYING)
+                phase = TaskStatus.VERIFYING
+                await self._browser.settle()
+                after = await self._browser.perceive()
+                verdict, after, attempts, _tried = await self._verify(
+                    task_id, step_number, decision, element, state, after, result
                 )
 
-            await self._set_status(task_id, TaskStatus.ACTING)
-            phase = TaskStatus.ACTING
-            result = await self._browser.execute(build_action(decision, element))
-
-            await self._set_status(task_id, TaskStatus.VERIFYING)
-            phase = TaskStatus.VERIFYING
-            await self._browser.settle()
-            after = await self._browser.perceive()
-            verdict, after, attempts, _tried = await self._verify(
-                task_id, step_number, decision, element, state, after, result
-            )
-
-            shot = await self._browser.screenshot()
-            await self._record(
-                task_id=task_id,
-                step_number=step_number,
-                decision=decision,
-                planned=None,
-                grounded=GroundingOutcome(decision=decision),
-                element=element,
-                state=state,
-                verdict=verdict,
-                attempts=attempts,
-                risk=risk,
-                shot=shot,
-                after=after,
-                replayed=True,
-            )
-            history.append(
-                StepSummary(
+                shot = await self._browser.screenshot()
+                await self._record(
+                    task_id=task_id,
                     step_number=step_number,
-                    action=decision.action.value,
-                    target=decision.target,
-                    verified=verdict.ok,
-                    extracted=result.extracted,
+                    decision=decision,
+                    planned=None,
+                    grounded=GroundingOutcome(decision=decision),
+                    element=element,
+                    state=state,
+                    verdict=verdict,
+                    attempts=attempts,
+                    risk=risk,
+                    shot=shot,
+                    after=after,
+                    replayed=True,
                 )
-            )
+                history.append(
+                    StepSummary(
+                        step_number=step_number,
+                        action=decision.action.value,
+                        target=decision.target,
+                        verified=verdict.ok,
+                        extracted=result.extracted,
+                    )
+                )
 
-            state = after
-            if not verdict.ok:
-                logger.info("replay_step_failed", task_id=str(task_id), step=step.action.value)
-                break
+                state = after
+                if not verdict.ok:
+                    logger.info("replay_step_failed", step=step.action.value)
+                    break
 
             tally.replayed_steps += 1
             tally.cacheable.append(_cacheable(decision, element))
@@ -555,7 +562,6 @@ class Orchestrator:
         remaining = plan.steps[done:]
         logger.info(
             "replay_finished",
-            task_id=str(task_id),
             flow_id=str(plan.flow_id),
             replayed=done,
             of=len(plan.steps),
@@ -621,6 +627,10 @@ class Orchestrator:
         tally.vision_calls += 1
         tally.vision_latency_ms += outcome.latency_ms
         tally.vision_tokens += outcome.tokens
+        metrics.vision_invocations_total.labels(
+            reason=reason.name.lower(),
+            outcome="declined" if outcome.error is not None else "resolved",
+        ).inc()
         if outcome.error is not None:
             # Spec section 4.9: vision being down degrades to DOM-only. It is
             # recorded and it never fails the task.
@@ -871,6 +881,10 @@ class Orchestrator:
                         error=attempt.error,
                     )
                 )
+            metrics.verification_total.labels(
+                result="passed" if verdict.ok else "failed",
+                method=verdict.method.value,
+            ).inc()
             await uow.verifications.add(
                 Verification(
                     step_id=step.id,
@@ -967,7 +981,7 @@ class Orchestrator:
                     task.failure_reason = failure_reason
         except Exception:
             # The final event still has to go out, so this cannot be fatal.
-            logger.exception("task_settle_failed", task_id=str(task_id), target=status.value)
+            logger.exception("task_settle_failed", target=status.value)
             return status
 
         await self._events.publish(
@@ -1073,6 +1087,18 @@ def _cacheable(decision: Decision, element: ElementInfo | None) -> ReplayStep:
         expected_value=decision.expected_outcome.value,
         needs_planner=sensitive,
     )
+
+
+def _publish_metrics(outcome: RunOutcome) -> None:
+    """One terminal run, in Prometheus.
+
+    Labelled by status only. Everything else about a run is in the rows, and a
+    metric labelled by anything task-specific would grow a series per task.
+    """
+    status = outcome.status.value
+    metrics.tasks_total.labels(status=status).inc()
+    metrics.task_duration_seconds.labels(status=status).observe(outcome.duration_ms / 1000)
+    metrics.steps_per_task.labels(status=status).observe(outcome.steps)
 
 
 def _credits(steps: int, vision_steps: int) -> int:

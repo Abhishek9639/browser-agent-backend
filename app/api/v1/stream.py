@@ -24,6 +24,7 @@ from app.api.deps import (
     TaskServiceDep,
     TicketStoreDep,
 )
+from app.core import metrics
 from app.core.logging import get_logger
 from app.schemas.base import CamelModel
 from app.services.events import AnyEvent, EventType, HeartbeatEvent, Subscription
@@ -190,6 +191,7 @@ def _log_latency(event: AnyEvent) -> None:
         return
 
     delay_ms = int((datetime.now(UTC) - event.timestamp).total_seconds() * 1000)
+    metrics.ws_delivery_latency_seconds.observe(delay_ms / 1000)
     logger.info(
         "stream_step_latency",
         task_id=str(event.task_id),

@@ -16,6 +16,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from app.core import metrics
 from app.core.errors import Conflict, Forbidden, NotFound
 from app.core.logging import get_logger
 from app.domain.enums import ApprovalStatus, TaskStatus, UserRole
@@ -122,6 +123,7 @@ class ApprovalService:
             raise NotFound("This task is not waiting for an approval.")
 
         approval.approval_status = ApprovalStatus.APPROVED if approved else ApprovalStatus.REJECTED
+        metrics.approvals_total.labels(outcome=approval.approval_status.value).inc()
         approval.approved_by = user.id
         approval.reason = reason or approval.reason
         approval.decided_at = datetime.now(UTC)
@@ -186,6 +188,7 @@ async def expire_pending(uow: UnitOfWork, task_id: uuid.UUID, reason: str) -> Ap
         return None
 
     approval.approval_status = ApprovalStatus.EXPIRED
+    metrics.approvals_total.labels(outcome=ApprovalStatus.EXPIRED.value).inc()
     approval.reason = approval.reason or reason
     approval.decided_at = datetime.now(UTC)
     logger.info("approval_expired", task_id=str(task_id), approval_id=str(approval.id))

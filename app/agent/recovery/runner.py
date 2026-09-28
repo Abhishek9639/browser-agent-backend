@@ -15,6 +15,7 @@ from typing import Final
 from app.agent.contracts import Attempt, AttemptResult, RecoveryContext, Verdict
 from app.agent.recovery.routing import order_for, route_for
 from app.agent.recovery.strategies import ORDERED_STRATEGIES, RecoveryStrategy
+from app.core import metrics
 from app.core.logging import get_logger
 from app.domain.enums import RecoveryOutcome
 
@@ -46,32 +47,43 @@ class RecoveryRunner:
 
         ``None`` means nothing was attempted or nothing worked, which the
         caller reads as "this step stays failed".
+
+        One call is one recovery episode for the purposes of the section 9
+        recovery rate, whatever it costs in attempts.
         """
         spent = 0
         ladder = order_for(self._strategies, ctx)
+        rescued = False
 
-        for strategy in ladder:
-            if spent >= self._max_attempts:
-                logger.info("recovery_budget_spent", attempts=spent)
-                break
-            if not strategy.applicable(ctx):
-                continue
+        try:
+            for strategy in ladder:
+                if spent >= self._max_attempts:
+                    logger.info("recovery_budget_spent", attempts=spent)
+                    break
+                if not strategy.applicable(ctx):
+                    continue
 
-            result = await self._try(strategy, ctx, number=len(ctx.attempts) + 1)
-            if result.outcome in COUNTS_AGAINST_BUDGET:
-                spent += 1
-            if result.succeeded:
-                logger.info(
-                    "recovery_succeeded",
-                    strategy=strategy.name,
-                    attempts=spent,
-                    # Whether the routing sent us here first, which is the
-                    # number worth watching once this is in production.
-                    routed=strategy.name in route_for(ctx)[:1],
-                )
-                return result.verdict
+                result = await self._try(strategy, ctx, number=len(ctx.attempts) + 1)
+                if result.outcome in COUNTS_AGAINST_BUDGET:
+                    spent += 1
+                if result.succeeded:
+                    logger.info(
+                        "recovery_succeeded",
+                        strategy=strategy.name,
+                        attempts=spent,
+                        # Whether the routing sent us here first, which is the
+                        # number worth watching once this is in production.
+                        routed=strategy.name in route_for(ctx)[:1],
+                    )
+                    rescued = True
+                    return result.verdict
 
-        return None
+            return None
+        finally:
+            # One episode per call, whatever it cost in attempts, and recorded
+            # even when no rung applied: a step that failed with nothing
+            # applicable is still a failure that was not recovered.
+            metrics.observe_recovery_episode(rescued=rescued)
 
     async def _try(
         self, strategy: RecoveryStrategy, ctx: RecoveryContext, *, number: int
@@ -93,6 +105,10 @@ class RecoveryRunner:
             )
             result = AttemptResult(RecoveryOutcome.FAILED, error=type(exc).__name__)
 
+        metrics.recovery_attempts_total.labels(
+            strategy=strategy.name,
+            outcome=result.outcome.value,
+        ).inc()
         ctx.tried.append(strategy.label)
         attempt = Attempt(
             number=number,

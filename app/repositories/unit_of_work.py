@@ -32,6 +32,7 @@ from app.db.session import SessionDep
 from app.repositories.approval import ApprovalRepository
 from app.repositories.audit import AuditEventRepository
 from app.repositories.cache import CachedFlowRepository
+from app.repositories.stats import StatsRepository
 from app.repositories.task import (
     LlmDecisionRepository,
     RecoveryAttemptRepository,
@@ -93,6 +94,10 @@ class UnitOfWork:
     @property
     def cached_flows(self) -> CachedFlowRepository:
         return self._repository("_cached_flows", CachedFlowRepository)
+
+    @property
+    def stats(self) -> StatsRepository:
+        return self._repository("_stats", StatsRepository)
 
     async def flush(self) -> None:
         """Send pending changes so server defaults and ids are readable.

@@ -153,6 +153,10 @@ class Settings(BaseSettings):
     # at least three runs it is deleted.
     CACHE_ENABLED: bool = True
     CACHE_MIN_SUCCESS_RATE: float = 0.5
+    # Spec section 6: /metrics is admin or internal only. A Prometheus
+    # scraper has no user account, so it presents this instead. Unset means
+    # the header is not accepted at all and only an ADMIN token works.
+    METRICS_INTERNAL_TOKEN: SecretStr | None = None
     AGENT_APPROVAL_TIMEOUT_SECONDS: int = 600
     # Spec section 4.10. Empty means the built-in list in app/agent/safety.
     RISK_HIGH_PHRASES: CsvList = Field(default_factory=list)

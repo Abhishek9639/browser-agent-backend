@@ -16,6 +16,7 @@ from app.agent.cache.flow import ReplayStep, decode_steps, encode_steps
 from app.agent.cache.signature import task_signature
 from app.agent.contracts import ReplayPlan
 from app.agent.orchestrator import UnitOfWorkFactory
+from app.core import metrics
 from app.core.logging import get_logger
 from app.services.events import EventBus
 
@@ -69,11 +70,16 @@ class DatabaseFlowCache:
                 )
             )
             if flow is None:
+                metrics.cache_lookups_total.labels(result="miss").inc()
                 return None
 
             eligible = forced or flow.success_rate >= self._min_success_rate
             steps = decode_steps(flow.action_sequence)
             if not eligible or not steps:
+                # A flow that exists and may not be used is not a hit. Counting
+                # it as one would make the hit rate describe how often a
+                # signature matched rather than how often the cache helped.
+                metrics.cache_lookups_total.labels(result="ineligible").inc()
                 logger.info(
                     "cache_flow_skipped",
                     flow_id=str(flow.id),
@@ -93,6 +99,7 @@ class DatabaseFlowCache:
                 forced=forced,
             )
 
+        metrics.cache_lookups_total.labels(result="hit").inc()
         logger.info(
             "cache_hit",
             task_id=str(task_id),
