@@ -25,6 +25,7 @@ from playwright.async_api import Browser, Playwright, async_playwright
 
 from app.agent.browser.agent_browser import DriverBrowser
 from app.agent.browser.driver import PlaywrightDriver
+from app.agent.cache.store import DatabaseFlowCache
 from app.agent.llm.factory import build_llm
 from app.agent.orchestrator import Orchestrator, UnitOfWorkFactory, database_unit_of_work
 from app.agent.planner.planner import Planner
@@ -355,6 +356,11 @@ class TaskRunner:
 
         return Orchestrator(
             browser=DriverBrowser(driver, self._settings),
+            cache=DatabaseFlowCache(
+                self._open_unit_of_work,
+                min_success_rate=self._settings.CACHE_MIN_SUCCESS_RATE,
+                enabled=self._settings.CACHE_ENABLED,
+            ),
             planner=Planner(llm, PromptRegistry(self._settings.PLANNER_PROMPT_VERSION)),
             grounder=grounder,
             approvals=DatabaseApprovalGate(

@@ -149,6 +149,10 @@ class Settings(BaseSettings):
     AGENT_MAX_TASK_SECONDS: int = 300
     AGENT_MAX_RETRIES_PER_STEP: int = 3
     AGENT_MAX_TABS: int = 5
+    # Spec section 4.12. A flow below this rate is not replayed, and after
+    # at least three runs it is deleted.
+    CACHE_ENABLED: bool = True
+    CACHE_MIN_SUCCESS_RATE: float = 0.5
     AGENT_APPROVAL_TIMEOUT_SECONDS: int = 600
     # Spec section 4.10. Empty means the built-in list in app/agent/safety.
     RISK_HIGH_PHRASES: CsvList = Field(default_factory=list)

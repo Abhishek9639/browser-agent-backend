@@ -4,6 +4,40 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B25 - Task replay and caching
+
+Added
+
+- `app/agent/cache/signature.py`: `sha256(normalised instruction + start domain)`. Normalisation removes case, surrounding and repeated whitespace, unicode width and trailing punctuation, and nothing inside the sentence: "to Delhi" and "from Delhi" have to stay different signatures. The port is excluded from the domain so a demo server on a fresh port still hits its own cache.
+- `app/agent/cache/flow.py`: a cached step names its target by role, accessible name, text and a CSS path as a last resort, never by index. Indices are assigned fresh by every perception pass, so replaying them would aim at whatever now sits at those numbers.
+- `app/agent/cache/store.py`: the flow cache over `cached_flows`, with the success rate, the eligibility threshold and the invalidation rule.
+- Replay in the orchestrator. Cached steps run through the same action building, risk assessment, approval gate and verifier as planned ones; the first step that fails to resolve or fails to verify ends the replay and hands the live page to the planner with the remaining steps as a hint. The task completes normally either way.
+- `GET /api/v1/tasks/{id}/cache-match` returns the signature and, if a flow is stored, its step count, run count, success rate and whether an ordinary run would replay it.
+- `POST /api/v1/tasks/{id}/replay` creates a new task bound to a finished task's flow and queues it. The replay ignores the success rate, because the user asked for that sequence rather than for the cache's opinion of it. 409 while the original is still running, 404 when there is no flow.
+- Step events carry `replayed`, and the final event's stats carry `replayedSteps` beside `cacheHit`. A hit that replayed nothing is a hit that saved nothing, and the two fields together say so.
+- `CACHE_ENABLED` and `CACHE_MIN_SUCCESS_RATE` settings, and a `--cache` flag on the benchmark that writes its own report file.
+- 47 tests, including TEST-009 against the real site: the same task twice, the second run replaying and asking the model fewer times.
+
+Not cached, on purpose
+
+- The final answer. `done` is never stored, so a replay can never finish a task by itself and no run can report a stale price. Every replayed run still ends with the planner reading the live page.
+- A masked value. The step is kept as a marker that the planner has to do this one, which stops the replay there. Dropping it would produce a flow that silently skips the password field.
+
+Changed
+
+- A replayed step writes no `llm_decisions` row, because there was no model call behind it. That absence is the audit trail for what the cache saved.
+- `_record` takes an optional planner result, which is what makes the row above possible.
+- The task status moves back to `PLANNING` between replayed steps. The state machine allows `ACTING` only from `PLANNING`, and replaying more than one step failed with an illegal transition until the phase was tracked through the replay.
+
+Known limitation
+
+- Flows are keyed by signature alone, so two users with the same instruction on the same site share one. The sequence is not secret, but `cache-match` reporting a run count for an instruction you have never submitted tells you somebody else has. Single user is this project's scope; the fix when it is not is to add the user id to the signature material, which partitions the keyspace and needs no schema change.
+
+The measured effect
+
+- Same configuration, four runs, with and without the cache. Tokens fall from 2580 to 1272 and the estimated cost from 0.0645 to 0.0318 INR, with three of the four runs replaying. Per run that is about 645 tokens uncached against about 209 replayed. Vision calls per step halve, from 0.43 to 0.21, because a cached step names its target with a locator and never needs grounding. Steps per task and correctness are unchanged at 7.0 and 4 of 4.
+- The wall clock barely moves, and that is an artefact of the mock provider answering instantly. Against a real provider the planner is most of a step's latency, so the same replay would save that rather than a rounding error.
+
 ### Changed: the recovery ladder is routed by the failure's error code
 
 - `app/agent/recovery/routing.py`: the rung tried first now depends on why the step failed. `ELEMENT_NOT_FOUND` means the locator is wrong, so the re-locate rungs go first. `TIMEOUT` or `NOT_INTERACTABLE` means the locator found something that would not respond, so `DismissOverlay` and `ScrollAndWait` go first, with the order between those two decided by whether the target is on the page and merely off screen.

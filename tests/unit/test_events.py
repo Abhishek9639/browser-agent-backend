@@ -405,7 +405,13 @@ async def test_a_final_event_carries_its_stats() -> None:
             task_id=TASK,
             status=TaskStatus.COMPLETED,
             final_answer="Rs 4,299 on SkyFare",
-            stats=TaskStats(steps=7, duration_ms=41_000, credits_used=12, cache_hit=True),
+            stats=TaskStats(
+                steps=7,
+                duration_ms=41_000,
+                credits_used=12,
+                cache_hit=True,
+                replayed_steps=5,
+            ),
         ),
     )
 
@@ -417,6 +423,7 @@ async def test_a_final_event_carries_its_stats() -> None:
         "durationMs": 41_000,
         "creditsUsed": 12,
         "cacheHit": True,
+        "replayedSteps": 5,
     }
 
 
