@@ -4,6 +4,14 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### Fixed: iframe targeting
+
+- The driver resolved every selector with `page.locator`, which only ever sees the main frame, so an element inside a same-origin iframe was perceived perfectly well and then could not be clicked, typed into or read. Click, type, select and extract now resolve through a shared frame-aware lookup that tries the main frame first, so a page without frames behaves exactly as before.
+- `extract` with no selector reads every frame rather than the top-level body. A page that renders its content into an iframe has almost nothing in its own body, so the old version returned the chrome around the results and none of the results.
+- `PageState` carries `frame_urls`, and the section 4.6 summary header gains a `Frames:` line when they differ from the top-level URL. A link inside an iframe navigates that frame and leaves the top-level URL untouched, so a planner told only `URL:` cannot tell that its click worked and clicks again until the step budget runs out.
+- The `url_contains` and `url_changed` checks consider frame URLs for the same reason: a click that navigated a frame did what was asked of it.
+- The benchmark goes from 90% to 100% end-to-end success. `iframe` was the only failing configuration, failing all three runs and taking 64 seconds each; it now passes in 5.6 seconds with no recovery attempts, the same as a page with nothing wrong with it.
+
 ### B26 - Chaos suite and benchmark runner
 
 Added

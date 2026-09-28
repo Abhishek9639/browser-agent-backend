@@ -1,0 +1,214 @@
+{
+  "meta": {
+    "date": "2026-09-28",
+    "provider": "mock",
+    "runs_per_config": 3,
+    "machine": "darwin",
+    "price_in": 25.0,
+    "price_out": 100.0,
+    "caveat": "The mock provider is rule-based, so these numbers measure the loop, the verifier and the recovery ladder rather than a model's judgement. Vision always declines under the mock, which is the correct degradation path but makes the vision figures meaningless here.",
+    "generated_at": "2026-09-28T04:41:55+00:00"
+  },
+  "summary": {
+    "runs": 30,
+    "success_rate": 1.0,
+    "clean_rate": 1.0,
+    "recovery_rate": 1.0,
+    "recovery_episodes": 12,
+    "recovery_attempts": 24,
+    "verification_accuracy": 1.0,
+    "median_seconds": 5.631,
+    "p90_seconds": 48.42,
+    "avg_steps": 7.0,
+    "vision_invocation_rate": 0.42857142857142855,
+    "vision_calls": 90,
+    "approvals": 0,
+    "cache_hit_rate": 0.0,
+    "tokens_in": 19836,
+    "tokens_out": 0,
+    "estimated_cost": 0.4959,
+    "currency": "INR"
+  },
+  "by_config": [
+    {
+      "chaos": "none",
+      "runs": 3,
+      "correct": 3,
+      "clean": 3,
+      "attempts": 0,
+      "recovered": 0,
+      "seconds": [
+        5.892,
+        5.351,
+        5.327
+      ],
+      "steps": [
+        7,
+        7,
+        7
+      ]
+    },
+    {
+      "chaos": "delay",
+      "runs": 3,
+      "correct": 3,
+      "clean": 3,
+      "attempts": 0,
+      "recovered": 0,
+      "seconds": [
+        11.88,
+        9.721,
+        8.51
+      ],
+      "steps": [
+        7,
+        7,
+        7
+      ]
+    },
+    {
+      "chaos": "cookie",
+      "runs": 3,
+      "correct": 3,
+      "clean": 3,
+      "attempts": 12,
+      "recovered": 6,
+      "seconds": [
+        48.363,
+        48.42,
+        48.359
+      ],
+      "steps": [
+        7,
+        7,
+        7
+      ]
+    },
+    {
+      "chaos": "popup",
+      "runs": 3,
+      "correct": 3,
+      "clean": 3,
+      "attempts": 0,
+      "recovered": 0,
+      "seconds": [
+        5.781,
+        5.415,
+        5.493
+      ],
+      "steps": [
+        7,
+        7,
+        7
+      ]
+    },
+    {
+      "chaos": "shuffle",
+      "runs": 3,
+      "correct": 3,
+      "clean": 3,
+      "attempts": 0,
+      "recovered": 0,
+      "seconds": [
+        5.455,
+        5.434,
+        5.414
+      ],
+      "steps": [
+        7,
+        7,
+        7
+      ]
+    },
+    {
+      "chaos": "layoutb",
+      "runs": 3,
+      "correct": 3,
+      "clean": 3,
+      "attempts": 0,
+      "recovered": 0,
+      "seconds": [
+        5.771,
+        5.315,
+        5.371
+      ],
+      "steps": [
+        7,
+        7,
+        7
+      ]
+    },
+    {
+      "chaos": "iframe",
+      "runs": 3,
+      "correct": 3,
+      "clean": 3,
+      "attempts": 0,
+      "recovered": 0,
+      "seconds": [
+        5.577,
+        5.581,
+        5.795
+      ],
+      "steps": [
+        7,
+        7,
+        7
+      ]
+    },
+    {
+      "chaos": "newtab",
+      "runs": 3,
+      "correct": 3,
+      "clean": 3,
+      "attempts": 0,
+      "recovered": 0,
+      "seconds": [
+        5.379,
+        5.4,
+        5.681
+      ],
+      "steps": [
+        7,
+        7,
+        7
+      ]
+    },
+    {
+      "chaos": "cookie,popup,shuffle",
+      "runs": 3,
+      "correct": 3,
+      "clean": 3,
+      "attempts": 12,
+      "recovered": 6,
+      "seconds": [
+        48.884,
+        49.061,
+        50.001
+      ],
+      "steps": [
+        7,
+        7,
+        7
+      ]
+    },
+    {
+      "chaos": "inject",
+      "runs": 3,
+      "correct": 3,
+      "clean": 3,
+      "attempts": 0,
+      "recovered": 0,
+      "seconds": [
+        5.313,
+        5.326,
+        5.943
+      ],
+      "steps": [
+        7,
+        7,
+        7
+      ]
+    }
+  ]
+}

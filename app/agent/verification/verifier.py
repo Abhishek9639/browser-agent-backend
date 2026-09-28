@@ -207,23 +207,44 @@ class DeterministicVerifier:
 
 
 def _url_contains(after: PageState, wanted: str) -> _Outcome:
-    hit = wanted.casefold() in after.url.casefold()
+    """Does any of the page's URLs contain this?
+
+    Frames included. A link inside an iframe navigates that frame and leaves
+    the top-level URL untouched, so checking only `url` fails a click that
+    did exactly what was asked of it.
+    """
+    needle = wanted.casefold()
+    urls = _urls(after)
+    matched = next((url for url in urls if needle in url.casefold()), None)
+
     return _Outcome(
-        hit,
+        matched is not None,
         Check.URL_CONTAINS,
-        {"check": Check.URL_CONTAINS.value, "url": after.url},
-        f"URL {'contains' if hit else 'does not contain'} {wanted!r}.",
+        {
+            "check": Check.URL_CONTAINS.value,
+            "url": after.url,
+            "matched": matched,
+            "frames": len(urls),
+        },
+        f"URL {'contains' if matched else 'does not contain'} {wanted!r}.",
     )
 
 
 def _url_changed(before: PageState, after: PageState) -> _Outcome:
-    changed = before.url != after.url
+    """Did the page, or anything framed in it, move?"""
+    changed = _urls(before) != _urls(after)
     return _Outcome(
         changed,
         Check.URL_CHANGED,
         {"check": Check.URL_CHANGED.value, "before": before.url, "after": after.url},
         "The URL changed." if changed else "The URL did not change.",
     )
+
+
+def _urls(state: PageState) -> list[str]:
+    """The top-level URL plus every frame's, without duplicates."""
+    found = [state.url, *state.frame_urls]
+    return list(dict.fromkeys(url for url in found if url))
 
 
 def _element_visible(after: PageState, wanted: str) -> _Outcome:
@@ -303,7 +324,7 @@ def _dom_changed(before: PageState, after: PageState) -> _Outcome:
     would see and most results are rendered as text rather than as controls.
     """
     hash_changed = before.dom_hash != after.dom_hash
-    url_changed = before.url != after.url
+    url_changed = _urls(before) != _urls(after)
     text_changed = before.text != after.text
     changed = hash_changed or url_changed or text_changed
 

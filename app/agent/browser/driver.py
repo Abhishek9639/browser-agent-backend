@@ -21,6 +21,7 @@ from urllib.parse import urlsplit
 from playwright.async_api import (
     Browser,
     BrowserContext,
+    Locator,
     Page,
     Playwright,
     async_playwright,
@@ -52,6 +53,7 @@ from app.agent.browser.errors import (
     ActionNotAllowedError,
     DomainNotAllowedError,
 )
+from app.agent.perception.dom_extractor import locator_in_any_frame
 from app.core.config import Settings
 from app.core.logging import get_logger
 from app.domain.enums import ActionType
@@ -383,13 +385,13 @@ class PlaywrightDriver:
             case NavigateAction():
                 await self._navigate(action)
             case ClickAction():
-                await self.page.locator(action.selector).first.click()
+                await (await self._locate(action.selector)).click()
             case TypeAction():
                 await self._type(action)
             case ScrollAction():
                 await self._scroll(action)
             case SelectAction():
-                await self.page.locator(action.selector).first.select_option(action.value)
+                await (await self._locate(action.selector)).select_option(action.value)
             case ExtractAction():
                 return await self._extract(action)
             case WaitAction():
@@ -418,7 +420,7 @@ class PlaywrightDriver:
             raise PlaywrightError(f"Navigation returned HTTP {response.status}")
 
     async def _type(self, action: TypeAction) -> None:
-        locator = self.page.locator(action.selector).first
+        locator = await self._locate(action.selector)
         if action.clear_first:
             await locator.fill("")
         await locator.fill(action.value)
@@ -440,9 +442,36 @@ class PlaywrightDriver:
 
     async def _extract(self, action: ExtractAction) -> str:
         if action.selector:
-            return await self.page.locator(action.selector).first.inner_text()
-        body = await self.page.inner_text("body")
-        return str(body)
+            return await (await self._locate(action.selector)).inner_text()
+        return await self._all_text()
+
+    async def _locate(self, selector: str) -> Locator:
+        """Resolve a selector, looking in every frame.
+
+        Falls back to the main frame when nothing matches anywhere, so a
+        selector that is simply wrong still fails through Playwright with its
+        own message and timeout rather than through a different error here.
+        """
+        found = await locator_in_any_frame(self.page, selector)
+        return found if found is not None else self.page.locator(selector).first
+
+    async def _all_text(self) -> str:
+        """Visible text from the page and every frame in it.
+
+        A page that renders its content inside an iframe, which is one of the
+        spec section 12 chaos cases, has almost nothing in the outer body. An
+        extract that read only that would come back with the chrome around the
+        results and none of the results.
+        """
+        parts: list[str] = []
+        for frame in self.page.frames:
+            try:
+                text = await frame.inner_text("body")
+            except PlaywrightError:
+                continue
+            if text and text.strip():
+                parts.append(text)
+        return "\n".join(parts)
 
     async def _new_tab(self, action: NewTabAction) -> None:
         if action.url is not None:

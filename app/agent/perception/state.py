@@ -87,6 +87,10 @@ class PageState(BaseModel):
     # person would read, rather than only at the interactive elements.
     text: str = ""
     dom_hash: str = ""
+    # Every frame's URL, main frame first. A link inside an iframe navigates
+    # that frame and leaves the top-level URL alone, so a URL check that only
+    # looked at `url` would call a working click a failure.
+    frame_urls: list[str] = Field(default_factory=list)
     captured_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @property

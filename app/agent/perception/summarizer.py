@@ -109,22 +109,30 @@ def build_header(
     active_tab_id: str,
     scroll_y: int,
     scroll_max_y: int,
+    frame_urls: Sequence[str] = (),
 ) -> str:
     """The page header from spec section 4.6.
 
     Scroll position is here so the planner knows a ``scroll`` action is
     available and roughly how much page is left, which is the other half of the
     "N more below the fold" line.
+
+    Framed content gets its own line. A page that renders its results inside
+    an iframe leaves the top-level URL unchanged when something in the frame
+    navigates, so a planner told only ``URL:`` cannot tell that its click
+    worked and will do it again.
     """
     tab_list = ", ".join(f"{tab}{' (active)' if tab == active_tab_id else ''}" for tab in tabs)
-    return "\n".join(
-        (
-            f"URL: {url}",
-            f"Title: {title}",
-            f"Tabs: {tab_list or active_tab_id}",
-            f"Scroll: {scroll_y} of {scroll_max_y}",
-        )
-    )
+    framed = [frame for frame in frame_urls if frame and frame != url]
+    lines = [
+        f"URL: {url}",
+        f"Title: {title}",
+        f"Tabs: {tab_list or active_tab_id}",
+        f"Scroll: {scroll_y} of {scroll_max_y}",
+    ]
+    if framed:
+        lines.insert(1, f"Frames: {', '.join(framed)}")
+    return "\n".join(tuple(lines))
 
 
 def build_summary(

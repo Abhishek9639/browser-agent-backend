@@ -28,6 +28,7 @@ __all__ = [
     "PageNotReadyError",
     "extract",
     "locator_for_index",
+    "locator_in_any_frame",
 ]
 
 logger = get_logger(__name__)
@@ -163,6 +164,27 @@ async def _with_timeout(page: _Evaluator, script: str, timeout_ms: int) -> Any:
         raise PageNotReadyError(f"The page did not respond within {timeout_ms} ms.") from exc
 
 
+async def locator_in_any_frame(page: Page, selector: str) -> Locator | None:
+    """The first frame in which a selector matches, or None.
+
+    The main frame is tried first because it is first in ``page.frames``, so a
+    page without iframes behaves exactly as it did when this was a plain
+    ``page.locator``. Only when nothing matches there does this look inside
+    child frames, which is where an element in a same-origin iframe lives:
+    ``page.locator`` never sees it, and the agent perceives such elements
+    perfectly well and then cannot touch them.
+    """
+    for frame in page.frames:
+        try:
+            locator = frame.locator(selector)
+            if await locator.count():
+                return locator.first
+        except PlaywrightError:
+            # A frame can detach between being listed and being queried.
+            continue
+    return None
+
+
 async def locator_for_index(page: Page, index: int) -> Locator:
     """The Playwright locator for a stamped element.
 
@@ -176,13 +198,8 @@ async def locator_for_index(page: Page, index: int) -> Locator:
     """
     selector = f"[{STAMP_ATTRIBUTE}={json.dumps(str(index))}]"
 
-    for frame in page.frames:
-        try:
-            locator = frame.locator(selector)
-            if await locator.count():
-                return locator.first
-        except PlaywrightError:
-            # A frame can detach between listing and querying.
-            continue
+    found = await locator_in_any_frame(page, selector)
+    if found is not None:
+        return found
 
     raise PageNotReadyError(f"No element is stamped with index {index}. Re-perceive before acting.")
