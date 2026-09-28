@@ -30,11 +30,16 @@ class DriverBrowser:
         self._settle_timeout_ms = settings.AGENT_SETTLE_TIMEOUT_MS
 
     async def perceive(self) -> PageState:
-        return await perceive(
+        state = await perceive(
             self._driver.page,
             self._driver,
             token_budget=self._token_budget,
         )
+        # Perception is the only moment the session manager can learn what a
+        # tab holds without doing browser work of its own, so this is where
+        # the labels behind "Tabs: t1 SkyFare results" come from.
+        self._driver.sessions.remember(state)
+        return state
 
     async def settle(self) -> None:
         await settle(

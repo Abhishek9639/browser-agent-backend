@@ -24,7 +24,8 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Final
+from typing import Any, Final, cast
+from urllib.parse import urlsplit
 
 from app.agent.browser.action_builder import build_action, selector_for
 from app.agent.browser.driver import ActionResult
@@ -37,7 +38,6 @@ from app.agent.contracts import (
     Attempt,
     CachedHint,
     CancelSignal,
-    DecisionRiskPolicy,
     DenyApprovals,
     FlowCache,
     Grounder,
@@ -59,6 +59,7 @@ from app.agent.perception.state import PageState
 from app.agent.planner.planner import Planner, PlannerOutputError, PlannerResult, StepSummary
 from app.agent.planner.schema import Decision
 from app.agent.recovery.runner import RecoveryRunner, failure_sentence
+from app.agent.safety.risk import DeterministicRiskPolicy, RiskAssessment
 from app.agent.verification.verifier import DeterministicVerifier
 from app.agent.vision.grounding import ground_reason
 from app.core.config import Settings
@@ -222,7 +223,7 @@ class Orchestrator:
         self._verifier: Verifier = verifier or DeterministicVerifier()
         self._cache: FlowCache = cache or NoCache()
         self._grounder: Grounder = grounder or NoGrounding()
-        self._risk: RiskPolicy = risk_policy or DecisionRiskPolicy()
+        self._risk: RiskPolicy = risk_policy or DeterministicRiskPolicy()
         self._approvals: ApprovalGate = approvals or DenyApprovals()
         self._recovery: Recovery = recovery or RecoveryRunner(
             max_attempts=settings.AGENT_MAX_RETRIES_PER_STEP
@@ -345,11 +346,14 @@ class Orchestrator:
                 tally.vision_steps += 1
 
             element = self._resolve_target(decision, state)
-            risk = RiskLevel.highest(self._risk.assess(decision, state), decision.risk_level)
+            assessment = _assess(self._risk, decision, state)
+            risk = RiskLevel.highest(assessment.level, decision.risk_level)
             step_number = budget.consume_step()
 
             if risk is RiskLevel.HIGH or decision.requires_approval:
-                await self._gate(task_id, step_number, decision, risk, element)
+                await self._gate(
+                    task_id, step_number, decision, risk, element, assessment.reasons, state
+                )
 
             await self._set_status(task_id, TaskStatus.ACTING)
             action = build_action(decision, element)
@@ -479,8 +483,16 @@ class Orchestrator:
         decision: Decision,
         risk: RiskLevel,
         element: ElementInfo | None,
+        reasons: list[str],
+        state: PageState,
     ) -> None:
-        """Park on a human. Anything but an approval ends the task."""
+        """Park on a human.
+
+        Three outcomes, and they are not the same. Approved carries on.
+        Rejected is somebody saying no, which is REJECTED. Nobody answering is
+        not a rejection: spec section 4.3 and decision A4 send that to
+        TIMED_OUT and keep REJECTED for a human who actually looked.
+        """
         await self._set_status(task_id, TaskStatus.AWAITING_APPROVAL)
         shot = await self._browser.screenshot()
         answer = await self._approvals.request(
@@ -490,12 +502,22 @@ class Orchestrator:
             risk=risk,
             screenshot=to_base64(shot),
             bbox=_bbox_dict(element),
+            # The prompt has to say why. "Click 'Pay now' on SkyFare. Flagged
+            # because the control says 'pay now'." is a question somebody can
+            # answer; "approve step 6" is homework.
+            reasons=reasons,
+            site=_site_of(state),
         )
-        if not answer.approved:
-            raise _Stop(
-                TaskStatus.REJECTED,
-                failure_reason=answer.reason or "The action was not approved.",
-            )
+        if answer.approved:
+            return
+
+        if answer.expired:
+            raise _Stop(TaskStatus.TIMED_OUT, failure_reason="approval timed out")
+
+        raise _Stop(
+            TaskStatus.REJECTED,
+            failure_reason=answer.reason or "The action was not approved.",
+        )
 
     async def _verify(
         self,
@@ -817,6 +839,25 @@ def _failure_reason(
 
 _EMPTY_STATE: Final = PageState(url="")
 _NO_RESULT: Final = ActionResult(ok=False, duration_ms=0, url_before="", url_after="")
+
+
+def _assess(policy: RiskPolicy, decision: Decision, state: PageState) -> RiskAssessment:
+    """The policy's verdict, with its reasons when it has any.
+
+    The `RiskPolicy` seam only promises a level, because that is all the loop
+    needs to decide. The deterministic policy also knows why, and the approval
+    prompt is much better for having it, so it is used when it is there.
+    """
+    evaluate = getattr(policy, "evaluate", None)
+    if callable(evaluate):
+        return cast(RiskAssessment, evaluate(decision, state))
+    return RiskAssessment(policy.assess(decision, state), [])
+
+
+def _site_of(state: PageState) -> str:
+    """A name for the page a person would recognise."""
+    host = urlsplit(state.url).hostname or ""
+    return state.title.split("|")[-1].strip() or host
 
 
 def _hint_text(hint: CachedHint | None) -> str | None:

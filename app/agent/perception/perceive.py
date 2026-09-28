@@ -43,6 +43,21 @@ class TabSource(Protocol):
     @property
     def active_tab_id(self) -> str: ...
 
+    @property
+    def tab_labels(self) -> dict[str, str]: ...
+
+
+def _frame_urls(page: object) -> list[str]:
+    """Every frame's URL, main frame first.
+
+    Guarded because the loop is also driven against fakes that have no frames
+    at all, and perception must not become browser-only to report this.
+    """
+    frames = getattr(page, "frames", None)
+    if not frames:
+        return []
+    return [str(frame.url) for frame in frames if getattr(frame, "url", None)]
+
 
 async def perceive(
     page: object,
@@ -60,11 +75,20 @@ async def perceive(
 
     tabs = list(session.tab_ids) if session else []
     active = session.active_tab_id if session else "main"
+    labels = dict(session.tab_labels) if session else {}
+    if active:
+        # The manager only learns a tab's title when that tab is perceived,
+        # so its label for the active tab is one pass behind. This pass has
+        # the current title in hand, so use it.
+        labels[active] = metrics["title"] or metrics["url"]
 
+    frame_urls = _frame_urls(page)
     header = build_header(
         url=metrics["url"],
+        frame_urls=frame_urls,
         title=metrics["title"],
         tabs=tabs,
+        tab_labels=labels,
         active_tab_id=active,
         scroll_y=metrics["scrollY"],
         scroll_max_y=metrics["maxScrollY"],
@@ -73,8 +97,10 @@ async def perceive(
 
     state = PageState(
         url=metrics["url"],
+        frame_urls=frame_urls,
         title=metrics["title"],
         tabs=tabs,
+        tab_labels=labels,
         active_tab_id=active,
         scroll=ScrollState(y=metrics["scrollY"], max_y=metrics["maxScrollY"]),
         elements=elements,

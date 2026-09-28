@@ -28,14 +28,17 @@ from app.agent.browser.driver import PlaywrightDriver
 from app.agent.llm.factory import build_llm
 from app.agent.orchestrator import Orchestrator, UnitOfWorkFactory, database_unit_of_work
 from app.agent.planner.planner import Planner
+from app.agent.planner.registry import PromptRegistry
 from app.agent.recovery.runner import RecoveryRunner
 from app.agent.recovery.strategies import strategies_with_grounding
+from app.agent.safety.gate import DatabaseApprovalGate
 from app.agent.vision.grounding import VisionGrounder, VisualGroundingService
 from app.core.config import Settings
 from app.core.logging import get_logger
 from app.db.session import Database
 from app.domain.enums import TaskStatus
 from app.domain.state_machine import transition
+from app.services.approvals import ApprovalRegistry, expire_pending
 from app.services.events import EventBus, InMemoryEventBus
 from app.services.storage import LocalFileStorage, ScreenshotStorage
 
@@ -90,6 +93,7 @@ class TaskRunner:
         database: Database,
         *,
         events: EventBus | None = None,
+        approvals: ApprovalRegistry | None = None,
         storage: ScreenshotStorage | None = None,
         unit_of_work: UnitOfWorkFactory | None = None,
         driver_factory: Callable[[], PlaywrightDriver] | None = None,
@@ -97,6 +101,7 @@ class TaskRunner:
     ) -> None:
         self._settings = settings
         self._events = events or InMemoryEventBus()
+        self._approvals = approvals or ApprovalRegistry()
         self._storage = storage
         self._driver_factory = driver_factory
         self._orchestrator_factory = orchestrator_factory
@@ -350,8 +355,14 @@ class TaskRunner:
 
         return Orchestrator(
             browser=DriverBrowser(driver, self._settings),
-            planner=Planner(llm),
+            planner=Planner(llm, PromptRegistry(self._settings.PLANNER_PROMPT_VERSION)),
             grounder=grounder,
+            approvals=DatabaseApprovalGate(
+                self._open_unit_of_work,
+                self._approvals,
+                self._events,
+                timeout_seconds=self._settings.AGENT_APPROVAL_TIMEOUT_SECONDS,
+            ),
             recovery=RecoveryRunner(
                 max_attempts=self._settings.AGENT_MAX_RETRIES_PER_STEP,
                 strategies=strategies_with_grounding(grounder),
@@ -361,6 +372,10 @@ class TaskRunner:
             unit_of_work=self._open_unit_of_work,
             settings=self._settings,
             cancel_signal=cancellation,
+            # The driver's own registry, not the id baked into the last page
+            # state: these ids survive a reload, and a step event naming a tab
+            # the client cannot find is worse than no tab id at all.
+            sessions=driver.sessions,
         )
 
     # ------------------------------------------------------------ plumbing
@@ -385,6 +400,12 @@ class TaskRunner:
         async with self._open_unit_of_work() as uow:
             abandoned = await uow.tasks.list_active()
             for task in abandoned:
+                if TaskStatus(task.status) is TaskStatus.AWAITING_APPROVAL:
+                    # The run that would have received the answer died with the
+                    # process, so nobody is listening. The approval is expired
+                    # rather than left PENDING, or the task's own endpoint would
+                    # keep offering a decision that can never reach anything.
+                    await expire_pending(uow, task.id, interrupted_reason)
                 transition(task, _recovery_status(TaskStatus(task.status)))
                 task.failure_reason = interrupted_reason
                 task.finished_at = datetime.now(UTC)

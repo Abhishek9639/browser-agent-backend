@@ -76,6 +76,10 @@ class PageState(BaseModel):
     url: str
     title: str = ""
     tabs: list[str] = Field(default_factory=list)
+    # What each tab is showing, by tab id. Only tabs that have been
+    # perceived at least once have one, which is why this is not keyed off
+    # `tabs` directly.
+    tab_labels: dict[str, str] = Field(default_factory=dict)
     active_tab_id: str = "main"
     scroll: ScrollState = Field(default_factory=ScrollState)
     elements: list[ElementInfo] = Field(default_factory=list)
@@ -87,6 +91,10 @@ class PageState(BaseModel):
     # person would read, rather than only at the interactive elements.
     text: str = ""
     dom_hash: str = ""
+    # Every frame's URL, main frame first. A link inside an iframe navigates
+    # that frame and leaves the top-level URL alone, so a URL check that only
+    # looked at `url` would call a working click a failure.
+    frame_urls: list[str] = Field(default_factory=list)
     captured_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @property

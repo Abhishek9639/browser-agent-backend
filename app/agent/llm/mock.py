@@ -49,6 +49,7 @@ _PLACEHOLDER: Final = re.compile(r'placeholder="([^"]*)"')
 _VALUE: Final = re.compile(r'value="([^"]*)"')
 _HREF: Final = re.compile(r"href=(\S+)")
 _QUOTED: Final = re.compile(r'"([^"]*)"')
+_FRAME_LINE: Final = re.compile(r"^Frames:\s*(.+)$", re.MULTILINE)
 _URL_LINE: Final = re.compile(r"^URL:\s*(\S+)", re.MULTILINE)
 
 # Prices as the demo sites print them.
@@ -344,8 +345,18 @@ def _last_user_text(messages: Sequence[LLMMessage]) -> str:
 
 
 def _url_of(summary: str) -> str:
-    match = _URL_LINE.search(summary)
-    return match.group(1) if match else ""
+    """Every URL the header names, joined.
+
+    The frame line as well as the top-level one: on a page that renders into
+    an iframe, the sort that was just applied shows up in the frame's URL and
+    nowhere else, and reading only the outer one makes the mock click the same
+    link forever.
+    """
+    found = [match.group(1) for match in _URL_LINE.finditer(summary)]
+    frames = _FRAME_LINE.search(summary)
+    if frames:
+        found.append(frames.group(1))
+    return " ".join(found)
 
 
 def _prices_in(text: str) -> list[float]:

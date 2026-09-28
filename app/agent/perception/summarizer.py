@@ -11,7 +11,7 @@ rest of the prompt while burying the three that matter. Selection is by
 usefulness, not by document order.
 """
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Final
 
 from app.agent.perception.dom_extractor import ElementInfo
@@ -21,6 +21,7 @@ __all__ = [
     "SUMMARY_TOKEN_BUDGET",
     "build_header",
     "build_summary",
+    "describe_tabs",
     "format_element",
 ]
 
@@ -101,6 +102,27 @@ def _tier(element: ElementInfo) -> int:
     return 4
 
 
+def describe_tabs(
+    tabs: Sequence[str],
+    active_tab_id: str,
+    labels: Mapping[str, str] | None = None,
+) -> str:
+    """Render the tab line.
+
+    ``t1 SkyFare results (active), t2 Flight AI-203 details`` rather than
+    ``t1, t2``: a planner deciding whether to switch tabs needs to know what
+    is in the other one, and a bare id tells it nothing. A tab that has not
+    been perceived yet has no label, and prints as its id alone.
+    """
+    known = labels or {}
+    parts = []
+    for tab in tabs:
+        label = known.get(tab, "").strip()
+        marker = " (active)" if tab == active_tab_id else ""
+        parts.append(f"{tab} {label}{marker}" if label else f"{tab}{marker}")
+    return ", ".join(parts)
+
+
 def build_header(
     *,
     url: str,
@@ -109,22 +131,31 @@ def build_header(
     active_tab_id: str,
     scroll_y: int,
     scroll_max_y: int,
+    frame_urls: Sequence[str] = (),
+    tab_labels: Mapping[str, str] | None = None,
 ) -> str:
     """The page header from spec section 4.6.
 
     Scroll position is here so the planner knows a ``scroll`` action is
     available and roughly how much page is left, which is the other half of the
     "N more below the fold" line.
+
+    Framed content gets its own line. A page that renders its results inside
+    an iframe leaves the top-level URL unchanged when something in the frame
+    navigates, so a planner told only ``URL:`` cannot tell that its click
+    worked and will do it again.
     """
-    tab_list = ", ".join(f"{tab}{' (active)' if tab == active_tab_id else ''}" for tab in tabs)
-    return "\n".join(
-        (
-            f"URL: {url}",
-            f"Title: {title}",
-            f"Tabs: {tab_list or active_tab_id}",
-            f"Scroll: {scroll_y} of {scroll_max_y}",
-        )
-    )
+    tab_list = describe_tabs(tabs, active_tab_id, tab_labels)
+    framed = [frame for frame in frame_urls if frame and frame != url]
+    lines = [
+        f"URL: {url}",
+        f"Title: {title}",
+        f"Tabs: {tab_list or active_tab_id}",
+        f"Scroll: {scroll_y} of {scroll_max_y}",
+    ]
+    if framed:
+        lines.insert(1, f"Frames: {', '.join(framed)}")
+    return "\n".join(tuple(lines))
 
 
 def build_summary(

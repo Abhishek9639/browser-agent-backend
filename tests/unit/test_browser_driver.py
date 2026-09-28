@@ -32,6 +32,7 @@ from app.agent.browser.errors import (
     ActionNotAllowedError,
     DomainNotAllowedError,
 )
+from app.agent.perception.perceive import perceive
 from app.core.config import Settings
 
 pytestmark = pytest.mark.browser
@@ -453,3 +454,56 @@ async def test_close_is_idempotent(browser_settings: Settings) -> None:
 
     await instance.close()
     await instance.close()  # must not raise
+
+
+# ------------------------------------------------------- inside an iframe
+
+
+@pytest.mark.browser
+async def test_a_button_inside_an_iframe_can_be_clicked(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    """The gap the benchmark measured.
+
+    `page.locator` only ever sees the main frame, so an element in a
+    same-origin iframe was perceived perfectly well and then could not be
+    touched. The whole iframe chaos configuration failed on this.
+    """
+    await driver.execute(NavigateAction(url=f"{html_server}/iframe.html"))
+    state = await perceive(driver.page, driver)
+
+    inner = next(element for element in state.elements if element.frame_id != "main")
+    result = await driver.execute(ClickAction(selector=f'[data-agent-idx="{inner.index}"]'))
+
+    assert result.ok, result.error_message
+
+
+@pytest.mark.browser
+async def test_extracting_reads_through_every_frame(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    await driver.execute(NavigateAction(url=f"{html_server}/iframe.html"))
+
+    result = await driver.execute(ExtractAction())
+
+    assert result.ok
+    text = result.extracted or ""
+    # The outer page and the frame's contents, because a page that renders
+    # into an iframe has almost nothing in its own body.
+    assert "Results in a frame" in text
+    assert "Outside the frame" in text
+    assert len(text.strip()) > len("Results in a frame Outside the frame")
+
+
+@pytest.mark.browser
+async def test_the_main_frame_still_wins_when_both_match(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    await driver.execute(NavigateAction(url=f"{html_server}/iframe.html"))
+
+    # A selector matching in the main frame must not start resolving into a
+    # child frame: the main frame is searched first and that is the behaviour
+    # every page without an iframe relies on.
+    result = await driver.execute(ClickAction(selector="#outer"))
+
+    assert result.ok

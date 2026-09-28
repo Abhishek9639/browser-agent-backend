@@ -20,6 +20,7 @@ from app.core.logging import configure_logging, get_logger
 from app.core.middleware import RequestContextMiddleware
 from app.core.rate_limit import InMemoryRateLimiter
 from app.db.session import Database
+from app.services.approvals import ApprovalRegistry
 from app.services.events import InMemoryEventBus
 from app.services.storage import LocalFileStorage
 from app.services.task_runner import TaskRunner
@@ -62,12 +63,16 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     # these events; see the note in app/services/events.py.
     application.state.event_bus = InMemoryEventBus()
     application.state.screenshot_storage = LocalFileStorage(settings)
+    # Shared between the runner, which waits on approvals, and the API, which
+    # answers them. Both have to be looking at the same one.
+    application.state.approval_registry = ApprovalRegistry()
 
     runner = TaskRunner(
         settings,
         database,
         events=application.state.event_bus,
         storage=application.state.screenshot_storage,
+        approvals=application.state.approval_registry,
     )
     application.state.task_runner = runner
 

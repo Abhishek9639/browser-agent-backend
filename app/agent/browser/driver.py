@@ -21,6 +21,7 @@ from urllib.parse import urlsplit
 from playwright.async_api import (
     Browser,
     BrowserContext,
+    Locator,
     Page,
     Playwright,
     async_playwright,
@@ -52,6 +53,8 @@ from app.agent.browser.errors import (
     ActionNotAllowedError,
     DomainNotAllowedError,
 )
+from app.agent.browser.sessions import DEFAULT_MAX_TABS, TabLimitReached, TabSessionManager
+from app.agent.perception.dom_extractor import locator_in_any_frame
 from app.core.config import Settings
 from app.core.logging import get_logger
 from app.domain.enums import ActionType
@@ -86,6 +89,7 @@ class BrowserConfig:
     navigation_timeout_ms: int = 30_000
     allowed_domains: tuple[str, ...] = ()
     user_agent: str | None = None
+    max_tabs: int = DEFAULT_MAX_TABS
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "BrowserConfig":
@@ -94,6 +98,7 @@ class BrowserConfig:
             allowed_domains=tuple(settings.AGENT_ALLOWED_DOMAINS),
             action_timeout_ms=settings.BROWSER_ACTION_TIMEOUT_MS,
             navigation_timeout_ms=settings.BROWSER_NAVIGATION_TIMEOUT_MS,
+            max_tabs=settings.AGENT_MAX_TABS,
         )
 
 
@@ -206,9 +211,7 @@ class PlaywrightDriver:
         self._owns_browser = browser is None
         self._browser: Browser | None = browser
         self._context: BrowserContext | None = None
-        self._pages: dict[str, Page] = {}
-        self._active_tab: str | None = None
-        self._tab_counter = 0
+        self._sessions = TabSessionManager(max_tabs=self._config.max_tabs)
 
     # ------------------------------------------------------------ lifecycle
 
@@ -235,22 +238,28 @@ class PlaywrightDriver:
         self._context.set_default_navigation_timeout(self._config.navigation_timeout_ms)
 
         # A popup opened by the page becomes a tracked tab, so the agent can
-        # switch to it instead of losing it.
-        self._context.on("page", self._register_popup)
-
-        page = await self._context.new_page()
-        self._active_tab = self._track(page)
+        # switch to it instead of losing it. A fresh manager per launch, so a
+        # relaunched driver does not carry the last context's tab ids.
+        self._sessions = TabSessionManager(max_tabs=self._config.max_tabs)
+        self._sessions.attach(self._context)
+        await self._sessions.open(self._context)
         logger.info("browser_context_launched", headless=self._config.headless)
 
     async def close(self) -> None:
         """Tear down. Safe to call twice, and never raises."""
-        for closer in (self._close_context, self._close_browser, self._stop_playwright):
+        closers = (
+            # Tabs first, while the context is still alive. A popup the page
+            # opened and nobody closed outlives the task otherwise.
+            self._sessions.close_all,
+            self._close_context,
+            self._close_browser,
+            self._stop_playwright,
+        )
+        for closer in closers:
             try:
                 await closer()
             except Exception as exc:  # pragma: no cover - teardown must not mask errors
                 logger.warning("browser_teardown_failed", error_type=type(exc).__name__)
-        self._pages.clear()
-        self._active_tab = None
 
     async def _close_context(self) -> None:
         if self._context is not None:
@@ -281,40 +290,34 @@ class PlaywrightDriver:
 
     # ------------------------------------------------------------ tabs
 
-    def _track(self, page: Page) -> str:
-        """Give a page a stable tab id, or return the one it already has.
+    @property
+    def sessions(self) -> TabSessionManager:
+        """The tab registry for this task.
 
-        Idempotent on purpose: ``context.new_page()`` also fires the ``page``
-        event, so this is reached twice for every tab we open ourselves. The
-        first version counted both and reported phantom tabs.
+        Exposed because perception needs the tab list and the orchestrator
+        needs the active tab id, and both should read them from the one place
+        that owns them rather than from a second copy kept here.
         """
-        for tab_id, tracked in self._pages.items():
-            if tracked is page:
-                return tab_id
-
-        self._tab_counter += 1
-        tab_id = f"t{self._tab_counter}"
-        self._pages[tab_id] = page
-        return tab_id
-
-    def _register_popup(self, page: Page) -> None:
-        """A tab the *page* opened, rather than one we asked for."""
-        self._track(page)
+        return self._sessions
 
     @property
     def tab_ids(self) -> list[str]:
-        """Stable ids for every tracked tab, in the order they appeared."""
-        return list(self._pages)
+        return self._sessions.tab_ids
 
     @property
     def active_tab_id(self) -> str:
-        return self._active_tab or ""
+        return self._sessions.active_tab_id
+
+    @property
+    def tab_labels(self) -> dict[str, str]:
+        return self._sessions.tab_labels
 
     @property
     def page(self) -> Page:
-        if self._active_tab is None or self._active_tab not in self._pages:
-            raise RuntimeError("The driver has not been launched.")
-        return self._pages[self._active_tab]
+        try:
+            return self._sessions.page
+        except PlaywrightError as exc:
+            raise RuntimeError("The driver has not been launched.") from exc
 
     # ------------------------------------------------------------ state
 
@@ -335,8 +338,8 @@ class PlaywrightDriver:
         return BrowserSnapshot(
             url=page.url,
             title=title,
-            tab_ids=list(self._pages),
-            active_tab_id=self._active_tab or "",
+            tab_ids=self._sessions.tab_ids,
+            active_tab_id=self._sessions.active_tab_id,
             scroll_y=scroll_y,
             viewport_width=viewport["width"],
             viewport_height=viewport["height"],
@@ -365,6 +368,11 @@ class PlaywrightDriver:
             # A sandbox breach is not a page problem, so it is raised rather
             # than reported: the orchestrator must not retry it.
             raise
+        except TabLimitReached as exc:
+            # Recoverable by closing a tab, so this comes back as a failed
+            # action the ladder can work with rather than as an exception.
+            code = ActionErrorCode.TAB_LIMIT_REACHED
+            return self._failure(action, started, url_before, code, exc)
         except PlaywrightTimeoutError as exc:
             return self._failure(action, started, url_before, ActionErrorCode.TIMEOUT, exc)
         except PlaywrightError as exc:
@@ -383,13 +391,13 @@ class PlaywrightDriver:
             case NavigateAction():
                 await self._navigate(action)
             case ClickAction():
-                await self.page.locator(action.selector).first.click()
+                await (await self._locate(action.selector)).click()
             case TypeAction():
                 await self._type(action)
             case ScrollAction():
                 await self._scroll(action)
             case SelectAction():
-                await self.page.locator(action.selector).first.select_option(action.value)
+                await (await self._locate(action.selector)).select_option(action.value)
             case ExtractAction():
                 return await self._extract(action)
             case WaitAction():
@@ -418,7 +426,7 @@ class PlaywrightDriver:
             raise PlaywrightError(f"Navigation returned HTTP {response.status}")
 
     async def _type(self, action: TypeAction) -> None:
-        locator = self.page.locator(action.selector).first
+        locator = await self._locate(action.selector)
         if action.clear_first:
             await locator.fill("")
         await locator.fill(action.value)
@@ -440,9 +448,36 @@ class PlaywrightDriver:
 
     async def _extract(self, action: ExtractAction) -> str:
         if action.selector:
-            return await self.page.locator(action.selector).first.inner_text()
-        body = await self.page.inner_text("body")
-        return str(body)
+            return await (await self._locate(action.selector)).inner_text()
+        return await self._all_text()
+
+    async def _locate(self, selector: str) -> Locator:
+        """Resolve a selector, looking in every frame.
+
+        Falls back to the main frame when nothing matches anywhere, so a
+        selector that is simply wrong still fails through Playwright with its
+        own message and timeout rather than through a different error here.
+        """
+        found = await locator_in_any_frame(self.page, selector)
+        return found if found is not None else self.page.locator(selector).first
+
+    async def _all_text(self) -> str:
+        """Visible text from the page and every frame in it.
+
+        A page that renders its content inside an iframe, which is one of the
+        spec section 12 chaos cases, has almost nothing in the outer body. An
+        extract that read only that would come back with the chrome around the
+        results and none of the results.
+        """
+        parts: list[str] = []
+        for frame in self.page.frames:
+            try:
+                text = await frame.inner_text("body")
+            except PlaywrightError:
+                continue
+            if text and text.strip():
+                parts.append(text)
+        return "\n".join(parts)
 
     async def _new_tab(self, action: NewTabAction) -> None:
         if action.url is not None:
@@ -450,27 +485,18 @@ class PlaywrightDriver:
         if self._context is None:
             raise RuntimeError("The driver has not been launched.")
 
-        page = await self._context.new_page()
-        self._active_tab = self._track(page)
+        await self._sessions.open(self._context, action.url)
 
         if action.url is not None:
-            await page.goto(action.url, wait_until="domcontentloaded")
-            self._require_allowed(page.url)
+            # A redirect can land outside the sandbox, so the page we ended up
+            # on is checked rather than the URL we asked for.
+            self._require_allowed(self.page.url)
 
     def _switch_tab(self, tab_id: str) -> None:
-        if tab_id not in self._pages:
-            raise PlaywrightError(f"No such tab: {tab_id}")
-        self._active_tab = tab_id
+        self._sessions.switch(tab_id)
 
     async def _close_tab(self, action: CloseTabAction) -> None:
-        tab_id = action.tab_id or self._active_tab
-        if tab_id is None or tab_id not in self._pages:
-            raise PlaywrightError(f"No such tab: {tab_id}")
-
-        await self._pages[tab_id].close()
-        del self._pages[tab_id]
-        if self._active_tab == tab_id:
-            self._active_tab = next(iter(self._pages), None)
+        await self._sessions.close(action.tab_id)
 
     # ------------------------------------------------------------ helpers
 

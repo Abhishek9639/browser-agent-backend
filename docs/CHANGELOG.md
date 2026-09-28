@@ -4,6 +4,61 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B24 - Multi-tab session manager
+
+Added
+
+- `app/agent/browser/sessions.py`: `TabSessionManager`, one per task. Stable ids `t1`, `t2`, ... that are never reused, the active tab, capture of pages the site opens itself, the last `PageState` per tab, and a limit of five open tabs.
+- `new_tab`, `switch_tab` and `close_tab` are implemented through it; the driver no longer keeps its own tab dictionary. Closing the active tab lands on the most recently opened of the rest rather than the oldest.
+- Orphan tabs are closed when the task ends, before the context goes away, so a popup nobody closed does not outlive the run on a shared browser.
+- The section 4.6 header names what each tab holds: `Tabs: t1 Delhi to Bengaluru | SkyFare (active), t2 SpiceJet SG-419 | SkyFare`. A tab nobody has perceived yet prints as its bare id.
+- `PageState.tab_labels`, so the verifier and the live view see the same names the planner was given.
+- Three tab checks in the verifier: a new tab opened, the active tab changed, and a tab closed. All three are decided from the tab registry rather than from a URL, and all three store as the `new_tab_opened` method with `actual["check"]` saying which ran.
+- `ActionErrorCode.TAB_LIMIT_REACHED`, returned as a failed action rather than raised, because closing a tab is a recovery the ladder can perform.
+- `app/agent/planner/prompts/planner_v2.md`: v1 plus a section on tabs, and the new default. v1 is unchanged and still loadable.
+- `AGENT_MAX_TABS` setting, default 5.
+- 24 tests, and a SkyFare `newtab` journey in the chaos suite that clicks a `target="_blank"` link, switches to the tab it opened, reads it, switches back and finishes.
+
+Changed
+
+- `PLANNER_PROMPT_VERSION` now reaches the agent. `Planner(llm)` with no registry falls back to the literal `"v1"`, and both the task runner and the chaos harness constructed it that way, so the setting only ever changed the eval script's behaviour. Both now pass the configured version.
+- The orchestrator is given the driver's own tab registry instead of taking the tab id from the last page state, so a step row and a step event name a tab the client can still find.
+- `new_tab` is no longer verified by the destination host. A new tab that failed to open leaves the old tab active, and if that tab was already on the right host the URL check passed on a page the action never reached.
+
+Note on the prompt eval
+
+- v1 and v2 score identically on the 22 labelled cases (32% action accuracy, 100% groundedness, 0 hallucinated indices, 0 unsafe values), and identically by construction rather than by measurement: the mock provider ignores the system prompt, so no prompt change can move those numbers either way. The eval therefore could not distinguish the two versions, and v2 is unvalidated by that harness. It is the default on the strength of the real-loop coverage instead, and the diff being purely additive. The live comparison is deferred to the benchmark stage; the phase note records the command.
+
+### B23 - Risk policy and human-in-the-loop approval
+
+Added
+
+- `app/agent/safety/risk.py`: deterministic rules returning a level and the reasons for it. A control whose label matches a configurable phrase list, typing into a password or card or CVV or OTP field, or navigating to a path that looks like a till. English plus the Hinglish a real Indian booking site uses, because a button labelled "Abhi kharidein" is not less of a purchase.
+- Final risk is the higher of the rules and the planner's own, so a model that calls a purchase low risk cannot talk its way past a rule that says otherwise.
+- `app/agent/safety/gate.py`: writes a PENDING approval, commits it, announces it with a screenshot, bbox and a plain-language description, then waits. The row is written before the event so a client reconnecting mid-wait is told about the approval by the replay rather than having missed its only announcement.
+- `app/services/approvals.py`: the registry a waiting run blocks on and the service an HTTP request answers through. The answer goes to the database and the event only wakes the run, so losing the event loses the promptness and not the decision.
+- `POST /api/v1/tasks/{id}/approve` and `/reject`. APPROVER or ADMIN, or the task's own submitter when `APPROVAL_OWNER_CAN_APPROVE` allows it. A stranger gets 404 and cannot learn the task exists; the owner without the role gets 403, because by then there is nothing left to hide. No pending approval is 404, answering twice is 409, and every decision writes an audit row and publishes `approval_resolved`.
+- Restart recovery expires a pending approval rather than leaving it PENDING, since the run that would have received the answer died with the process.
+- `RISK_HIGH_PHRASES` and `APPROVAL_OWNER_CAN_APPROVE` settings.
+- 54 tests.
+
+Changed
+
+- The chaos injection case now also asserts that no high-risk action was proposed at all. The first assertion is the injection defence working; the second is what catches it when the defence does not.
+- The default risk policy is the deterministic one rather than a pass-through, so typing a password now needs a human.
+
+Deviation from the brief
+
+- The brief said an approval nobody answers should make the task `REJECTED`. Spec section 4.3 and decision A4 both say `EXPIRED` for the approval and `TIMED_OUT` for the task, and reserve `REJECTED` for an explicit human rejection. The spec is the source of truth, so a timeout times the task out. The two are different events and a run that nobody looked at should not read as one somebody refused.
+
+### Fixed: iframe targeting
+
+- The driver resolved every selector with `page.locator`, which only ever sees the main frame, so an element inside a same-origin iframe was perceived perfectly well and then could not be clicked, typed into or read. Click, type, select and extract now resolve through a shared frame-aware lookup that tries the main frame first, so a page without frames behaves exactly as before.
+- `extract` with no selector reads every frame rather than the top-level body. A page that renders its content into an iframe has almost nothing in its own body, so the old version returned the chrome around the results and none of the results.
+- `PageState` carries `frame_urls`, and the section 4.6 summary header gains a `Frames:` line when they differ from the top-level URL. A link inside an iframe navigates that frame and leaves the top-level URL untouched, so a planner told only `URL:` cannot tell that its click worked and clicks again until the step budget runs out.
+- The `url_contains` and `url_changed` checks consider frame URLs for the same reason: a click that navigated a frame did what was asked of it.
+- The benchmark goes from 90% to 100% end-to-end success. `iframe` was the only failing configuration, failing all three runs and taking 64 seconds each; it now passes in 5.6 seconds with no recovery attempts, the same as a page with nothing wrong with it.
+
 ### B26 - Chaos suite and benchmark runner
 
 Added

@@ -142,13 +142,21 @@ class Settings(BaseSettings):
     GOOGLE_API_KEY: SecretStr | None = None
     LLM_TIMEOUT_SECONDS: int = 60
     LLM_MAX_OUTPUT_TOKENS: int = 2048
-    PLANNER_PROMPT_VERSION: str = "v1"
+    PLANNER_PROMPT_VERSION: str = "v2"
 
     # ---------------------------------------------------------------- agent (B19 onwards)
     AGENT_MAX_STEPS: int = 25
     AGENT_MAX_TASK_SECONDS: int = 300
     AGENT_MAX_RETRIES_PER_STEP: int = 3
+    AGENT_MAX_TABS: int = 5
     AGENT_APPROVAL_TIMEOUT_SECONDS: int = 600
+    # Spec section 4.10. Empty means the built-in list in app/agent/safety.
+    RISK_HIGH_PHRASES: CsvList = Field(default_factory=list)
+    # Whether the person who submitted a task may approve its own high-risk
+    # steps. True by default because a single-user deployment with nobody else
+    # to ask would otherwise be unable to finish a booking at all; set it false
+    # where approvals are meant to be a second pair of eyes.
+    APPROVAL_OWNER_CAN_APPROVE: bool = True
     AGENT_MAX_CONCURRENT_TASKS: int = 3
     AGENT_MAX_CONCURRENT_TASKS_PER_USER: int = 2
     AGENT_DOM_TOKEN_BUDGET: int = 3000
@@ -201,7 +209,7 @@ class Settings(BaseSettings):
     STORAGE_S3_SECRET_KEY: SecretStr | None = None
 
     # ---------------------------------------------------------------- validators
-    @field_validator("CORS_ORIGINS", "AGENT_ALLOWED_DOMAINS", mode="before")
+    @field_validator("CORS_ORIGINS", "AGENT_ALLOWED_DOMAINS", "RISK_HIGH_PHRASES", mode="before")
     @classmethod
     def _split_csv(cls, value: object) -> object:
         """Accept ``a,b,c`` as well as a real list."""

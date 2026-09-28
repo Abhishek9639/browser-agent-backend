@@ -58,13 +58,14 @@ def page(
     summary: str = "",
     dom_hash: str = "aaaa",
     tabs: list[str] | None = None,
+    active: str = "t1",
     scroll_y: int = 0,
 ) -> PageState:
     return PageState(
         url=url,
         title="SkyFare",
         tabs=tabs if tabs is not None else ["t1"],
-        active_tab_id="t1",
+        active_tab_id=active,
         elements=list(elements),
         summary_text=summary or " ".join(e.name for e in elements),
         dom_hash=dom_hash,
@@ -79,6 +80,7 @@ def decision(
     value: str = "",
     target_index: int | None = 0,
     decision_value: str | None = None,
+    tab_id: str | None = None,
 ) -> Decision:
     payload: dict[str, Any] = {
         "action": action,
@@ -86,6 +88,8 @@ def decision(
         "expectedOutcome": {"type": outcome, "value": value},
         "confidence": 0.9,
     }
+    if tab_id is not None:
+        payload["tabId"] = tab_id
     if target_index is not None:
         payload["targetIndex"] = target_index
     if decision_value is not None:
@@ -285,6 +289,68 @@ async def test_new_tab_opened_counts_tabs() -> None:
     assert (
         await verify(decision(outcome="new_tab_opened"), page(tabs=["t1"]), page(tabs=["t1"]))
     ).ok is False
+
+
+async def test_a_new_tab_is_verified_by_the_registry_not_by_the_url() -> None:
+    """The planner's own expectation does not get a say here.
+
+    A ``new_tab`` that never opened leaves the old tab active, and if that tab
+    was already on the right host a declared ``url_contains`` passes on a page
+    the action never reached. Counting tabs cannot be fooled that way.
+    """
+    verdict = await verify(
+        decision("new_tab", outcome="url_contains", value="skyfare.test"),
+        page(tabs=["t1"]),
+        page(tabs=["t1"]),
+    )
+
+    assert verdict.ok is False
+    assert verdict.actual["check"] == Check.NEW_TAB_OPENED.value
+
+
+async def test_switching_tabs_is_verified_by_the_active_tab() -> None:
+    passed = await verify(
+        decision("switch_tab", tab_id="t2"),
+        page(tabs=["t1", "t2"], active="t1"),
+        page(tabs=["t1", "t2"], active="t2"),
+    )
+    failed = await verify(
+        decision("switch_tab", tab_id="t2"),
+        page(tabs=["t1", "t2"], active="t1"),
+        page(tabs=["t1", "t2"], active="t1"),
+    )
+
+    assert passed.ok is True
+    assert passed.actual["check"] == Check.ACTIVE_TAB_CHANGED.value
+    assert passed.actual["after"] == "t2"
+    assert failed.ok is False
+
+
+async def test_closing_a_background_tab_still_verifies() -> None:
+    """Counted rather than compared to the active tab.
+
+    Closing a tab the agent was not looking at leaves the active tab alone, so
+    an "active tab changed" check would fail a close that worked.
+    """
+    verdict = await verify(
+        decision("close_tab", tab_id="t2"),
+        page(tabs=["t1", "t2"], active="t1"),
+        page(tabs=["t1"], active="t1"),
+    )
+
+    assert verdict.ok is True
+    assert verdict.actual["check"] == Check.TAB_CLOSED.value
+
+
+async def test_the_three_tab_checks_store_as_one_method() -> None:
+    """One storable method per family, with the detail in ``actual``.
+
+    Spec section 4.5 gives six outcome types and the column holds one of them.
+    Widening the enum to carry a distinction that belongs in JSON would mean a
+    migration for every check added afterwards.
+    """
+    for check in (Check.NEW_TAB_OPENED, Check.ACTIVE_TAB_CHANGED, Check.TAB_CLOSED):
+        assert STORED_AS[check] is VerificationMethod.NEW_TAB_OPENED
 
 
 async def test_element_state_notices_a_checkbox_flipping() -> None:
