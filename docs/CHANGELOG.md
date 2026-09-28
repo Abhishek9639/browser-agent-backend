@@ -4,6 +4,13 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### Changed: the recovery ladder is routed by the failure's error code
+
+- `app/agent/recovery/routing.py`: the rung tried first now depends on why the step failed. `ELEMENT_NOT_FOUND` means the locator is wrong, so the re-locate rungs go first. `TIMEOUT` or `NOT_INTERACTABLE` means the locator found something that would not respond, so `DismissOverlay` and `ScrollAndWait` go first, with the order between those two decided by whether the target is on the page and merely off screen.
+- Routing reorders and never truncates. The error code comes from reading a message Playwright wrote, so it is a hint rather than a diagnosis, and a misclassified failure still reaches every rung while the budget lasts.
+- The effect, measured over the same 30 benchmark runs: p90 time per task falls from 48.4s to 27.4s, and recovery attempts from 24 to 12. The cookie configurations were spending two attempts per rescued step, the first of them re-locating a button that a cookie banner was covering and waiting out the full ten second action timeout to find out. They now spend one. Success and recovery rates are unchanged at 100%.
+- 8 tests.
+
 ### B24 - Multi-tab session manager
 
 Added

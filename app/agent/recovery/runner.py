@@ -4,11 +4,16 @@ Walks the ordered strategies until one of them produces a step the verifier
 accepts, or the retry budget runs out. The budget is the point: without it a
 seven rung ladder on a page that simply does not have the button turns one
 failed step into seven failed steps and seven screenshots.
+
+Which rung goes first depends on why the step failed; see ``routing``. The
+budget is what makes that matter, because with three attempts to spend the
+order decides which three rungs are ever reached.
 """
 
 from typing import Final
 
 from app.agent.contracts import Attempt, AttemptResult, RecoveryContext, Verdict
+from app.agent.recovery.routing import order_for, route_for
 from app.agent.recovery.strategies import ORDERED_STRATEGIES, RecoveryStrategy
 from app.core.logging import get_logger
 from app.domain.enums import RecoveryOutcome
@@ -43,8 +48,9 @@ class RecoveryRunner:
         caller reads as "this step stays failed".
         """
         spent = 0
+        ladder = order_for(self._strategies, ctx)
 
-        for strategy in self._strategies:
+        for strategy in ladder:
             if spent >= self._max_attempts:
                 logger.info("recovery_budget_spent", attempts=spent)
                 break
@@ -55,7 +61,14 @@ class RecoveryRunner:
             if result.outcome in COUNTS_AGAINST_BUDGET:
                 spent += 1
             if result.succeeded:
-                logger.info("recovery_succeeded", strategy=strategy.name, attempts=spent)
+                logger.info(
+                    "recovery_succeeded",
+                    strategy=strategy.name,
+                    attempts=spent,
+                    # Whether the routing sent us here first, which is the
+                    # number worth watching once this is in production.
+                    routed=strategy.name in route_for(ctx)[:1],
+                )
                 return result.verdict
 
         return None
