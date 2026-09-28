@@ -29,18 +29,22 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any
 
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 import app.models  # noqa: F401  (registers every table on Base.metadata)
+from app.agent.cache.store import DatabaseFlowCache
 from app.agent.llm.factory import build_llm
 from app.agent.llm.mock import MockLLM
 from app.core.config import Settings
 from app.db.base import Base
+from app.models.cache import CachedFlow
 from tests.chaos.harness import (
     CHAOS_CONFIGS,
     RunReport,
     make_task,
     run_once,
+    session_unit_of_work,
     skyfare_server,
 )
 
@@ -279,6 +283,15 @@ async def main(args: argparse.Namespace) -> int:
     maker = async_sessionmaker(engine, expire_on_commit=False)
     results = [ConfigResult(chaos=c or "none") for c in configs]
 
+    if args.cache:
+        # Start from nothing, so the first round of a cached benchmark is
+        # always the round that fills the cache. Left-over flows from an
+        # earlier run would make the hit rate depend on what was measured
+        # yesterday.
+        async with maker() as session:
+            await session.execute(delete(CachedFlow))
+            await session.commit()
+
     storage = Path(args.storage)
     storage.mkdir(parents=True, exist_ok=True)
 
@@ -288,7 +301,15 @@ async def main(args: argparse.Namespace) -> int:
                 label = config or "none"
                 print(f"run {round_number + 1}/{args.runs}  {label}", flush=True)
                 async with maker() as session:
-                    report = await _one(session, config, base, settings, storage, llm)
+                    cache = (
+                        DatabaseFlowCache(
+                            session_unit_of_work(session),
+                            min_success_rate=settings.CACHE_MIN_SUCCESS_RATE,
+                        )
+                        if args.cache
+                        else None
+                    )
+                    report = await _one(session, config, base, settings, storage, llm, cache)
                 result.runs.append(report)
                 print(
                     f"    {report.outcome.status.value}"
@@ -306,6 +327,7 @@ async def main(args: argparse.Namespace) -> int:
         "date": date.today().isoformat(),
         "provider": provider,
         "runs_per_config": args.runs,
+        "cache": bool(args.cache),
         "machine": sys.platform,
         "price_in": settings.LLM_PRICE_INPUT_PER_MTOK,
         "price_out": settings.LLM_PRICE_OUTPUT_PER_MTOK,
@@ -321,7 +343,9 @@ async def main(args: argparse.Namespace) -> int:
     }
 
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
-    stem = f"{meta['date']}-{provider}"
+    # A cached run measures something different, so it gets its own file
+    # rather than overwriting the comparable series.
+    stem = f"{meta['date']}-{provider}{'-cache' if args.cache else ''}"
     (REPORT_DIR / f"{stem}.md").write_text(render(summary, results, meta), encoding="utf-8")
     (REPORT_DIR / f"{stem}.json").write_text(
         json.dumps(
@@ -364,6 +388,7 @@ async def _one(
     settings: Settings,
     storage: Path,
     llm: Any,
+    cache: Any = None,
 ) -> RunReport:
     task = await make_task(session, email=f"bench-{uuid.uuid4().hex[:10]}@example.test")
     try:
@@ -375,6 +400,7 @@ async def _one(
             storage_dir=storage,
             llm=llm,
             task=task,
+            cache=cache,
         )
     finally:
         await session.rollback()
@@ -386,6 +412,15 @@ def parse() -> argparse.Namespace:
     parser.add_argument("--provider", default=None, help="mock, anthropic, openai, gemini.")
     parser.add_argument("--live", action="store_true", help="Use the configured provider.")
     parser.add_argument("--chaos", default=None, help="Comma-separated configs, or all.")
+    parser.add_argument(
+        "--cache",
+        action="store_true",
+        help=(
+            "Let runs replay each other's flows. Off by default: a replayed run "
+            "does not exercise the planner, so the success and recovery numbers "
+            "would stop being comparable with every previous benchmark."
+        ),
+    )
     parser.add_argument(
         "--storage",
         default=str(Path(tempfile.gettempdir()) / "agent-benchmark"),

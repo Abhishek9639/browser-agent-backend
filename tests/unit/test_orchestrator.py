@@ -17,12 +17,13 @@ from app.agent.browser.driver import ActionResult, BrowserSnapshot
 from app.agent.browser.errors import ActionErrorCode
 from app.agent.browser.screenshots import Screenshot
 from app.agent.budget import TaskBudget
+from app.agent.cache.flow import Locator, ReplayStep
 from app.agent.contracts import (
     ApprovalOutcome,
     Attempt,
-    CachedHint,
     GroundingOutcome,
     RecoveryContext,
+    ReplayPlan,
     Verdict,
 )
 from app.agent.llm.mock import MockLLM
@@ -959,22 +960,177 @@ async def test_recovery_is_not_consulted_when_the_step_worked(settings: Settings
     assert recovery.calls == 0
 
 
-async def test_a_cache_hit_is_offered_to_the_planner_and_reported(
+class RecordingCache:
+    """A cache with one flow in it, and a note of what it was told."""
+
+    def __init__(self, *steps: ReplayStep, forced: bool = False) -> None:
+        self.flow_id = uuid.uuid4()
+        self._plan = ReplayPlan(
+            flow_id=self.flow_id,
+            steps=tuple(steps),
+            run_count=4,
+            success_rate=1.0,
+            forced=forced,
+        )
+        self.saved: tuple[ReplayStep, ...] | None = None
+        self.settled: list[bool] = []
+
+    async def plan(self, task_id: uuid.UUID, instruction: str) -> ReplayPlan | None:
+        return self._plan if self._plan.steps else None
+
+    async def save(
+        self, task_id: uuid.UUID, instruction: str, steps: tuple[ReplayStep, ...]
+    ) -> None:
+        self.saved = steps
+
+    async def settle(self, plan: ReplayPlan, *, replayed_all: bool) -> None:
+        self.settled.append(replayed_all)
+
+
+def cached_type(value: str = "Delhi", *, name: str = "From") -> ReplayStep:
+    return ReplayStep(
+        action=ActionType.TYPE,
+        locator=Locator(role="input", name=name),
+        value=value,
+        target=name,
+        expected_type=VerificationMethod.VALUE_EQUALS,
+        expected_value=value,
+    )
+
+
+async def test_a_cached_flow_is_replayed_without_calling_the_planner(
     settings: Settings,
 ) -> None:
-    class Hit:
-        async def lookup(self, instruction: str) -> CachedHint:
-            return CachedHint(text="1. type Delhi into From", flow_id=uuid.uuid4())
+    """The saving, stated as a number.
 
-    llm = MockLLM(script=[decision_payload(), done_payload()])
-    rig = build(script=[], settings=settings, cache=Hit())
+    Two steps, one of them replayed: the planner is asked once, for the answer.
+    A cache that still costs a model call per step has saved nothing worth
+    having.
+    """
+    llm = MockLLM(script=[done_payload()])
+    cache = RecordingCache(cached_type())
+    rig = build(script=[], settings=settings, cache=cache)
     rig.orchestrator._planner = Planner(llm)  # type: ignore[attr-defined]
 
     outcome = await rig.orchestrator.run(TASK_ID)
 
+    assert outcome.status is TaskStatus.COMPLETED
     assert outcome.cache_hit is True
-    assert rig.bus.published[-1].stats.cache_hit is True
+    assert outcome.replayed_steps == 1
+    assert llm.call_count == 1
+    assert rig.bus.published[-1].stats.replayed_steps == 1
+    steps = [event for event in rig.bus.published if event.type is EventType.STEP]
+    assert [event.replayed for event in steps] == [True, False]
+
+
+async def test_a_replayed_step_writes_no_llm_decision_row(settings: Settings) -> None:
+    """Which is what makes the saving auditable after the fact."""
+    cache = RecordingCache(cached_type())
+    rig = build(script=[done_payload()], settings=settings, cache=cache)
+
+    await rig.orchestrator.run(TASK_ID)
+
+    assert len(rig.store.steps) == 2
+    assert len(rig.store.decisions) == 1
+
+
+async def test_a_target_that_no_longer_resolves_hands_over_to_the_planner(
+    settings: Settings,
+) -> None:
+    """A stale flow costs the lookup and nothing else.
+
+    The remaining steps go to the planner as a hint, and the task still
+    finishes: a flow that has gone out of date is not a reason to fail a task
+    the planner can do perfectly well.
+    """
+    llm = MockLLM(script=[decision_payload(), done_payload()])
+    cache = RecordingCache(cached_type(name="Nowhere"), cached_type(name="Gone"))
+    rig = build(script=[], settings=settings, cache=cache)
+    rig.orchestrator._planner = Planner(llm)  # type: ignore[attr-defined]
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.COMPLETED
+    assert outcome.cache_hit is True
+    assert outcome.replayed_steps == 0
     assert "RETRIEVED HINT" in llm.calls[0].last_user_text
+    assert "Nowhere" in llm.calls[0].last_user_text
+
+
+async def test_a_replay_that_stops_early_is_recorded_as_a_failed_run(
+    settings: Settings,
+) -> None:
+    """Success for a flow is stricter than success for the task.
+
+    A flow that needs rescuing every time is not worth replaying, even when
+    the task around it completes.
+    """
+    cache = RecordingCache(cached_type(name="Nowhere"))
+    rig = build(script=[decision_payload(), done_payload()], settings=settings, cache=cache)
+
+    await rig.orchestrator.run(TASK_ID)
+
+    assert cache.settled == [False]
+
+
+async def test_a_completed_task_stores_only_its_verified_steps(settings: Settings) -> None:
+    cache = RecordingCache()
+    rig = build(script=[decision_payload(), done_payload()], settings=settings, cache=cache)
+
+    await rig.orchestrator.run(TASK_ID)
+
+    assert cache.saved is not None
+    # The `done` step is never stored: replaying it would answer today's
+    # question with yesterday's price.
+    assert [step.action for step in cache.saved] == [ActionType.TYPE]
+    assert cache.saved[0].locator is not None
+    assert cache.saved[0].locator.name == "From"
+
+
+async def test_a_masked_value_is_never_stored(settings: Settings) -> None:
+    """Spec section 10, at the cache boundary.
+
+    The collector masks the field at source, so the real value is not here to
+    store. What matters is that the step is kept as a marker rather than
+    dropped or stored with the mask as its value.
+    """
+    secret = element(0, name="Password", input_type="password", value=MASK)
+    cache = RecordingCache()
+    rig = build(
+        script=[
+            decision_payload(
+                value="hunter2", expectedOutcome={"type": "value_equals", "value": "hunter2"}
+            ),
+            done_payload(),
+        ],
+        settings=settings,
+        browser=FakeBrowser(page(secret)),
+        cache=cache,
+        approvals=ApprovingGate(),
+    )
+
+    await rig.orchestrator.run(TASK_ID)
+
+    assert cache.saved is not None
+    stored = cache.saved[0]
+    assert stored.value is None
+    assert stored.needs_planner is True
+
+
+async def test_a_step_marked_for_the_planner_ends_the_replay(settings: Settings) -> None:
+    """A cached password field is where replay stops, by construction."""
+    llm = MockLLM(script=[decision_payload(), done_payload()])
+    cache = RecordingCache(
+        ReplayStep(action=ActionType.TYPE, locator=Locator(name="Password"), needs_planner=True),
+        cached_type(),
+    )
+    rig = build(script=[], settings=settings, cache=cache)
+    rig.orchestrator._planner = Planner(llm)  # type: ignore[attr-defined]
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.replayed_steps == 0
+    assert outcome.status is TaskStatus.COMPLETED
 
 
 async def test_a_vision_grounded_step_is_counted_and_costs_more(

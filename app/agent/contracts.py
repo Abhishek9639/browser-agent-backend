@@ -15,7 +15,7 @@ the protocol.
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
@@ -26,6 +26,11 @@ from app.agent.perception.dom_extractor import ElementInfo
 from app.agent.perception.state import PageState
 from app.agent.planner.schema import Decision
 from app.domain.enums import RecoveryOutcome, RiskLevel, VerificationMethod
+
+if TYPE_CHECKING:
+    # Imported for typing only. The cache package imports perception and
+    # the planner schema, and this module has to stay importable by both.
+    from app.agent.cache.flow import ReplayStep
 
 __all__ = [
     "AgentBrowser",
@@ -47,6 +52,7 @@ __all__ = [
     "PageStateSessions",
     "Recovery",
     "RecoveryContext",
+    "ReplayPlan",
     "RiskPolicy",
     "SessionManager",
     "Verdict",
@@ -159,6 +165,22 @@ class CachedHint:
 
 
 @dataclass(frozen=True, slots=True)
+class ReplayPlan:
+    """A cached flow this task may replay (spec section 4.12).
+
+    ``forced`` is the replay endpoint asking for this flow whatever its
+    success rate, which is how a user re-runs their own task. An ordinary run
+    only gets a plan when the rate clears the configured threshold.
+    """
+
+    flow_id: uuid.UUID
+    steps: tuple["ReplayStep", ...]
+    run_count: int = 0
+    success_rate: float = 0.0
+    forced: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class GroundingOutcome:
     """A decision after vision has had a chance to correct its target."""
 
@@ -251,9 +273,23 @@ class Verifier(Protocol):
 
 
 class FlowCache(Protocol):
-    """Has this instruction been solved before?"""
+    """Has this instruction been solved before (spec section 4.12)?
 
-    async def lookup(self, instruction: str) -> CachedHint | None: ...
+    Three moments, because a cache that can only be read is a cache nobody
+    fills: what to replay at the start of a run, what to remember at the end
+    of a successful one, and how a replay turned out.
+    """
+
+    async def plan(self, task_id: uuid.UUID, instruction: str) -> ReplayPlan | None: ...
+
+    async def save(
+        self,
+        task_id: uuid.UUID,
+        instruction: str,
+        steps: tuple["ReplayStep", ...],
+    ) -> None: ...
+
+    async def settle(self, plan: ReplayPlan, *, replayed_all: bool) -> None: ...
 
 
 class Grounder(Protocol):
@@ -349,9 +385,25 @@ class NeverCancelled:
 
 
 class NoCache:
-    """Never a hit. Replaced by the flow cache."""
+    """Never a hit, and never remembers anything.
 
-    async def lookup(self, instruction: str) -> CachedHint | None:
+    Still the right choice in places: the chaos suite exists to exercise
+    recovery against a misbehaving page, and a run that replays a cached flow
+    is not exercising the planner at all.
+    """
+
+    async def plan(self, task_id: uuid.UUID, instruction: str) -> ReplayPlan | None:
+        return None
+
+    async def save(
+        self,
+        task_id: uuid.UUID,
+        instruction: str,
+        steps: tuple["ReplayStep", ...],
+    ) -> None:
+        return None
+
+    async def settle(self, plan: ReplayPlan, *, replayed_all: bool) -> None:
         return None
 
 

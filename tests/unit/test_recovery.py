@@ -13,11 +13,13 @@ import pytest
 
 from app.agent.browser.agent_browser import DriverBrowser
 from app.agent.browser.driver import ActionResult, PlaywrightDriver
+from app.agent.browser.errors import ActionErrorCode
 from app.agent.contracts import Attempt, AttemptResult, RecoveryContext, Verdict
 from app.agent.perception.dom_extractor import BoundingBox, ElementInfo
 from app.agent.perception.perceive import perceive
 from app.agent.perception.state import PageState
 from app.agent.planner.schema import Decision
+from app.agent.recovery.routing import order_for, route_for
 from app.agent.recovery.runner import RecoveryRunner, failure_sentence
 from app.agent.recovery.strategies import (
     ORDERED_STRATEGIES,
@@ -36,14 +38,20 @@ from app.domain.enums import RecoveryOutcome, VerificationMethod
 # ------------------------------------------------------------- the runner
 
 
-def element(index: int = 0, *, name: str = "Search flights", tag: str = "button") -> ElementInfo:
+def element(
+    index: int = 0,
+    *,
+    name: str = "Search flights",
+    tag: str = "button",
+    in_viewport: bool = True,
+) -> ElementInfo:
     return ElementInfo(
         index=index,
         tag=tag,
         name=name,
         css_path="#search",
         bbox=BoundingBox(x=0, y=0, width=80, height=24),
-        in_viewport=True,
+        in_viewport=in_viewport,
     )
 
 
@@ -418,3 +426,115 @@ async def test_a_reworded_button_is_beaten_by_a_fuzzy_match(
     result = await TextLocator().attempt(ctx)
 
     assert result.succeeded, result.error
+
+
+# ------------------------------------------------------- routing by error code
+
+
+def failed_with(code: ActionErrorCode | None, *, in_viewport: bool = True) -> RecoveryContext:
+    """A failed step whose error code is the only interesting thing about it."""
+    target = element(in_viewport=in_viewport)
+    return context(
+        element=target,
+        after=PageState(url="https://skyfare.test/", elements=[target]),
+        result=ActionResult(
+            ok=False,
+            duration_ms=10_000,
+            url_before="https://skyfare.test/",
+            url_after="https://skyfare.test/",
+            error_code=code,
+        ),
+    )
+
+
+def names(strategies: tuple[Any, ...]) -> list[str]:
+    return [item.name for item in strategies]
+
+
+def test_a_missing_element_goes_to_the_relocate_rungs_first() -> None:
+    ordered = order_for(ORDERED_STRATEGIES, failed_with(ActionErrorCode.ELEMENT_NOT_FOUND))
+
+    assert names(ordered)[:4] == [
+        "reperceive_by_index",
+        "role_name_locator",
+        "text_locator",
+        "stored_selector",
+    ]
+
+
+def test_a_timeout_on_a_visible_element_goes_to_the_overlay_rung_first() -> None:
+    """The case this exists for.
+
+    A cookie banner over the button fails the click with a timeout. Re-locating
+    finds the same covered button three times and waits out the ten second
+    action timeout each time: thirty seconds spent to not dismiss a popup.
+    """
+    ordered = order_for(ORDERED_STRATEGIES, failed_with(ActionErrorCode.TIMEOUT))
+
+    assert names(ordered)[:2] == ["dismiss_overlay", "scroll_and_wait"]
+
+
+def test_a_timeout_on_an_offscreen_element_scrolls_first() -> None:
+    """Scrolling is cheaper than hunting for a popup that may not be there."""
+    ordered = order_for(ORDERED_STRATEGIES, failed_with(ActionErrorCode.TIMEOUT, in_viewport=False))
+
+    assert names(ordered)[:2] == ["scroll_and_wait", "dismiss_overlay"]
+
+
+def test_an_unresponsive_element_is_routed_like_a_timeout() -> None:
+    ordered = order_for(ORDERED_STRATEGIES, failed_with(ActionErrorCode.NOT_INTERACTABLE))
+
+    assert names(ordered)[:1] == ["dismiss_overlay"]
+
+
+def test_routing_reorders_and_never_drops_a_rung() -> None:
+    """A misclassified failure must still be able to reach every rung.
+
+    The error code comes from reading a message Playwright wrote, so it is a
+    hint rather than a diagnosis. Truncating the ladder on a hint would turn a
+    wrong guess into an unrecoverable step.
+    """
+    ordered = order_for(ORDERED_STRATEGIES, failed_with(ActionErrorCode.TIMEOUT))
+
+    assert sorted(names(ordered)) == sorted(names(ORDERED_STRATEGIES))
+
+
+def test_a_verification_failure_leaves_the_order_alone() -> None:
+    """The action worked and the outcome was wrong, so no locator is at fault."""
+    ordered = order_for(ORDERED_STRATEGIES, failed_with(None))
+
+    assert names(ordered) == names(ORDERED_STRATEGIES)
+
+
+def test_a_navigation_failure_has_no_route() -> None:
+    """Nothing in the ladder re-locates a page that would not load."""
+    assert route_for(failed_with(ActionErrorCode.NAVIGATION_FAILED)) == ()
+
+
+@pytest.mark.browser
+async def test_the_ladder_dismisses_the_overlay_on_its_first_attempt(
+    browser: DriverBrowser, driver: PlaywrightDriver, html_server: str
+) -> None:
+    """End to end, against a real banner over a real button.
+
+    Asserts the attempt log rather than the wall clock. The saving is real, but
+    a timing assertion is how a suite becomes flaky on a loaded machine.
+    """
+    ctx = await live_context(browser, driver, html_server, "recovery_overlay.html", "Search")
+    await driver.page.wait_for_selector("#veil")
+    # What the loop would have: the page as it was when the action failed,
+    # banner and all, rather than the page the decision was made against.
+    ctx.after = await browser.perceive()
+    ctx.result = ActionResult(
+        ok=False,
+        duration_ms=10_000,
+        url_before=ctx.after.url,
+        url_after=ctx.after.url,
+        error_code=ActionErrorCode.TIMEOUT,
+    )
+
+    verdict = await RecoveryRunner(max_attempts=3).run(ctx)
+
+    assert verdict is not None and verdict.ok
+    assert ctx.attempts[0].strategy == "dismiss_overlay"
+    assert len(ctx.attempts) == 1

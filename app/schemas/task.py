@@ -204,6 +204,28 @@ class TaskResponse(CamelModel):
     finished_at: datetime | None = None
 
 
+class CacheMatchResponse(CamelModel):
+    """Whether this task's instruction has been solved before (section 4.12)."""
+
+    signature: str = Field(
+        description="sha256 of the normalised instruction and the start domain.",
+        examples=["5f2b9c1d4e6a8f03b7c5d9e1a2f4b6c8d0e2f4a6b8c0d2e4f6a8b0c2d4e6f801"],
+    )
+    found: bool = Field(description="Is there a stored flow for this signature?")
+    eligible: bool = Field(
+        default=False,
+        description=(
+            "Would an ordinary run replay it? False when the success rate is "
+            "below the configured threshold, which a forced replay ignores."
+        ),
+    )
+    flow_id: uuid.UUID | None = None
+    step_count: int = Field(default=0, examples=[6])
+    run_count: int = Field(default=0, examples=[4])
+    success_rate: float = Field(default=0.0, examples=[0.75])
+    last_used_at: datetime | None = None
+
+
 class TaskListResponse(CamelModel):
     """A page of tasks, plus what the client needs to ask for the next."""
 

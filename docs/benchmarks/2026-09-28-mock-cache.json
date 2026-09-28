@@ -1,0 +1,55 @@
+{
+  "meta": {
+    "date": "2026-09-28",
+    "provider": "mock",
+    "runs_per_config": 4,
+    "cache": true,
+    "machine": "darwin",
+    "price_in": 25.0,
+    "price_out": 100.0,
+    "caveat": "The mock provider is rule-based, so these numbers measure the loop, the verifier and the recovery ladder rather than a model's judgement. Vision always declines under the mock, which is the correct degradation path but makes the vision figures meaningless here.",
+    "generated_at": "2026-09-28T10:30:50+00:00"
+  },
+  "summary": {
+    "runs": 4,
+    "success_rate": 1.0,
+    "clean_rate": 1.0,
+    "recovery_rate": null,
+    "recovery_episodes": 0,
+    "recovery_attempts": 0,
+    "verification_accuracy": 1.0,
+    "median_seconds": 5.102,
+    "p90_seconds": 5.373,
+    "avg_steps": 7.0,
+    "vision_invocation_rate": 0.21428571428571427,
+    "vision_calls": 6,
+    "approvals": 0,
+    "cache_hit_rate": 0.75,
+    "tokens_in": 1272,
+    "tokens_out": 0,
+    "estimated_cost": 0.031799999999999995,
+    "currency": "INR"
+  },
+  "by_config": [
+    {
+      "chaos": "none",
+      "runs": 4,
+      "correct": 4,
+      "clean": 4,
+      "attempts": 0,
+      "recovered": 0,
+      "seconds": [
+        5.373,
+        5.02,
+        5.184,
+        4.854
+      ],
+      "steps": [
+        7,
+        7,
+        7,
+        7
+      ]
+    }
+  ]
+}

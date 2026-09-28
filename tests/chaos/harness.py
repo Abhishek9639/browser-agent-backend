@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.browser.agent_browser import DriverBrowser
 from app.agent.browser.driver import PlaywrightDriver
+from app.agent.contracts import FlowCache
 from app.agent.llm.base import LLMClient
 from app.agent.llm.factory import build_llm
 from app.agent.llm.mock import MockLLM
@@ -154,6 +155,7 @@ class RunReport:
 
     chaos: str
     outcome: RunOutcome
+    task_id: uuid.UUID | None = None
     steps: list[StepRecord] = field(default_factory=list)
     attempts: list[AttemptRecord] = field(default_factory=list)
     answer: str | None = None
@@ -254,8 +256,14 @@ async def run_once(
     storage_dir: Path,
     llm: LLMClient,
     task: Task,
+    cache: FlowCache | None = None,
 ) -> RunReport:
-    """One task against SkyFare with one chaos configuration."""
+    """One task against SkyFare with one chaos configuration.
+
+    The cache is off unless a caller asks for it. The suite measures what the
+    planner and the recovery ladder do against a misbehaving page, and a run
+    that replays a stored flow is not measuring either.
+    """
     on = demo_date()
     query = f"?chaos={chaos}" if chaos else ""
     settings = settings.model_copy(
@@ -289,6 +297,7 @@ async def run_once(
             events=InMemoryEventBus(),
             unit_of_work=session_unit_of_work(session),
             settings=settings,
+            cache=cache,
             grounder=grounder,
             recovery=RecoveryRunner(
                 max_attempts=settings.AGENT_MAX_RETRIES_PER_STEP,
@@ -332,6 +341,7 @@ async def run_once(
     return RunReport(
         chaos=chaos or "none",
         outcome=outcome,
+        task_id=task.id,
         steps=steps,
         attempts=attempts,
         answer=answer,

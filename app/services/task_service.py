@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from app.agent.browser.driver import host_is_allowed
+from app.agent.cache.flow import decode_steps
+from app.agent.cache.signature import task_signature
 from app.core.config import Settings
 from app.core.errors import Conflict, NotFound, ValidationFailed
 from app.core.logging import get_logger
@@ -28,9 +30,26 @@ from app.schemas.task import normalise_instruction
 from app.services.audit import AuditAction, AuditService
 from app.services.storage import ScreenshotStorage
 
-__all__ = ["StepDetail", "TaskService"]
+__all__ = ["CacheMatch", "StepDetail", "TaskService"]
 
 logger = get_logger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class CacheMatch:
+    """What is known about the cached flow for a task's signature."""
+
+    signature: str
+    flow_id: uuid.UUID | None = None
+    step_count: int = 0
+    run_count: int = 0
+    success_rate: float = 0.0
+    eligible: bool = False
+    last_used_at: datetime | None = None
+
+    @property
+    def found(self) -> bool:
+        return self.flow_id is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +117,74 @@ class TaskService:
             task_id=task.id,
         )
         logger.info("task_created", task_id=str(task.id), user_id=str(user.id))
+        return task
+
+    async def cache_match(self, task_id: uuid.UUID, user: User) -> "CacheMatch":
+        """Is there a cached flow for this task's signature (spec section 4.12)?
+
+        Answered for any task, including one still running: the point is to let
+        a client explain why a task is about to be fast, or why it was not.
+        """
+        task = await self._uow.tasks.get_owned(task_id, user)
+        signature = task_signature(task.instruction, task.start_url)
+        flow = await self._uow.cached_flows.get_by_signature(signature)
+
+        if flow is None:
+            return CacheMatch(signature=signature)
+
+        return CacheMatch(
+            signature=signature,
+            flow_id=flow.id,
+            step_count=len(decode_steps(flow.action_sequence)),
+            run_count=flow.run_count,
+            success_rate=flow.success_rate,
+            eligible=flow.success_rate >= self._settings.CACHE_MIN_SUCCESS_RATE,
+            last_used_at=flow.updated_at,
+        )
+
+    async def replay(self, task_id: uuid.UUID, user: User) -> Task:
+        """Run this task's flow again, as a new task.
+
+        A new row rather than a reset of the old one. A finished task is a
+        record of what happened, and re-running it in place would overwrite the
+        history somebody is looking at. The new task is bound to the flow, which
+        is what makes the replay unconditional: the user asked for this
+        sequence, not for the cache's opinion of its success rate.
+        """
+        original = await self._uow.tasks.get_owned(task_id, user)
+        status = TaskStatus(original.status)
+        if not status.is_terminal:
+            raise Conflict("That task is still running. Wait for it to finish, or cancel it.")
+
+        signature = task_signature(original.instruction, original.start_url)
+        flow = await self._uow.cached_flows.get_by_signature(signature)
+        if flow is None:
+            raise NotFound("There is no cached flow for that task.")
+
+        duplicate = await self._uow.tasks.find_active_duplicate(user.id, original.instruction)
+        if duplicate is not None:
+            raise Conflict(f"You already have a task running for this instruction: {duplicate.id}.")
+
+        task = await self._uow.tasks.add(
+            Task(
+                instruction=original.instruction,
+                created_by=user.id,
+                start_url=original.start_url,
+                cache_flow_id=flow.id,
+            )
+        )
+        await self._audit.record(
+            AuditAction.TASK_CREATED,
+            actor_id=user.id,
+            task_id=task.id,
+            metadata={"replayOf": str(original.id), "flowId": str(flow.id)},
+        )
+        logger.info(
+            "task_replay_created",
+            task_id=str(task.id),
+            replay_of=str(original.id),
+            flow_id=str(flow.id),
+        )
         return task
 
     def _check_start_url(self, start_url: str | None) -> str | None:

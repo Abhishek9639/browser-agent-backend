@@ -33,6 +33,7 @@ from app.repositories.base import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page
 from app.schemas.task import (
     ApprovalDecisionRequest,
     ApprovalResponse,
+    CacheMatchResponse,
     CreateTaskRequest,
     GroundRequest,
     GroundResponse,
@@ -190,6 +191,69 @@ async def cancel_task(
         runner.cancel_soon(task_id)
 
     after_commit.append(signal_the_runner)
+
+    return TaskResponse.model_validate(task)
+
+
+@router.get(
+    "/{task_id}/cache-match",
+    response_model=CacheMatchResponse,
+    summary="Is there a cached flow for this task?",
+    description=(
+        "The task signature and, if one is stored, the flow's statistics. "
+        "`eligible` is whether an ordinary run would replay it: a flow below "
+        "the configured success rate is kept and not used, until three runs "
+        "have passed judgement on it and it is deleted."
+    ),
+    responses={404: _NOT_YOURS},
+)
+async def cache_match(
+    task_id: uuid.UUID, user: CurrentUser, tasks: TaskServiceDep
+) -> CacheMatchResponse:
+    match = await tasks.cache_match(task_id, user)
+    return CacheMatchResponse(
+        signature=match.signature,
+        found=match.found,
+        eligible=match.eligible,
+        flow_id=match.flow_id,
+        step_count=match.step_count,
+        run_count=match.run_count,
+        success_rate=match.success_rate,
+        last_used_at=match.last_used_at,
+    )
+
+
+@router.post(
+    "/{task_id}/replay",
+    response_model=TaskResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Run a finished task's flow again",
+    description=(
+        "Creates a new task bound to the cached flow of this one, and queues "
+        "it. The replay is unconditional: the success rate that gates ordinary "
+        "runs is not consulted, because the user has asked for this sequence. "
+        "The original task is untouched, since it is the record of what "
+        "happened. Replay stops at the first step that does not verify and the "
+        "planner carries on from there, so the new task completes on its own "
+        "terms either way."
+    ),
+    responses={
+        404: {"description": "Not your task, or no cached flow for it"},
+        409: {"description": "The task is still running, or a duplicate is"},
+    },
+)
+async def replay_task(
+    task_id: uuid.UUID,
+    user: CurrentUser,
+    tasks: TaskServiceDep,
+    runner: TaskRunnerDep,
+    after_commit: AfterCommitDep,
+) -> TaskResponse:
+    task = await tasks.replay(task_id, user)
+
+    # Same reason as create: the agent opens its own session and would look for
+    # a row this request has not committed yet.
+    after_commit.append(lambda: runner.submit(task.id))
 
     return TaskResponse.model_validate(task)
 

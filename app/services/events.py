@@ -109,6 +109,10 @@ class TaskStats(_Wire):
     duration_ms: int = 0
     credits_used: int = 0
     cache_hit: bool = False
+    # How many steps came from the cache. With `cache_hit` this says whether a
+    # hit was worth anything: a flow that matched and then failed on its first
+    # step is a hit that cost a lookup and saved nothing.
+    replayed_steps: int = 0
 
 
 class BaseEvent(_Wire):
@@ -148,6 +152,10 @@ class StepEvent(BaseEvent):
     reasoning: str | None = None
     confidence: float | None = None
     used_vision: bool = False
+    # Replayed from a cached flow rather than planned. The activity log says so
+    # because a step nobody chose is a different thing to watch: there is no
+    # reasoning behind it and no model call to account for.
+    replayed: bool = False
 
     def without_screenshot(self) -> "StepEvent":
         """The same step, minus the expensive part.

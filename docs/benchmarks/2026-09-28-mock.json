@@ -7,7 +7,7 @@
     "price_in": 25.0,
     "price_out": 100.0,
     "caveat": "The mock provider is rule-based, so these numbers measure the loop, the verifier and the recovery ladder rather than a model's judgement. Vision always declines under the mock, which is the correct degradation path but makes the vision figures meaningless here.",
-    "generated_at": "2026-09-28T04:41:55+00:00"
+    "generated_at": "2026-09-28T09:39:04+00:00"
   },
   "summary": {
     "runs": 30,
@@ -15,10 +15,10 @@
     "clean_rate": 1.0,
     "recovery_rate": 1.0,
     "recovery_episodes": 12,
-    "recovery_attempts": 24,
+    "recovery_attempts": 12,
     "verification_accuracy": 1.0,
-    "median_seconds": 5.631,
-    "p90_seconds": 48.42,
+    "median_seconds": 5.5725,
+    "p90_seconds": 27.412,
     "avg_steps": 7.0,
     "vision_invocation_rate": 0.42857142857142855,
     "vision_calls": 90,
@@ -38,9 +38,9 @@
       "attempts": 0,
       "recovered": 0,
       "seconds": [
-        5.892,
-        5.351,
-        5.327
+        5.576,
+        5.445,
+        5.394
       ],
       "steps": [
         7,
@@ -56,9 +56,9 @@
       "attempts": 0,
       "recovered": 0,
       "seconds": [
-        11.88,
-        9.721,
-        8.51
+        8.821,
+        8.693,
+        8.62
       ],
       "steps": [
         7,
@@ -71,12 +71,12 @@
       "runs": 3,
       "correct": 3,
       "clean": 3,
-      "attempts": 12,
+      "attempts": 6,
       "recovered": 6,
       "seconds": [
-        48.363,
-        48.42,
-        48.359
+        27.396,
+        27.37,
+        27.412
       ],
       "steps": [
         7,
@@ -92,9 +92,9 @@
       "attempts": 0,
       "recovered": 0,
       "seconds": [
-        5.781,
-        5.415,
-        5.493
+        5.7,
+        5.679,
+        5.715
       ],
       "steps": [
         7,
@@ -110,9 +110,9 @@
       "attempts": 0,
       "recovered": 0,
       "seconds": [
-        5.455,
-        5.434,
-        5.414
+        5.444,
+        5.418,
+        5.445
       ],
       "steps": [
         7,
@@ -128,9 +128,9 @@
       "attempts": 0,
       "recovered": 0,
       "seconds": [
-        5.771,
-        5.315,
-        5.371
+        5.329,
+        5.353,
+        5.343
       ],
       "steps": [
         7,
@@ -146,9 +146,9 @@
       "attempts": 0,
       "recovered": 0,
       "seconds": [
-        5.577,
-        5.581,
-        5.795
+        5.622,
+        5.569,
+        5.639
       ],
       "steps": [
         7,
@@ -164,9 +164,9 @@
       "attempts": 0,
       "recovered": 0,
       "seconds": [
-        5.379,
-        5.4,
-        5.681
+        5.432,
+        5.418,
+        5.453
       ],
       "steps": [
         7,
@@ -179,12 +179,12 @@
       "runs": 3,
       "correct": 3,
       "clean": 3,
-      "attempts": 12,
+      "attempts": 6,
       "recovered": 6,
       "seconds": [
-        48.884,
-        49.061,
-        50.001
+        28.201,
+        28.079,
+        28.112
       ],
       "steps": [
         7,
@@ -200,9 +200,9 @@
       "attempts": 0,
       "recovered": 0,
       "seconds": [
-        5.313,
-        5.326,
-        5.943
+        5.348,
+        5.381,
+        5.365
       ],
       "steps": [
         7,

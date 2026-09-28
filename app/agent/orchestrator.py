@@ -22,7 +22,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Final, cast
 from urllib.parse import urlsplit
@@ -32,6 +32,7 @@ from app.agent.browser.driver import ActionResult
 from app.agent.browser.errors import BrowserError
 from app.agent.browser.screenshots import Screenshot, to_base64
 from app.agent.budget import BudgetExceeded, BudgetReason, TaskBudget
+from app.agent.cache.flow import Locator, ReplayStep, hint_for
 from app.agent.contracts import (
     AgentBrowser,
     ApprovalGate,
@@ -48,6 +49,7 @@ from app.agent.contracts import (
     PageStateSessions,
     Recovery,
     RecoveryContext,
+    ReplayPlan,
     RiskPolicy,
     SessionManager,
     Verdict,
@@ -145,6 +147,13 @@ class _Tally:
     vision_latency_ms: int = 0
     vision_tokens: int = 0
     vision_failures: int = 0
+    # Replay, for the final event and for the flow's own statistics.
+    replayed_steps: int = 0
+    replayed_all: bool = False
+    # The verified sequence, in a form another run could replay. Accumulated
+    # as the loop goes because a completed task is the only thing worth
+    # caching, and by then the states it was built from are gone.
+    cacheable: list[ReplayStep] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +167,7 @@ class RunOutcome:
     duration_ms: int = 0
     credits_used: int = 0
     cache_hit: bool = False
+    replayed_steps: int = 0
     # Spec section 9 wants a vision invocation rate, its latency and its cost
     # per task. Logged with the run and carried here for the caller.
     vision_calls: int = 0
@@ -250,14 +260,15 @@ class Orchestrator:
         status = TaskStatus.EXECUTION_FAILED
         final_answer: str | None = None
         failure_reason: str | None = _FALLBACK_REASON.format(name="never started")
-        hint: CachedHint | None = None
+        plan: ReplayPlan | None = None
+        instruction = ""
         tally = _Tally()
 
         try:
             instruction = await self._instruction(task_id)
             await self._set_status(task_id, TaskStatus.PLANNING)
-            hint = await self._cache.lookup(instruction)
-            await self._iterate(task_id, instruction, hint, budget, tally)
+            plan = await self._cache.plan(task_id, instruction)
+            await self._iterate(task_id, instruction, plan, budget, tally)
         except _Stop as stop:
             status = stop.status
             final_answer = stop.final_answer
@@ -282,6 +293,7 @@ class Orchestrator:
 
         duration_ms = int((time.monotonic() - started) * 1000)
         settled = await self._settle(task_id, status, final_answer, failure_reason)
+        await self._remember(task_id, instruction, settled, plan, tally)
 
         outcome = RunOutcome(
             status=settled,
@@ -290,7 +302,8 @@ class Orchestrator:
             steps=budget.steps_used,
             duration_ms=duration_ms,
             credits_used=_credits(budget.steps_used, tally.vision_steps),
-            cache_hit=hint is not None,
+            cache_hit=plan is not None,
+            replayed_steps=tally.replayed_steps,
             vision_calls=tally.vision_calls,
             vision_latency_ms=tally.vision_latency_ms,
             vision_tokens=tally.vision_tokens,
@@ -312,7 +325,7 @@ class Orchestrator:
         self,
         task_id: uuid.UUID,
         instruction: str,
-        hint: CachedHint | None,
+        plan: ReplayPlan | None,
         budget: TaskBudget,
         tally: _Tally,
     ) -> None:
@@ -322,6 +335,13 @@ class Orchestrator:
         # state the next one plans against, so a step costs one perception
         # rather than two.
         state: PageState | None = None
+        hint: CachedHint | None = None
+
+        if plan is not None:
+            # Replay what worked before, then let the planner take over from
+            # wherever that stopped. It always stops somewhere: the final
+            # answer is never cached, so the last word is always the model's.
+            state, hint = await self._replay(task_id, plan, budget, tally, history)
 
         while True:
             budget.check()
@@ -387,6 +407,12 @@ class Orchestrator:
                 after=after,
             )
 
+            if verdict.ok and decision.action is not ActionType.DONE:
+                # Everything but the answer. A cached `done` would replay last
+                # week's price as this week's, and a confident wrong answer is
+                # the one failure a user cannot detect.
+                tally.cacheable.append(_cacheable(decision, element))
+
             history.append(
                 StepSummary(
                     step_number=step_number,
@@ -411,6 +437,162 @@ class Orchestrator:
             # The page as it is now is what the next step plans against.
             state = after
             await self._set_status(task_id, TaskStatus.PLANNING)
+
+    async def _replay(
+        self,
+        task_id: uuid.UUID,
+        plan: ReplayPlan,
+        budget: TaskBudget,
+        tally: _Tally,
+        history: list[StepSummary],
+    ) -> tuple[PageState | None, CachedHint | None]:
+        """Run the cached steps until one of them does not work.
+
+        Every step still goes through the same action building, risk
+        assessment, approval gate and verifier as a planned one, because a
+        cached step is only evidence that this worked once. What it skips is
+        the planner, which is the whole saving: no model call, no tokens, no
+        second of latency per step.
+
+        The first failure ends the replay and hands the page to the planner.
+        It does not fail the task: a flow that has gone stale halfway is worth
+        the steps it got right, and the planner can carry on from there.
+        """
+        state: PageState | None = None
+        done = 0
+        # The run reached here in PLANNING. Tracked rather than inferred,
+        # because the state machine allows ACTING only from PLANNING and a
+        # replay of several steps passes through the same phases each time:
+        # the decision comes from the cache instead of the model, but deciding
+        # is still the phase it happens in.
+        phase = TaskStatus.PLANNING
+
+        for step in plan.steps:
+            budget.check()
+            self._stop_if_cancelled()
+            if step.needs_planner:
+                # A masked value, which was never cached and never will be.
+                break
+
+            if phase is not TaskStatus.PLANNING:
+                await self._set_status(task_id, TaskStatus.PLANNING)
+                phase = TaskStatus.PLANNING
+
+            if state is None:
+                state = await self._browser.perceive()
+
+            element = step.locator.resolve(state) if step.locator is not None else None
+            if step.locator is not None and element is None:
+                logger.info(
+                    "replay_target_missing",
+                    task_id=str(task_id),
+                    step=step.action.value,
+                    target=step.locator.described,
+                )
+                break
+
+            decision = step.as_decision(element)
+            assessment = _assess(self._risk, decision, state)
+            risk = RiskLevel.highest(assessment.level, decision.risk_level)
+            step_number = budget.consume_step()
+
+            if risk is RiskLevel.HIGH or decision.requires_approval:
+                # A cached step can be a purchase. The gate does not care where
+                # the decision came from, and it must not: a flow that could
+                # replay a payment unattended would be the worst thing in here.
+                await self._gate(
+                    task_id, step_number, decision, risk, element, assessment.reasons, state
+                )
+
+            await self._set_status(task_id, TaskStatus.ACTING)
+            phase = TaskStatus.ACTING
+            result = await self._browser.execute(build_action(decision, element))
+
+            await self._set_status(task_id, TaskStatus.VERIFYING)
+            phase = TaskStatus.VERIFYING
+            await self._browser.settle()
+            after = await self._browser.perceive()
+            verdict, after, attempts, _tried = await self._verify(
+                task_id, step_number, decision, element, state, after, result
+            )
+
+            shot = await self._browser.screenshot()
+            await self._record(
+                task_id=task_id,
+                step_number=step_number,
+                decision=decision,
+                planned=None,
+                grounded=GroundingOutcome(decision=decision),
+                element=element,
+                state=state,
+                verdict=verdict,
+                attempts=attempts,
+                risk=risk,
+                shot=shot,
+                after=after,
+                replayed=True,
+            )
+            history.append(
+                StepSummary(
+                    step_number=step_number,
+                    action=decision.action.value,
+                    target=decision.target,
+                    verified=verdict.ok,
+                    extracted=result.extracted,
+                )
+            )
+
+            state = after
+            if not verdict.ok:
+                logger.info("replay_step_failed", task_id=str(task_id), step=step.action.value)
+                break
+
+            tally.replayed_steps += 1
+            tally.cacheable.append(_cacheable(decision, element))
+            done += 1
+
+        tally.replayed_all = done == len(plan.steps)
+        remaining = plan.steps[done:]
+        logger.info(
+            "replay_finished",
+            task_id=str(task_id),
+            flow_id=str(plan.flow_id),
+            replayed=done,
+            of=len(plan.steps),
+        )
+
+        if phase is not TaskStatus.PLANNING:
+            # A flow whose first step could not be resolved never left
+            # PLANNING, and the state machine refuses a transition to the state
+            # a task is already in.
+            await self._set_status(task_id, TaskStatus.PLANNING)
+        text = hint_for(remaining)
+        hint = CachedHint(text=text, flow_id=plan.flow_id) if text else None
+        return state, hint
+
+    async def _remember(
+        self,
+        task_id: uuid.UUID,
+        instruction: str,
+        settled: TaskStatus,
+        plan: ReplayPlan | None,
+        tally: _Tally,
+    ) -> None:
+        """Store what worked, and fold the replay into the flow's statistics.
+
+        After the status is settled and before the final event, so the event
+        reports what the cache actually holds. Neither call may take the run
+        down with it: the task is over and its answer is already written, and
+        losing a cache entry is not worth turning a completed task into a
+        failed one.
+        """
+        try:
+            if settled is TaskStatus.COMPLETED:
+                await self._cache.save(task_id, instruction, tuple(tally.cacheable))
+            if plan is not None:
+                await self._cache.settle(plan, replayed_all=tally.replayed_all)
+        except Exception as exc:
+            logger.warning("cache_write_failed", error_type=type(exc).__name__)
 
     # -------------------------------------------------------- loop helpers
 
@@ -618,7 +800,7 @@ class Orchestrator:
         task_id: uuid.UUID,
         step_number: int,
         decision: Decision,
-        planned: PlannerResult,
+        planned: PlannerResult | None,
         grounded: GroundingOutcome,
         element: ElementInfo | None,
         state: PageState,
@@ -627,6 +809,7 @@ class Orchestrator:
         risk: RiskLevel,
         shot: Screenshot,
         after: PageState,
+        replayed: bool = False,
     ) -> None:
         """Write the step, then tell anyone watching.
 
@@ -634,6 +817,11 @@ class Orchestrator:
         already resolves. A rolled-back transaction then leaves an orphaned
         file, which `delete_task` sweeps and nothing else notices; the reverse
         order would leave a committed row pointing at nothing.
+
+        ``planned`` is ``None`` for a replayed step, which has no model call
+        behind it and so no ``llm_decisions`` row. That absence is the
+        evidence: counting steps without one is how the saving from a cache
+        hit is measured.
         """
         sensitive = _is_sensitive(element)
         reference = await self._storage.save(task_id, step_number, shot.jpeg_bytes)
@@ -656,22 +844,23 @@ class Orchestrator:
                     status=StepStatus.VERIFIED if verdict.ok else StepStatus.FAILED,
                 )
             )
-            await uow.llm_decisions.add(
-                LLMDecision(
-                    step_id=step.id,
-                    prompt_version=planned.prompt_version,
-                    model_name=planned.llm_response.model_name,
-                    provider=planned.llm_response.provider,
-                    reasoning_summary=decision.reasoning or None,
-                    confidence=decision.confidence,
-                    risk_level=risk,
-                    used_vision=grounded.used_vision,
-                    input_tokens=planned.llm_response.usage.input_tokens,
-                    output_tokens=planned.llm_response.usage.output_tokens,
-                    latency_ms=planned.llm_response.latency_ms,
-                    raw_output=_safe_raw_output(planned.llm_response.parsed, sensitive),
+            if planned is not None:
+                await uow.llm_decisions.add(
+                    LLMDecision(
+                        step_id=step.id,
+                        prompt_version=planned.prompt_version,
+                        model_name=planned.llm_response.model_name,
+                        provider=planned.llm_response.provider,
+                        reasoning_summary=decision.reasoning or None,
+                        confidence=decision.confidence,
+                        risk_level=risk,
+                        used_vision=grounded.used_vision,
+                        input_tokens=planned.llm_response.usage.input_tokens,
+                        output_tokens=planned.llm_response.usage.output_tokens,
+                        latency_ms=planned.llm_response.latency_ms,
+                        raw_output=_safe_raw_output(planned.llm_response.parsed, sensitive),
+                    )
                 )
-            )
             for attempt in attempts:
                 await uow.recovery_attempts.add(
                     RecoveryAttempt(
@@ -712,6 +901,7 @@ class Orchestrator:
                 reasoning=decision.reasoning or None,
                 confidence=decision.confidence,
                 used_vision=grounded.used_vision,
+                replayed=replayed,
             ),
         )
 
@@ -799,6 +989,7 @@ class Orchestrator:
                     duration_ms=outcome.duration_ms,
                     credits_used=outcome.credits_used,
                     cache_hit=outcome.cache_hit,
+                    replayed_steps=outcome.replayed_steps,
                 ),
             ),
         )
@@ -862,6 +1053,26 @@ def _site_of(state: PageState) -> str:
 
 def _hint_text(hint: CachedHint | None) -> str | None:
     return hint.text if hint else None
+
+
+def _cacheable(decision: Decision, element: ElementInfo | None) -> ReplayStep:
+    """One verified step, in the portable form a later run can replay.
+
+    A masked value is kept as a marker rather than a value. The real one never
+    reaches this layer, so there is nothing to store even if storing it were
+    allowed, and a step that silently typed an empty password would be worse
+    than one that says the planner has to do it.
+    """
+    sensitive = _is_sensitive(element)
+    return ReplayStep(
+        action=decision.action,
+        locator=Locator.of(element) if element is not None else None,
+        value=None if sensitive else decision.value,
+        target=decision.target,
+        expected_type=decision.expected_outcome.type,
+        expected_value=decision.expected_outcome.value,
+        needs_planner=sensitive,
+    )
 
 
 def _credits(steps: int, vision_steps: int) -> int:
