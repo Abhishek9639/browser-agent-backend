@@ -28,6 +28,7 @@ from app.repositories.base import DEFAULT_PAGE_SIZE, Page
 from app.repositories.unit_of_work import UnitOfWork
 from app.schemas.task import normalise_instruction
 from app.services.audit import AuditAction, AuditService
+from app.services.billing import BillingService
 from app.services.storage import ScreenshotStorage
 
 __all__ = ["CacheMatch", "StepDetail", "TaskService"]
@@ -76,11 +77,13 @@ class TaskService:
         settings: Settings,
         storage: ScreenshotStorage,
         audit: AuditService | None = None,
+        billing: BillingService | None = None,
     ) -> None:
         self._uow = uow
         self._settings = settings
         self._storage = storage
         self._audit = audit or AuditService(uow.audit_events)
+        self._billing = billing or BillingService(uow, settings)
 
     # ------------------------------------------------------------- create
 
@@ -111,6 +114,22 @@ class TaskService:
             raise Conflict(f"You already have a task running for this instruction: {duplicate.id}.")
 
         task = await self._uow.tasks.add(Task(instruction=text, created_by=user.id, start_url=url))
+
+        # Synchronous, unlike every other billing call. A user submitting a task
+        # has to be told now whether they can afford it, so an insufficient
+        # balance is a 402 on this response and an unreachable payments service
+        # is a 503: a task that cannot be paid for must not run, and one whose
+        # payment is unknown must not either (spec section 7).
+        #
+        # Held before the commit, so a task row never exists without its
+        # reservation. The other order is worse: the client would be told the
+        # task was accepted and then charged for it separately, or not at all.
+        # A reservation whose transaction then rolls back is released by the
+        # payments expiry job, which is what that job is for.
+        reservation = await self._billing.reserve_for_task(user.id, task.id)
+        if reservation is not None:
+            task.credits_reservation_id = reservation.reservation_id
+
         await self._audit.record(
             AuditAction.TASK_CREATED,
             actor_id=user.id,

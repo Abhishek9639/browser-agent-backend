@@ -25,6 +25,7 @@ from app.models.user import RefreshToken, User
 from app.repositories.audit import AuditEventRepository
 from app.repositories.unit_of_work import UnitOfWork
 from app.services.audit import AuditAction, AuditService
+from app.services.billing import BillingService
 
 __all__ = ["AuthService"]
 
@@ -66,6 +67,11 @@ class AuthService:
                 role=UserRole.TASK_SUBMITTER,
             )
         )
+
+        # Queued in this transaction, not called. Registration must not fail
+        # because payments is restarting: the account exists either way and the
+        # grant arrives when the service is back (spec section 7).
+        await BillingService(self._uow, self._settings).queue_signup_grant(user.id)
 
         await self._audit.record(
             AuditAction.USER_REGISTERED,

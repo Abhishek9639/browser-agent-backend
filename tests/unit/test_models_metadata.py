@@ -23,10 +23,25 @@ def test_every_spec_table_exists() -> None:
     assert set(Base.metadata.tables) >= SPEC_TABLES
 
 
-def test_refresh_tokens_is_the_only_addition() -> None:
+# Tables that are not in spec section 5, each with the reason it exists. The
+# test below fails on anything else, which is the point: a new table has to be
+# argued for here before it can be added.
+JUSTIFIED_ADDITIONS = {
+    # Refresh rotation needs somewhere to keep a chain. The spec notes this in
+    # section 5 itself.
+    "refresh_tokens",
+    # Section 7 says a settle must survive the payments service being briefly
+    # unavailable. A queue written in the same transaction as the business
+    # change is the only way to promise that, and a queue needs a table.
+    "billing_outbox",
+}
+
+
+def test_only_the_justified_additions_exist() -> None:
     """Anything else appearing here is scope creep and should be justified."""
     ours = {name for name in Base.metadata.tables if not name.startswith("_test_")}
-    assert ours - SPEC_TABLES == {"refresh_tokens"}
+
+    assert ours - SPEC_TABLES == JUSTIFIED_ADDITIONS
 
 
 @pytest.mark.parametrize(

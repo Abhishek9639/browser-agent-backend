@@ -96,6 +96,9 @@ ignore = [
 "app/agent/llm/base.py" = ["N818"]
 # A private marker exception, raised and caught inside one middleware.
 "app/core/security_headers.py" = ["N818"]
+# InsufficientCredits and BillingUnavailable are the names spec section 7
+# uses, and they read better at the raise site than an Error suffix.
+"app/services/billing_client.py" = ["N818"]
 # TabLimitReached reads better at the raise site than TabLimitReachedError.
 "app/agent/browser/sessions.py" = ["N818"]
 # Alembic writes these. `op` and `sa` are always imported whether or not a

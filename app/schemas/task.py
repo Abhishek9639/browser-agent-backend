@@ -228,6 +228,14 @@ class TaskResponse(CamelModel):
         default=None,
         description="Present when the task did not complete.",
     )
+    credits_used: int | None = Field(
+        default=None,
+        description=(
+            "What the run cost at the prices in force when it ended. Present "
+            "once the task is finished, whether or not billing is enabled."
+        ),
+        examples=[9],
+    )
     created_at: datetime
     finished_at: datetime | None = None
 

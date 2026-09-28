@@ -216,11 +216,36 @@ class Settings(BaseSettings):
     SCREENSHOT_MAX_WIDTH: int = 1280
     SCREENSHOT_JPEG_QUALITY: int = 60
 
-    # ---------------------------------------------------------------- billing (B12, B30)
+    # ---------------------------------------------------------------- billing
+    # Off by default, and off means off: nothing below runs and the agent
+    # behaves exactly as it does without a payments service (spec section 7).
     BILLING_ENABLED: bool = False
-    BILLING_BASE_URL: str = "http://localhost:8100"
-    BILLING_INTERNAL_TOKEN: SecretStr | None = None
-    BILLING_TIMEOUT_SECONDS: int = 10
+    PAYMENTS_BASE_URL: str = "http://localhost:8100"
+    INTERNAL_API_TOKEN: SecretStr | None = None
+    # Three seconds. A reservation is on the path of a user waiting for a 201,
+    # so the budget is a person's patience rather than a machine's.
+    PAYMENTS_TIMEOUT_SECONDS: float = 3.0
+    PAYMENTS_MAX_ATTEMPTS: int = 3
+
+    # Spec section 7 pricing. Configurable because the spec calls the numbers a
+    # placeholder, and because the payments service holds the same figures: a
+    # disagreement between the two shows up as a settle that does not match
+    # what was reserved.
+    CREDITS_PER_STEP: int = 1
+    CREDITS_PER_VISION_STEP: int = 2
+    # "replayed steps 0.5, round up per task". Rounding per task rather than per
+    # step is the difference between two replayed steps costing one credit and
+    # costing two.
+    CREDITS_REPLAY_STEP_HALF: bool = True
+    # Reserve MAX_STEPS times this. Two, so a task that needs vision on every
+    # step is still covered by its own reservation.
+    RESERVE_MULTIPLIER: int = 2
+
+    # How often the outbox worker looks for undelivered calls, and how long it
+    # waits after a failure before the first retry.
+    BILLING_OUTBOX_POLL_SECONDS: float = 5.0
+    BILLING_OUTBOX_BACKOFF_SECONDS: float = 10.0
+    BILLING_OUTBOX_MAX_ATTEMPTS: int = 12
 
     # ---------------------------------------------------------------- storage (B15)
     STORAGE_BACKEND: str = "local"

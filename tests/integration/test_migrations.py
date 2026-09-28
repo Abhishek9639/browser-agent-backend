@@ -129,6 +129,9 @@ async def test_every_spec_table_is_created_by_the_migration(
         "alembic_version",
         "approvals",
         "audit_events",
+        # Section 7's integration: queued in the same transaction as the
+        # business change, delivered by a worker. See app/models/billing.py.
+        "billing_outbox",
         "cached_flows",
         "llm_decisions",
         "recovery_attempts",

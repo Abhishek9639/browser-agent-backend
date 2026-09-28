@@ -68,9 +68,11 @@ from app.core import metrics
 from app.core.config import Settings
 from app.core.logging import get_logger, step_context, task_context
 from app.db.session import Database
+from app.domain.credits import CreditPrices, Usage, credits_for_usage
 from app.domain.enums import ActionType, RiskLevel, StepStatus, TaskStatus
 from app.domain.state_machine import transition
-from app.models.task import LLMDecision, RecoveryAttempt, TaskStep, Verification
+from app.models.billing import OutboxKind, release_key, settle_key
+from app.models.task import LLMDecision, RecoveryAttempt, Task, TaskStep, Verification
 from app.repositories.unit_of_work import UnitOfWork
 from app.services.events import (
     BoundingBox,
@@ -98,8 +100,6 @@ UnitOfWorkFactory = Callable[[], AbstractAsyncContextManager[UnitOfWork]]
 # Spec section 7: one credit per step, plus one more for a vision-grounded
 # one. Nothing is reserved or settled yet; this is the number the live view
 # shows, and the billing part will reconcile against it.
-CREDITS_PER_STEP: Final = 1
-CREDITS_PER_VISION_STEP: Final = 2
 
 # Failure reasons are shown to a user and stored. They are written here rather
 # than taken from an exception message, because an exception can carry a URL,
@@ -298,7 +298,12 @@ class Orchestrator:
             logger.exception("task_failed", error=type(exc).__name__)
 
         duration_ms = int((time.monotonic() - started) * 1000)
-        settled = await self._settle(task_id, status, final_answer, failure_reason)
+        usage = Usage(
+            steps=budget.steps_used,
+            vision_steps=tally.vision_steps,
+            replayed_steps=tally.replayed_steps,
+        )
+        settled = await self._settle(task_id, status, final_answer, failure_reason, usage)
         await self._remember(task_id, instruction, settled, plan, tally)
 
         outcome = RunOutcome(
@@ -307,7 +312,7 @@ class Orchestrator:
             failure_reason=failure_reason if settled is not TaskStatus.COMPLETED else None,
             steps=budget.steps_used,
             duration_ms=duration_ms,
-            credits_used=_credits(budget.steps_used, tally.vision_steps),
+            credits_used=credits_for_usage(usage, CreditPrices.from_settings(self._settings)),
             cache_hit=plan is not None,
             replayed_steps=tally.replayed_steps,
             vision_calls=tally.vision_calls,
@@ -575,6 +580,57 @@ class Orchestrator:
         text = hint_for(remaining)
         hint = CachedHint(text=text, flow_id=plan.flow_id) if text else None
         return state, hint
+
+    async def _queue_settlement(
+        self,
+        uow: UnitOfWork,
+        task: Task,
+        usage: Usage | None,
+    ) -> None:
+        """Queue the charge for a run that has just ended.
+
+        Writes a row rather than calling anybody: the payments service is a
+        separate process and this is inside the transaction that finishes the
+        task, so an HTTP call here would hold that transaction open for the
+        length of somebody else's outage.
+
+        Nothing happens when billing is off, when the task holds no reservation,
+        or when there is no usage to charge, and none of those is an error: the
+        first is the default, the second is every task submitted while billing
+        was off, and the third is a run that stopped before its first step.
+
+        The charge itself is on the row either way; only the call to the
+        payments service is conditional.
+        """
+        if not self._settings.BILLING_ENABLED or usage is None:
+            return
+
+        reservation_id = task.credits_reservation_id
+        if reservation_id is None:
+            return
+
+        actual = task.credits_used or 0
+        # A run that took no steps is released rather than settled at zero. Both
+        # leave the wallet in the same place; the ledger on the other side keeps
+        # "cost nothing" and "measured at nothing" apart.
+        if actual <= 0:
+            await uow.billing_outbox.enqueue(
+                OutboxKind.RELEASE,
+                {"reservationId": str(reservation_id), "taskId": str(task.id)},
+                idempotency_key=release_key(reservation_id),
+            )
+            return
+
+        await uow.billing_outbox.enqueue(
+            OutboxKind.SETTLE,
+            {
+                "reservationId": str(reservation_id),
+                "taskId": str(task.id),
+                "actualAmount": actual,
+            },
+            idempotency_key=settle_key(reservation_id),
+        )
+        logger.info("billing_settlement_queued", credits=actual, steps=usage.steps)
 
     async def _remember(
         self,
@@ -958,6 +1014,7 @@ class Orchestrator:
         status: TaskStatus,
         final_answer: str | None,
         failure_reason: str | None,
+        usage: Usage | None = None,
     ) -> TaskStatus:
         """Write the terminal state, and report what it actually became.
 
@@ -979,6 +1036,17 @@ class Orchestrator:
                     task.final_answer = {"text": final_answer}
                 if status is not TaskStatus.COMPLETED:
                     task.failure_reason = failure_reason
+
+                if usage is not None:
+                    task.credits_used = credits_for_usage(
+                        usage, CreditPrices.from_settings(self._settings)
+                    )
+
+                # Same transaction as the terminal status, which is the point of
+                # the outbox: a task cannot be finished without its charge being
+                # queued, and the charge cannot be queued for a task that did
+                # not finish (spec section 7).
+                await self._queue_settlement(uow, task, usage)
         except Exception:
             # The final event still has to go out, so this cannot be fatal.
             logger.exception("task_settle_failed", target=status.value)
@@ -1099,11 +1167,6 @@ def _publish_metrics(outcome: RunOutcome) -> None:
     metrics.tasks_total.labels(status=status).inc()
     metrics.task_duration_seconds.labels(status=status).observe(outcome.duration_ms / 1000)
     metrics.steps_per_task.labels(status=status).observe(outcome.steps)
-
-
-def _credits(steps: int, vision_steps: int) -> int:
-    plain = max(0, steps - vision_steps)
-    return plain * CREDITS_PER_STEP + vision_steps * CREDITS_PER_VISION_STEP
 
 
 def _budget_outcome(exc: BudgetExceeded) -> tuple[TaskStatus, str]:

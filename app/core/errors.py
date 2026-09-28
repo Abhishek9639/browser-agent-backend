@@ -52,12 +52,20 @@ class AppError(Exception):
     default_message: ClassVar[str] = "Something went wrong."
 
     def __init__(
-        self, message: str | None = None, *, headers: dict[str, str] | None = None
+        self,
+        message: str | None = None,
+        *,
+        headers: dict[str, str] | None = None,
+        details: dict[str, Any] | None = None,
     ) -> None:
         self.message = message or self.default_message
         # Some failures carry a header the client is meant to act on, such as
         # Retry-After on a 429.
         self.headers = headers or {}
+        # Numbers a client can act on, when the message alone would send
+        # somebody to another screen to find them: how short a wallet is, for
+        # instance. Never anything sensitive; this is rendered to the caller.
+        self.details = details or {}
         super().__init__(self.message)
 
 
@@ -159,8 +167,16 @@ def request_id_of(request: Request) -> str:
     return value if isinstance(value, str) else UNKNOWN_REQUEST_ID
 
 
-def error_envelope(code: str, message: str, request_id: str) -> dict[str, Any]:
-    return {"error": {"code": code, "message": message, "requestId": request_id}}
+def error_envelope(
+    code: str,
+    message: str,
+    request_id: str,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {"code": code, "message": message, "requestId": request_id}
+    if details:
+        body["details"] = details
+    return {"error": body}
 
 
 def _respond(
@@ -169,10 +185,11 @@ def _respond(
     code: str,
     message: str,
     headers: dict[str, str] | None = None,
+    details: dict[str, Any] | None = None,
 ) -> JSONResponse:
     return JSONResponse(
         status_code=status,
-        content=error_envelope(code, message, request_id_of(request)),
+        content=error_envelope(code, message, request_id_of(request), details),
         headers=headers or None,
     )
 
@@ -186,7 +203,14 @@ async def app_error_handler(request: Request, exc: Exception) -> Response:
         status=error.http_status,
         path=request.url.path,
     )
-    return _respond(request, error.http_status, error.code, error.message, error.headers)
+    return _respond(
+        request,
+        error.http_status,
+        error.code,
+        error.message,
+        error.headers,
+        error.details,
+    )
 
 
 async def validation_error_handler(request: Request, exc: Exception) -> Response:
