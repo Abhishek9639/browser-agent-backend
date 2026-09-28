@@ -47,6 +47,8 @@ class Check(StrEnum):
     VALUE_EQUALS = "value_equals"
     DOM_CHANGED = "dom_changed"
     NEW_TAB_OPENED = "new_tab_opened"
+    ACTIVE_TAB_CHANGED = "active_tab_changed"
+    TAB_CLOSED = "tab_closed"
     ELEMENT_STATE = "element_state"
     SCROLLED = "scrolled"
     EXTRACTED = "extracted"
@@ -55,7 +57,10 @@ class Check(StrEnum):
 
 # Which of the six storable methods each check is recorded as. Spec section 4.7
 # writes "URL change/contains" as one item, so both URL checks store as
-# url_contains. A control's checked or selected state is its value, so
+# url_contains, and the three tab checks store as new_tab_opened for the same
+# reason: one storable method per family, with actual["check"] saying which
+# member of it ran, so a query for tab outcomes finds all three.
+# A control's checked or selected state is its value, so
 # element_state stores as value_equals. A scroll leaves the DOM the same but
 # the page state different, which is the bucket dom_changed already covers.
 STORED_AS: Final[dict[Check, VerificationMethod]] = {
@@ -66,6 +71,8 @@ STORED_AS: Final[dict[Check, VerificationMethod]] = {
     Check.VALUE_EQUALS: VerificationMethod.VALUE_EQUALS,
     Check.DOM_CHANGED: VerificationMethod.DOM_CHANGED,
     Check.NEW_TAB_OPENED: VerificationMethod.NEW_TAB_OPENED,
+    Check.ACTIVE_TAB_CHANGED: VerificationMethod.NEW_TAB_OPENED,
+    Check.TAB_CLOSED: VerificationMethod.NEW_TAB_OPENED,
     Check.ELEMENT_STATE: VerificationMethod.VALUE_EQUALS,
     Check.SCROLLED: VerificationMethod.DOM_CHANGED,
     Check.EXTRACTED: VerificationMethod.TEXT_PRESENT,
@@ -141,7 +148,7 @@ class DeterministicVerifier:
     def _default_for(self, decision: Decision) -> ExpectedOutcome:
         """What counts as success when the planner did not say usefully."""
         match decision.action:
-            case ActionType.NAVIGATE | ActionType.NEW_TAB:
+            case ActionType.NAVIGATE:
                 host = urlsplit(decision.value or "").netloc
                 if host:
                     return ExpectedOutcome(type=VerificationMethod.URL_CONTAINS, value=host)
@@ -170,12 +177,25 @@ class DeterministicVerifier:
     ) -> _Outcome:
         # A few actions are verified by what they are, not by what was asked
         # for. Their defaults have no outcome type of their own.
+        #
+        # The tab actions are here rather than left to the planner's
+        # expectation because the tab registry is the ground truth for them
+        # and a declared url_contains can pass while the action failed: a
+        # new_tab that never opened leaves the old tab active, and if that
+        # tab was already on the right host the URL check is satisfied by a
+        # page the action never reached.
         if decision.action is ActionType.DONE:
             return _Outcome(True, Check.NOTHING_TO_CHECK, {"action": "done"}, "Nothing to check.")
         if decision.action is ActionType.EXTRACT:
             return _extracted(result)
         if decision.action is ActionType.SCROLL:
             return _scrolled(before, after)
+        if decision.action is ActionType.NEW_TAB:
+            return _new_tab_opened(before, after)
+        if decision.action is ActionType.SWITCH_TAB:
+            return _active_tab_changed(before, after)
+        if decision.action is ActionType.CLOSE_TAB:
+            return _tab_closed(before, after)
         if decision.action is ActionType.CLICK and _is_stateful(decision, before):
             # Clicking a disclosure flips aria-expanded and nothing else, and
             # `expanded` is not part of the DOM hash, so dom_changed would call
@@ -349,6 +369,38 @@ def _new_tab_opened(before: PageState, after: PageState) -> _Outcome:
         Check.NEW_TAB_OPENED,
         {"check": Check.NEW_TAB_OPENED.value, "before": len(before.tabs), "after": len(after.tabs)},
         "A new tab opened." if opened else "No new tab opened.",
+    )
+
+
+def _active_tab_changed(before: PageState, after: PageState) -> _Outcome:
+    """Is the agent looking at a different tab than it was?"""
+    changed = before.active_tab_id != after.active_tab_id
+    return _Outcome(
+        changed,
+        Check.ACTIVE_TAB_CHANGED,
+        {
+            "check": Check.ACTIVE_TAB_CHANGED.value,
+            "before": before.active_tab_id,
+            "after": after.active_tab_id,
+        },
+        f"The active tab is now {after.active_tab_id!r}."
+        if changed
+        else "The active tab did not change.",
+    )
+
+
+def _tab_closed(before: PageState, after: PageState) -> _Outcome:
+    """Counted rather than compared to the active tab.
+
+    Closing a background tab leaves the active one alone, so checking the
+    active tab would fail a close that worked perfectly well.
+    """
+    closed = len(after.tabs) < len(before.tabs)
+    return _Outcome(
+        closed,
+        Check.TAB_CLOSED,
+        {"check": Check.TAB_CLOSED.value, "before": len(before.tabs), "after": len(after.tabs)},
+        "The tab closed." if closed else "The tab is still open.",
     )
 
 

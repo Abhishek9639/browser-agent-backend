@@ -33,6 +33,7 @@ from app.agent.llm.factory import build_llm
 from app.agent.llm.mock import MockLLM
 from app.agent.orchestrator import Orchestrator, RunOutcome
 from app.agent.planner.planner import Planner
+from app.agent.planner.registry import PromptRegistry
 from app.agent.recovery.runner import RecoveryRunner
 from app.agent.recovery.strategies import strategies_with_grounding
 from app.agent.vision.grounding import VisionGrounder, VisualGroundingService
@@ -283,7 +284,7 @@ async def run_once(
         )
         orchestrator = Orchestrator(
             browser=browser,
-            planner=Planner(llm),
+            planner=Planner(llm, PromptRegistry(settings.PLANNER_PROMPT_VERSION)),
             storage=LocalFileStorage(settings),
             events=InMemoryEventBus(),
             unit_of_work=session_unit_of_work(session),

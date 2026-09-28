@@ -142,12 +142,13 @@ class Settings(BaseSettings):
     GOOGLE_API_KEY: SecretStr | None = None
     LLM_TIMEOUT_SECONDS: int = 60
     LLM_MAX_OUTPUT_TOKENS: int = 2048
-    PLANNER_PROMPT_VERSION: str = "v1"
+    PLANNER_PROMPT_VERSION: str = "v2"
 
     # ---------------------------------------------------------------- agent (B19 onwards)
     AGENT_MAX_STEPS: int = 25
     AGENT_MAX_TASK_SECONDS: int = 300
     AGENT_MAX_RETRIES_PER_STEP: int = 3
+    AGENT_MAX_TABS: int = 5
     AGENT_APPROVAL_TIMEOUT_SECONDS: int = 600
     # Spec section 4.10. Empty means the built-in list in app/agent/safety.
     RISK_HIGH_PHRASES: CsvList = Field(default_factory=list)

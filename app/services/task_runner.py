@@ -28,6 +28,7 @@ from app.agent.browser.driver import PlaywrightDriver
 from app.agent.llm.factory import build_llm
 from app.agent.orchestrator import Orchestrator, UnitOfWorkFactory, database_unit_of_work
 from app.agent.planner.planner import Planner
+from app.agent.planner.registry import PromptRegistry
 from app.agent.recovery.runner import RecoveryRunner
 from app.agent.recovery.strategies import strategies_with_grounding
 from app.agent.safety.gate import DatabaseApprovalGate
@@ -354,7 +355,7 @@ class TaskRunner:
 
         return Orchestrator(
             browser=DriverBrowser(driver, self._settings),
-            planner=Planner(llm),
+            planner=Planner(llm, PromptRegistry(self._settings.PLANNER_PROMPT_VERSION)),
             grounder=grounder,
             approvals=DatabaseApprovalGate(
                 self._open_unit_of_work,
@@ -371,6 +372,10 @@ class TaskRunner:
             unit_of_work=self._open_unit_of_work,
             settings=self._settings,
             cancel_signal=cancellation,
+            # The driver's own registry, not the id baked into the last page
+            # state: these ids survive a reload, and a step event naming a tab
+            # the client cannot find is worse than no tab id at all.
+            sessions=driver.sessions,
         )
 
     # ------------------------------------------------------------ plumbing

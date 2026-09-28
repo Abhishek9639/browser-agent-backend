@@ -26,6 +26,7 @@ class ActionErrorCode(StrEnum):
     DOMAIN_NOT_ALLOWED = "DOMAIN_NOT_ALLOWED"
     ACTION_NOT_ALLOWED = "ACTION_NOT_ALLOWED"
     TAB_NOT_FOUND = "TAB_NOT_FOUND"
+    TAB_LIMIT_REACHED = "TAB_LIMIT_REACHED"
     # Nothing should reach this. If it does, the driver has a gap in its
     # mapping, which is a bug rather than a page behaving badly.
     UNKNOWN = "UNKNOWN"
