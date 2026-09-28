@@ -25,7 +25,7 @@ from app.api.deps import (
     TaskServiceDep,
     rate_limit,
 )
-from app.core.errors import Conflict
+from app.core.errors import Conflict, ValidationFailed
 from app.db.session import AfterCommitDep
 from app.domain.enums import TaskStatus
 from app.models.task import Task
@@ -312,6 +312,22 @@ async def get_step(
     )
 
 
+def _require_agreement(payload: ApprovalDecisionRequest, *, expected: bool) -> None:
+    """The body must agree with the endpoint it was sent to.
+
+    Spec section 6 puts ``approved`` in the body and the outcome is decided by
+    the route, so the two can contradict each other. A client that says
+    ``{"approved": false}`` to ``/approve`` has a bug, and the action on the
+    other side of it cannot be undone: refusing is the only safe reading, since
+    either interpretation might be the one nobody wanted.
+    """
+    if payload.approved is not expected:
+        wanted = "approve" if expected else "reject"
+        raise ValidationFailed(
+            f"This endpoint {wanted}s, so `approved` must be {str(expected).lower()}."
+        )
+
+
 async def _decide(
     task_id: uuid.UUID,
     approved: bool,
@@ -360,10 +376,12 @@ async def _decide(
         "and ADMIN, and for the task's own submitter when the deployment "
         "permits it."
     ),
+    dependencies=[Depends(rate_limit("approval", lambda s: s.RATE_LIMIT_APPROVAL_PER_MINUTE))],
     responses={
         403: {"description": "Your role does not allow approving"},
         404: {"description": "No such task, or it is not waiting for an approval"},
         409: {"description": "That approval has already been answered"},
+        429: {"description": "Too many approval decisions"},
     },
 )
 async def approve_task(
@@ -373,6 +391,7 @@ async def approve_task(
     approvals: ApprovalServiceDep,
     after_commit: AfterCommitDep,
 ) -> ApprovalResponse:
+    _require_agreement(payload, expected=True)
     return await _decide(task_id, True, payload.reason, user, approvals, after_commit)
 
 
@@ -385,10 +404,12 @@ async def approve_task(
         "which ends the run as REJECTED; an approval nobody answers is a "
         "different thing and times out instead."
     ),
+    dependencies=[Depends(rate_limit("approval", lambda s: s.RATE_LIMIT_APPROVAL_PER_MINUTE))],
     responses={
         403: {"description": "Your role does not allow approving"},
         404: {"description": "No such task, or it is not waiting for an approval"},
         409: {"description": "That approval has already been answered"},
+        429: {"description": "Too many approval decisions"},
     },
 )
 async def reject_task(
@@ -398,6 +419,7 @@ async def reject_task(
     approvals: ApprovalServiceDep,
     after_commit: AfterCommitDep,
 ) -> ApprovalResponse:
+    _require_agreement(payload, expected=False)
     return await _decide(task_id, False, payload.reason, user, approvals, after_commit)
 
 

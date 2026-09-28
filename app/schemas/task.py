@@ -47,6 +47,12 @@ MAX_START_URL_LENGTH: Final = 2048
 
 _WHITESPACE = re.compile(r"\s+")
 
+# Everything in the C0 and C1 ranges except the whitespace the collapse above
+# handles. Postgres refuses a NUL byte in a text column outright, so an
+# instruction carrying one would fail as a 500 rather than as a 400, and the
+# rest are invisible characters with no business in a sentence a person typed.
+_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
+
 EXAMPLE_INSTRUCTION: Final = "Find the cheapest flight from Delhi to Bengaluru on 20 Oct on SkyFare"
 
 
@@ -57,7 +63,7 @@ def normalise_instruction(value: str) -> str:
     rather than a fuzzy one: the same request typed with a trailing space, or
     pasted with a line break in it, is the same request.
     """
-    return _WHITESPACE.sub(" ", value).strip()
+    return _WHITESPACE.sub(" ", _CONTROL.sub("", value)).strip()
 
 
 class CreateTaskRequest(CamelModel):
@@ -110,17 +116,39 @@ class CreateTaskRequest(CamelModel):
         url = value.strip()
         if not url:
             return None
-        scheme, separator, _ = url.partition("://")
+        scheme, separator, rest = url.partition("://")
         if not separator or scheme.lower() not in {"http", "https"}:
             raise ValueError("A start URL must begin with http:// or https://.")
+
+        # Credentials in a URL end up in the task row, in the activity log and in
+        # every event about the task. The allow-list check parses the hostname
+        # correctly either way, so this is about not storing the password.
+        authority = rest.split("/", 1)[0]
+        if "@" in authority:
+            raise ValueError("A start URL must not contain credentials.")
         return url
 
 
 class ApprovalDecisionRequest(CamelModel):
-    """Body of ``POST /tasks/{id}/approve`` and ``/reject``."""
+    """Body of ``POST /tasks/{id}/approve`` and ``/reject``.
+
+    ``approved`` is in the body because spec section 6 puts it there, and the
+    endpoint decides the outcome. The two must agree: the route checks it, so
+    ``{"approved": false}`` sent to ``/approve`` is a 400 rather than an
+    approval. A client that disagrees with itself about something irreversible
+    is a client to stop, not one to guess at.
+    """
 
     approved: bool = Field(description="Whether the proposed action may go ahead.")
     reason: Annotated[str | None, Field(default=None, max_length=500)] = None
+
+    @field_validator("reason")
+    @classmethod
+    def _tidy_reason(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = normalise_instruction(value)
+        return cleaned or None
 
 
 class ApprovalResponse(CamelModel):

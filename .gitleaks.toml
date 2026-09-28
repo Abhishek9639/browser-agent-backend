@@ -1,0 +1,39 @@
+# gitleaks configuration for browser-agent-backend.
+#
+# Run through `make audit`, and in CI once the packaging part lands. The default
+# rule set does the work; everything below is about the false positives this
+# repository generates, each one listed individually rather than silenced with a
+# broad path exclusion.
+
+title = "browser-agent-backend"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Fixtures, examples and demo markers that look like secrets"
+
+paths = [
+  # Every value here is a placeholder by definition: the file exists to show
+  # which settings exist, and a real value in it would be the bug.
+  '''\.env\.example$''',
+  # RSA keys generated per test run into a temporary directory. Nothing in the
+  # repository, but the pattern matches if a run leaves one behind.
+  '''tests/fixtures/jwt/.*''',
+]
+
+regexes = [
+  # Test passphrases. Long enough to pass the password policy, which is exactly
+  # what makes them look like credentials to a scanner.
+  '''a-long-passphrase''',
+  '''a-long-internal-scrape-token''',
+  '''hunter2[a-z-]*''',
+  # The argon2 placeholder the fixtures store instead of a real hash.
+  '''argon2-digest''',
+  # The SkyFare oracle marker. It gates an endpoint on the demo site that
+  # exists so the chaos suite can score itself, and the site is not deployed.
+  '''scoring-only''',
+  # Visa's published test card number, used to assert that card-like values are
+  # masked. It cannot authorise anything.
+  '''4111111111111111''',
+]

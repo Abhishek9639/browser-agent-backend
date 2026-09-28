@@ -35,6 +35,7 @@ dev = [
     "pre-commit>=4.3.0",
     "pyyaml>=6.0.3",
     "types-pyyaml>=6.0.12.20260906",
+    "pip-audit>=2.10.1",
 ]
 
 # ---------------------------------------------------------------- ruff
@@ -93,6 +94,8 @@ ignore = [
 "scripts/**" = ["T201", "ASYNC240"]
 # LLMTimeout, LLMRateLimited and friends read better at the raise site.
 "app/agent/llm/base.py" = ["N818"]
+# A private marker exception, raised and caught inside one middleware.
+"app/core/security_headers.py" = ["N818"]
 # TabLimitReached reads better at the raise site than TabLimitReachedError.
 "app/agent/browser/sessions.py" = ["N818"]
 # Alembic writes these. `op` and `sa` are always imported whether or not a

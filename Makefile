@@ -3,7 +3,7 @@
 
 .DEFAULT_GOAL := help
 .PHONY: help install browsers dev test test-unit test-fast test-int lint fmt typecheck check \
-	check-all chaos bench skyfare migrate revision downgrade db-up db-down db-reset
+	check-all audit chaos bench skyfare migrate revision downgrade db-up db-down db-reset
 
 UV      ?= uv
 COMPOSE ?= docker compose -f docker-compose.dev.yml
@@ -55,6 +55,15 @@ check: lint typecheck test-unit  ## the fast gate a part must pass
 
 check-all: lint typecheck test-unit test-int  ## the full gate: adds integration (needs `make db-up`)
 	@echo "check-all passed"
+
+audit:  ## known vulnerabilities in the locked dependencies, and a secret scan
+	$(UV) run pip-audit --strict --progress-spinner off
+	@if command -v gitleaks >/dev/null 2>&1; then \
+		gitleaks detect --config .gitleaks.toml --redact --no-banner; \
+	else \
+		echo "gitleaks not installed; skipping the secret scan (brew install gitleaks)"; \
+	fi
+	@echo "audit passed"
 
 chaos:  ## run the chaos suite against SkyFare (needs `make db-up` and browsers)
 	$(UV) run pytest tests/chaos -m chaos

@@ -20,6 +20,7 @@ hostile input even though today only our own code produces one.
 
 import asyncio
 import re
+import secrets
 import shutil
 import uuid
 from pathlib import Path
@@ -31,6 +32,7 @@ from app.core.logging import get_logger
 
 __all__ = [
     "REF_PATTERN",
+    "REF_TOKEN_BYTES",
     "InvalidScreenshotRef",
     "LocalFileStorage",
     "ScreenshotStorage",
@@ -39,14 +41,23 @@ __all__ = [
 
 logger = get_logger(__name__)
 
-# <task uuid>/<zero-padded step>.jpg and nothing else. Anchored, so no prefix
-# or suffix can smuggle anything past it.
+# <task uuid>/<zero-padded step>-<token>.jpg and nothing else. Anchored, so no
+# prefix or suffix can smuggle anything past it. The token is optional in the
+# pattern because rows written before it existed are still valid refs: the
+# database holds them, and a migration to rename files on disk would be a lot of
+# risk for a cosmetic gain.
 REF_PATTERN: Final = re.compile(
     r"^(?P<task_id>[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}"
-    r"-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/(?P<step>\d{4})\.jpg$"
+    r"-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/(?P<step>\d{4})(?:-(?P<token>[0-9a-f]{16}))?\.jpg$"
 )
 STEP_DIGITS: Final = 4
 MAX_STEP_NUMBER: Final = 9999
+# Eight bytes of randomness per file. Not a credential: access is decided by
+# ownership of the task, which is checked on every read, and the ref never
+# appears in a URL. It is there so that a deployment which later serves this
+# directory statically, or syncs it to a bucket, is not trivially enumerable
+# from a task id alone (spec section 10).
+REF_TOKEN_BYTES: Final = 8
 
 
 class InvalidScreenshotRef(NotFound):
@@ -64,11 +75,13 @@ def build_ref(task_id: uuid.UUID, step_number: int) -> str:
     """The canonical ref for a step's screenshot.
 
     Zero-padded so a directory listing sorts in step order, which makes the
-    stored files readable during a demo without a database.
+    stored files readable during a demo without a database, and suffixed with
+    random hex so the name cannot be derived from the task id and a step number.
     """
     if not 0 <= step_number <= MAX_STEP_NUMBER:
         raise ValueError(f"step_number must be between 0 and {MAX_STEP_NUMBER}")
-    return f"{task_id}/{step_number:0{STEP_DIGITS}d}.jpg"
+    token = secrets.token_hex(REF_TOKEN_BYTES)
+    return f"{task_id}/{step_number:0{STEP_DIGITS}d}-{token}.jpg"
 
 
 @runtime_checkable
@@ -91,7 +104,7 @@ class ScreenshotStorage(Protocol):
 class LocalFileStorage:
     """Screenshots on the local filesystem, one directory per task.
 
-    Layout: ``<root>/screenshots/<task_id>/<step>.jpg``. Filesystem calls are
+    Layout: ``<root>/screenshots/<task_id>/<step>-<token>.jpg``. Filesystem calls are
     blocking, so each one is pushed to a worker thread; the agent loop writes a
     screenshot every step and must not stall on disk.
     """
@@ -107,7 +120,7 @@ class LocalFileStorage:
         """Resolve a ref, refusing anything that is not one.
 
         Two independent checks. The pattern is the real defence: a ref that is
-        not ``<uuid>/<digits>.jpg`` never becomes a path at all, so ``..``,
+        of that shape never becomes a path at all, so ``..``,
         absolute paths, null bytes, backslashes and URL-encoded separators are
         all rejected by construction. The containment check afterwards is
         belt-and-braces against a symlink inside the tree pointing out of it.

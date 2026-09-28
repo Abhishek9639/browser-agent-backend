@@ -4,6 +4,34 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B28 - Security hardening
+
+Added
+
+- `app/core/security_headers.py`: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cross-Origin-Resource-Policy: same-origin`, a CSP, and HSTS in production only. Two policies: the API gets `default-src 'none'` with framing, base URI and form submission all denied, and the four documentation routes get one that lets Swagger UI load, matched against a fixed set rather than by prefix so `/docsomething` cannot pick it up.
+- A request body limit, `MAX_REQUEST_BYTES`, as pure ASGI middleware. `Content-Length` is refused before anything is read, and the body is counted as it arrives because the header is only a claim. The framework turns an exception from the receive channel into a 400 about a malformed body, so the middleware rewrites the response instead: once the counter trips, the first `http.response.start` becomes a 413 and the handler's own body is dropped.
+- Rate limits on `POST /tasks/{id}/approve`, `/reject` and `/stream-ticket`, with `RATE_LIMIT_APPROVAL_PER_MINUTE` and `RATE_LIMIT_STREAM_TICKET_PER_MINUTE`.
+- Screenshot refs carry eight random bytes, so a filename is not derivable from a task id and a step number. Access is still decided by ownership; this matters for a deployment that later serves the directory statically. The pattern accepts refs written before the suffix existed.
+- `make audit`: pip-audit with `--strict` over the lockfile, and gitleaks with `.gitleaks.toml` when it is installed. Ruff's `S` (bandit) rules already run in `make lint`.
+- `docs/security.md`: every rule in spec section 10 mapped to where it is enforced and the test that proves it, the eight prompt-injection layers from section 4.11 each linked to its code and tests, and every `noqa: S` in the repository listed with its reason.
+- 44 tests.
+
+Fixed, from the input validation review
+
+- A control character in an instruction was a 500, not a 400: Postgres refuses a NUL byte in a text column. Control characters are now stripped before the length check, so an instruction made only of them is rejected rather than stored.
+- A start URL could carry credentials. `http://user:secret@host/` passed the scheme check and the allow-list, and the password would have been stored on the task row and repeated in every event about it.
+- `{"approved": false}` posted to `/approve` performed an approval. Both endpoints now refuse a body that disagrees with them: the action cannot be undone and either reading might be the one nobody wanted.
+- An inverted `from`/`to` range returned an empty page, which reads as "you have no tasks". Now a 400.
+- An approval reason is whitespace-normalised, so one made of newlines becomes null rather than a blank string.
+
+Changed
+
+- CORS names its methods and headers instead of allowing `*`. A wildcard with credentials is both refused by browsers and a statement that any method and header from that origin is welcome.
+
+Checked and unchanged
+
+- Pagination caps (20 default, 100 maximum, per decision A17), the enum filter on `?status=`, `%` escaping on the search term, UUID path parameters, the grounding description bounds, and the `after_step` lower bound on the WebSocket.
+
 ### B27 - Metrics, stats overview and log hygiene
 
 Added
