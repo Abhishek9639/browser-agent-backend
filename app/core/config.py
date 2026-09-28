@@ -60,6 +60,14 @@ class Settings(BaseSettings):
     APP_VERSION: str = "0.1.0"
     API_PREFIX: str = "/api/v1"
     CORS_ORIGINS: CsvList = Field(default_factory=lambda: ["http://localhost:3000"])
+    # Bytes. A task instruction is two thousand characters and the largest
+    # honest body is an approval reason, so a megabyte is generous. The point
+    # is that an unbounded body is a memory limit somebody else decides.
+    MAX_REQUEST_BYTES: int = 1_048_576
+    # Sent only in production, and only over HTTPS. Two years with preload is
+    # the usual recommendation; it is a setting because turning it on is hard
+    # to undo for anyone who has already seen it.
+    HSTS_MAX_AGE_SECONDS: int = 63_072_000
     LOG_LEVEL: LogLevel = LogLevel.INFO
 
     # ---------------------------------------------------------------- rate limits
@@ -69,6 +77,12 @@ class Settings(BaseSettings):
     RATE_LIMIT_LOGIN_PER_MINUTE: int = 5
     RATE_LIMIT_REGISTER_PER_MINUTE: int = 3
     RATE_LIMIT_TASK_CREATE_PER_MINUTE: int = 10
+    # Spec section 10 asks for rate limits on auth and task creation. These
+    # two are here because both are cheap to call and expensive to serve: an
+    # approval decision writes an audit row and wakes a parked run, and a
+    # stream ticket is a credential.
+    RATE_LIMIT_APPROVAL_PER_MINUTE: int = 20
+    RATE_LIMIT_STREAM_TICKET_PER_MINUTE: int = 30
     # Trust X-Forwarded-For only behind a proxy you control: a client can set it
     # freely, and believing it hands every caller a fresh rate-limit bucket.
     RATE_LIMIT_TRUST_FORWARDED_FOR: bool = False
@@ -153,6 +167,10 @@ class Settings(BaseSettings):
     # at least three runs it is deleted.
     CACHE_ENABLED: bool = True
     CACHE_MIN_SUCCESS_RATE: float = 0.5
+    # Spec section 6: /metrics is admin or internal only. A Prometheus
+    # scraper has no user account, so it presents this instead. Unset means
+    # the header is not accepted at all and only an ADMIN token works.
+    METRICS_INTERNAL_TOKEN: SecretStr | None = None
     AGENT_APPROVAL_TIMEOUT_SECONDS: int = 600
     # Spec section 4.10. Empty means the built-in list in app/agent/safety.
     RISK_HIGH_PHRASES: CsvList = Field(default_factory=list)

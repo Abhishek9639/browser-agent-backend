@@ -23,11 +23,19 @@ from typing import Any, Final
 
 from pydantic import ValidationError
 
-from app.agent.llm.base import LLMBadOutput, LLMClient, LLMMessage, LLMResponse, MessageRole
+from app.agent.llm.base import (
+    LLMBadOutput,
+    LLMClient,
+    LLMMessage,
+    LLMResponse,
+    MessageRole,
+    record_response,
+)
 from app.agent.perception.state import PageState
 from app.agent.perception.untrusted import wrap_page_state
 from app.agent.planner.registry import PromptRegistry
 from app.agent.planner.schema import DECISION_JSON_SCHEMA, Decision
+from app.core import metrics
 from app.core.logging import get_logger
 
 __all__ = [
@@ -219,6 +227,7 @@ class Planner:
                     timeout_s=self._timeout_s,
                 )
             except LLMBadOutput as exc:
+                _failed(self._llm, exc)
                 # The provider answered with something that was not JSON at all.
                 last_problem = str(exc)
                 if attempt == MAX_ATTEMPTS:
@@ -227,6 +236,10 @@ class Planner:
                     ) from exc
                 messages = [*messages, self._repair_turn(last_problem)]
                 continue
+
+            # Recorded per call rather than per decision, so a repair turn is
+            # counted: it is a real request with real tokens behind it.
+            record_response(response, purpose="planner")
 
             problem = self._validate(response.parsed, page_state)
             if problem is None:
@@ -240,6 +253,11 @@ class Planner:
                     needs_vision=decision.needs_vision,
                     attempt=attempt,
                     prompt_version=self.prompt_version,
+                    # Section 9 wants the model and the prompt version on every
+                    # step. They are stored on the row as well; having them in
+                    # the log is what makes a bad afternoon greppable.
+                    model_name=response.model_name,
+                    provider=response.provider,
                 )
                 return PlannerResult(
                     decision=decision,
@@ -304,3 +322,17 @@ def _describe(error: ValidationError) -> str:
         location = ".".join(str(piece) for piece in item.get("loc", ()))
         parts.append(f"{location or 'decision'}: {item.get('msg', 'invalid')}")
     return "; ".join(parts)
+
+
+def _failed(llm: LLMClient, exc: Exception) -> None:
+    """Count a model call that raised.
+
+    Latency is not known here, which is why this is a separate helper rather
+    than ``record_failure``: the exception came out of the provider's own retry
+    wrapper and its timing belongs to the attempt, not to this frame.
+    """
+    metrics.llm_errors_total.labels(
+        provider=llm.provider,
+        model=llm.model_name,
+        error=type(exc).__name__,
+    ).inc()

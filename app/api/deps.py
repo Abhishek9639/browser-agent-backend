@@ -25,6 +25,7 @@ from app.repositories.unit_of_work import UnitOfWorkDep
 from app.services.approvals import ApprovalRegistry, ApprovalService
 from app.services.auth import AuthService
 from app.services.events import EventBus, InMemoryEventBus
+from app.services.stats import StatsService
 from app.services.storage import LocalFileStorage, ScreenshotStorage
 from app.services.stream import StreamService
 from app.services.task_runner import TaskRunner
@@ -40,6 +41,7 @@ __all__ = [
     "KeyPairDep",
     "ScreenshotStorageDep",
     "SettingsDep",
+    "StatsServiceDep",
     "StreamServiceDep",
     "TaskRunnerDep",
     "TaskServiceDep",
@@ -52,6 +54,7 @@ __all__ = [
     "get_event_bus",
     "get_key_pair",
     "get_screenshot_storage",
+    "get_stats_service",
     "get_stream_service",
     "get_task_runner",
     "get_task_service",
@@ -134,6 +137,13 @@ def get_task_service(
 
 
 TaskServiceDep = Annotated[TaskService, Depends(get_task_service)]
+
+
+def get_stats_service(uow: UnitOfWorkDep, settings: SettingsDep) -> StatsService:
+    return StatsService(uow, settings)
+
+
+StatsServiceDep = Annotated[StatsService, Depends(get_stats_service)]
 
 
 def get_approval_registry(connection: HTTPConnection) -> ApprovalRegistry:

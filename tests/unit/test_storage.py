@@ -7,6 +7,7 @@ import pytest
 
 from app.core.config import Settings
 from app.services.storage import (
+    REF_PATTERN,
     InvalidScreenshotRef,
     LocalFileStorage,
     ScreenshotStorage,
@@ -36,10 +37,39 @@ def test_local_storage_satisfies_the_protocol(storage: LocalFileStorage) -> None
 
 
 def test_ref_shape(task_id: uuid.UUID) -> None:
-    assert build_ref(task_id, 7) == f"{task_id}/0007.jpg"
+    ref = build_ref(task_id, 7)
+
+    assert ref.startswith(f"{task_id}/0007-")
+    assert ref.endswith(".jpg")
+    assert REF_PATTERN.fullmatch(ref)
+
+
+def test_a_ref_cannot_be_guessed_from_the_task_and_step(task_id: uuid.UUID) -> None:
+    """Spec section 10.
+
+    Not a credential: reads are authorised by ownership of the task and the ref
+    never appears in a URL. The random suffix is there so that a deployment
+    which later serves this directory statically, or syncs it to a bucket, is
+    not enumerable from a task id alone.
+    """
+    first = build_ref(task_id, 7)
+    second = build_ref(task_id, 7)
+
+    assert first != second
+    assert len({build_ref(task_id, 1) for _ in range(20)}) == 20
+
+
+def test_a_ref_written_before_the_token_still_resolves(task_id: uuid.UUID) -> None:
+    """The database holds refs from before the suffix existed.
+
+    Renaming files on disk to match a new convention would be real risk for a
+    cosmetic gain, so the pattern accepts both shapes.
+    """
+    assert REF_PATTERN.fullmatch(f"{task_id}/0007.jpg")
 
 
 def test_step_numbers_are_zero_padded_so_listings_sort(task_id: uuid.UUID) -> None:
+    """The step is still the first thing in the name, so a listing sorts by it."""
     refs = [build_ref(task_id, n) for n in (1, 2, 10, 100)]
 
     assert refs == sorted(refs)

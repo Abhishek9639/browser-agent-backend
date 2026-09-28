@@ -21,7 +21,14 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Final
 
-from app.agent.llm.base import LLMClient, LLMError, LLMMessage, MessageRole
+from app.agent.llm.base import (
+    LLMClient,
+    LLMError,
+    LLMMessage,
+    MessageRole,
+    record_failure,
+    record_response,
+)
 from app.agent.perception.dom_extractor import ElementInfo
 from app.agent.perception.state import PageState
 from app.agent.planner.registry import PromptRegistry
@@ -326,6 +333,13 @@ class VisualGroundingService:
             )
         except LLMError as exc:
             elapsed = int((time.monotonic() - started) * 1000)
+            record_failure(
+                provider=self._llm.provider,
+                model=self._llm.model_name,
+                purpose="vision",
+                seconds=elapsed / 1000,
+                error=exc,
+            )
             logger.warning(
                 "grounding_unavailable",
                 error_type=type(exc).__name__,
@@ -334,6 +348,8 @@ class VisualGroundingService:
             return GroundingResult(
                 latency_ms=elapsed, error=f"Vision is unavailable ({type(exc).__name__})."
             )
+
+        record_response(response, purpose="vision")
 
         result = self.validate_output(response.parsed, context)
         resolved = GroundingResult(

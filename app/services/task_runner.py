@@ -34,6 +34,7 @@ from app.agent.recovery.runner import RecoveryRunner
 from app.agent.recovery.strategies import strategies_with_grounding
 from app.agent.safety.gate import DatabaseApprovalGate
 from app.agent.vision.grounding import VisionGrounder, VisualGroundingService
+from app.core import metrics
 from app.core.config import Settings
 from app.core.logging import get_logger
 from app.db.session import Database
@@ -271,40 +272,65 @@ class TaskRunner:
     # --------------------------------------------------------------- work
 
     async def _run(self, task_id: uuid.UUID) -> None:
-        """One task, start to finish, holding a slot for the whole run."""
-        async with self._semaphore:
-            cancellation = self._cancellations.get(task_id) or _Cancellation()
-            if cancellation.is_cancelled():
-                # Cancelled while it was still queued. It never started, so
-                # there is nothing to stop and nothing to publish.
-                return
+        """One task, start to finish, holding a slot for the whole run.
 
-            driver = self._new_driver()
-            self._drivers[task_id] = driver
+        The two capacity gauges are moved here rather than counted from
+        ``self._tasks``, which cannot tell a task waiting for a slot from one
+        that is running: both are entries in the same dictionary, and the
+        difference is the whole point of the pair.
+        """
+        metrics.queued_tasks.inc()
+        acquired = False
+        try:
+            async with self._semaphore:
+                metrics.queued_tasks.dec()
+                acquired = True
+                metrics.active_tasks.inc()
+                try:
+                    await self._run_with_slot(task_id)
+                finally:
+                    metrics.active_tasks.dec()
+        finally:
+            # A task cancelled while still queued never reaches the slot, so the
+            # decrement above never runs and the gauge would drift upward for
+            # the life of the process.
+            if not acquired:
+                metrics.queued_tasks.dec()
 
-            try:
-                await driver.launch()
-                await self._goto_start_url(task_id, driver)
-                outcome = await self._build(task_id, driver, cancellation).run(task_id)
-                logger.info(
-                    "task_finished",
-                    task_id=str(task_id),
-                    status=outcome.status.value,
-                    steps=outcome.steps,
-                )
-            except asyncio.CancelledError:
-                # Shutdown. `stop` writes the terminal status, because doing it
-                # here would need an await that the cancellation will interrupt.
-                raise
-            except Exception:
-                logger.exception("task_runner_failed", task_id=str(task_id))
-                await self._force_terminal(
-                    task_id,
-                    TaskStatus.EXECUTION_FAILED,
-                    "The task could not be started.",
-                )
-            finally:
-                await self._close_driver(task_id)
+    async def _run_with_slot(self, task_id: uuid.UUID) -> None:
+        """The run itself, once a concurrency slot is held."""
+        cancellation = self._cancellations.get(task_id) or _Cancellation()
+        if cancellation.is_cancelled():
+            # Cancelled while it was still queued. It never started, so
+            # there is nothing to stop and nothing to publish.
+            return
+
+        driver = self._new_driver()
+        self._drivers[task_id] = driver
+
+        try:
+            await driver.launch()
+            await self._goto_start_url(task_id, driver)
+            outcome = await self._build(task_id, driver, cancellation).run(task_id)
+            logger.info(
+                "task_finished",
+                task_id=str(task_id),
+                status=outcome.status.value,
+                steps=outcome.steps,
+            )
+        except asyncio.CancelledError:
+            # Shutdown. `stop` writes the terminal status, because doing it
+            # here would need an await that the cancellation will interrupt.
+            raise
+        except Exception:
+            logger.exception("task_runner_failed", task_id=str(task_id))
+            await self._force_terminal(
+                task_id,
+                TaskStatus.EXECUTION_FAILED,
+                "The task could not be started.",
+            )
+        finally:
+            await self._close_driver(task_id)
 
     def _new_driver(self) -> PlaywrightDriver:
         """A context on the shared browser, or whatever a test injected.

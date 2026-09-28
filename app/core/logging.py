@@ -12,7 +12,9 @@ covered.
 
 import logging
 import sys
-from collections.abc import Sequence
+import uuid
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 
 import structlog
 from structlog.typing import EventDict, Processor, WrappedLogger
@@ -27,6 +29,8 @@ __all__ = [
     "configure_logging",
     "get_logger",
     "redact_sensitive",
+    "step_context",
+    "task_context",
 ]
 
 
@@ -71,7 +75,13 @@ def configure_logging(settings: Settings) -> None:
         processors=list(_build_processors(settings)),
         wrapper_class=structlog.make_filtering_bound_logger(level),
         logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
-        cache_logger_on_first_use=True,
+        # Not cached. Caching binds each module's logger to the processor chain
+        # that existed the first time it logged, which makes the pipeline
+        # unobservable: `structlog.testing.capture_logs` sees nothing, and the
+        # section 10 guarantee that no page content or credential reaches a log
+        # line becomes untestable. A guarantee nobody can check is not one, and
+        # the cost of checking it is a dict lookup per log call.
+        cache_logger_on_first_use=False,
     )
 
 
@@ -89,3 +99,32 @@ def bind_request_id(request_id: str) -> None:
 def clear_request_context() -> None:
     """Drop per-request context so ids never leak between requests."""
     structlog.contextvars.clear_contextvars()
+
+
+@contextmanager
+def task_context(task_id: uuid.UUID | str) -> Iterator[None]:
+    """Bind a task id for everything logged inside a run.
+
+    Bound once rather than passed to every call, for the same reason
+    ``request_id`` is: spec section 9 wants a task id on the lines that have
+    one, and a rule that depends on every future call site remembering an
+    argument is a rule that will be broken by the next part.
+
+    Restores whatever was bound before, so an agent run inside a request does
+    not wipe the request id on its way out.
+    """
+    tokens = structlog.contextvars.bind_contextvars(task_id=str(task_id))
+    try:
+        yield
+    finally:
+        structlog.contextvars.reset_contextvars(**tokens)
+
+
+@contextmanager
+def step_context(step_number: int) -> Iterator[None]:
+    """Bind a step number for the duration of one step."""
+    tokens = structlog.contextvars.bind_contextvars(step_number=step_number)
+    try:
+        yield
+    finally:
+        structlog.contextvars.reset_contextvars(**tokens)

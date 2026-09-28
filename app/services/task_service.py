@@ -218,6 +218,12 @@ class TaskService:
         page: int = 1,
         page_size: int = DEFAULT_PAGE_SIZE,
     ) -> Page[Task]:
+        if created_from is not None and created_to is not None and created_from > created_to:
+            # Silently returning an empty page reads as "you have no tasks",
+            # which sends somebody looking for the tasks rather than for the
+            # typo in their date range.
+            raise ValidationFailed("`from` cannot be later than `to`.")
+
         return await self._uow.tasks.list_for_user(
             user,
             status=status,

@@ -4,6 +4,62 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B28 - Security hardening
+
+Added
+
+- `app/core/security_headers.py`: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cross-Origin-Resource-Policy: same-origin`, a CSP, and HSTS in production only. Two policies: the API gets `default-src 'none'` with framing, base URI and form submission all denied, and the four documentation routes get one that lets Swagger UI load, matched against a fixed set rather than by prefix so `/docsomething` cannot pick it up.
+- A request body limit, `MAX_REQUEST_BYTES`, as pure ASGI middleware. `Content-Length` is refused before anything is read, and the body is counted as it arrives because the header is only a claim. The framework turns an exception from the receive channel into a 400 about a malformed body, so the middleware rewrites the response instead: once the counter trips, the first `http.response.start` becomes a 413 and the handler's own body is dropped.
+- Rate limits on `POST /tasks/{id}/approve`, `/reject` and `/stream-ticket`, with `RATE_LIMIT_APPROVAL_PER_MINUTE` and `RATE_LIMIT_STREAM_TICKET_PER_MINUTE`.
+- Screenshot refs carry eight random bytes, so a filename is not derivable from a task id and a step number. Access is still decided by ownership; this matters for a deployment that later serves the directory statically. The pattern accepts refs written before the suffix existed.
+- `make audit`: pip-audit with `--strict` over the lockfile, and gitleaks with `.gitleaks.toml` when it is installed. Ruff's `S` (bandit) rules already run in `make lint`.
+- `docs/security.md`: every rule in spec section 10 mapped to where it is enforced and the test that proves it, the eight prompt-injection layers from section 4.11 each linked to its code and tests, and every `noqa: S` in the repository listed with its reason.
+- 44 tests.
+
+Fixed, from the input validation review
+
+- A control character in an instruction was a 500, not a 400: Postgres refuses a NUL byte in a text column. Control characters are now stripped before the length check, so an instruction made only of them is rejected rather than stored.
+- A start URL could carry credentials. `http://user:secret@host/` passed the scheme check and the allow-list, and the password would have been stored on the task row and repeated in every event about it.
+- `{"approved": false}` posted to `/approve` performed an approval. Both endpoints now refuse a body that disagrees with them: the action cannot be undone and either reading might be the one nobody wanted.
+- An inverted `from`/`to` range returned an empty page, which reads as "you have no tasks". Now a 400.
+- An approval reason is whitespace-normalised, so one made of newlines becomes null rather than a blank string.
+
+Changed
+
+- CORS names its methods and headers instead of allowing `*`. A wildcard with credentials is both refused by browsers and a statement that any method and header from that origin is welcome.
+
+Checked and unchanged
+
+- Pagination caps (20 default, 100 maximum, per decision A17), the enum filter on `?status=`, `%` escaping on the search term, UUID path parameters, the grounding description bounds, and the `after_step` lower bound on the WebSocket.
+
+### B27 - Metrics, stats overview and log hygiene
+
+Added
+
+- `app/core/metrics.py` and `GET /metrics` in Prometheus text, on its own registry and at the root per decision A9. Admin bearer token or `X-Internal-Token` when `METRICS_INTERNAL_TOKEN` is set; the token comparison is constant time. Sixteen collectors covering the API, the agent, the model and the live view, which between them derive every KPI in spec section 9.
+- `GET /api/v1/stats/overview`: completion rate, median duration, recovery success rate, cache hit rate, approvals requested, credits used when billing is enabled, and a seven day trend. Own tasks by default; an ADMIN may pass `scope=all`, and anyone else asking for it gets 403 rather than their own numbers under a global heading.
+- `app/repositories/stats.py` and `app/services/stats.py`: the aggregates, and the arithmetic over them.
+- Log context bound rather than passed: `task_id` for a whole run, `step_number` for a step, alongside the existing `request_id`. A decision logs `model_name`, `provider` and `prompt_version`; a status change logs `status`; a failed action logs `error_code`.
+- `docs/observability.md`: every metric and its labels, useful log queries, and seven Prometheus alert rules covering repeated step failures, API error rate, LLM dependency failure, decision latency, and the completion and recovery benchmarks.
+- `prometheus-client`, and the `METRICS_INTERNAL_TOKEN` setting. The library is not in the spec section 3 stack list; section 6 requires Prometheus text output and the part brief asked for it by name.
+- 30 tests, including a scan of every log line a full mock task produces.
+
+Not labelled, on purpose
+
+- No metric carries a task id, user id or URL. A label taken from user input grows one time series per task, or per probe from whatever is scanning the internet, which is the standard way instrumentation takes down the service it was meant to watch. A test enumerates the registry and fails if any collector gains one.
+- The HTTP metrics use the route template with parameters put back, and label an unmatched request `unmatched` rather than by its path.
+- "Repeated action failures on one task" is therefore not a Prometheus rule. The step budget and the ladder's own budget already stop a task that keeps failing, and the per-task question is answered by a log query on `task_id`, which the observability page documents. The aggregate rule is the metric-shaped version of the same signal.
+
+Changed
+
+- Recovery is counted per failed step rather than per attempt, matching the chaos harness: a step rescued on the third rung is one success, not one success and two failures.
+- `cache_lookups_total` has three outcomes, `hit`, `miss` and `ineligible`. A flow below the success-rate threshold is not a hit; counting it as one would measure how often a signature matched rather than how often the cache helped.
+- Structlog no longer caches bound loggers on first use. Caching binds each module's logger to whatever processor chain existed when it first logged, which makes the pipeline unobservable and the section 10 guarantee untestable. The cost is a dictionary lookup per log call.
+
+Fixed
+
+- `metrics.reset()` left unlabelled counters at their old values, because `clear()` only empties a collector's label map. One test's recovery episodes were appearing in the next test's total.
+
 ### B25 - Task replay and caching
 
 Added

@@ -19,6 +19,7 @@ from app.core.jwt_keys import load_key_pair
 from app.core.logging import configure_logging, get_logger
 from app.core.middleware import RequestContextMiddleware
 from app.core.rate_limit import InMemoryRateLimiter
+from app.core.security_headers import BodySizeLimitMiddleware, SecurityHeadersMiddleware
 from app.db.session import Database
 from app.services.approvals import ApprovalRegistry
 from app.services.events import InMemoryEventBus
@@ -104,15 +105,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     application.state.settings = settings
 
-    # Outermost first: the request id must exist before anything else runs.
+    # Starlette applies middleware in reverse registration order, so the last
+    # one added is the outermost. The order below is deliberate:
+    #
+    #   security headers -> body limit -> CORS -> request context -> routes
+    #
+    # Headers outermost so even a response this stack rejects carries them. The
+    # body limit above CORS so an oversized preflight-less POST is refused
+    # before anything reads it. The request context innermost of the four, so
+    # the access log and the API metrics measure the handler rather than the
+    # middleware around it.
     application.add_middleware(RequestContextMiddleware)
     application.add_middleware(
         CORSMiddleware,
         allow_origins=settings.CORS_ORIGINS,
         allow_credentials=True,  # the refresh cookie is httpOnly and cross-origin
-        allow_methods=["*"],
-        allow_headers=["*"],
+        # Named rather than "*". With credentials allowed, a wildcard is both
+        # refused by browsers and a statement that any header and any method is
+        # welcome, which is the opposite of what section 10 asks for.
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
         expose_headers=["X-Request-ID"],
+        max_age=600,
+    )
+    application.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.MAX_REQUEST_BYTES)
+    application.add_middleware(
+        SecurityHeadersMiddleware,
+        is_prod=settings.is_prod,
+        hsts_max_age=settings.HSTS_MAX_AGE_SECONDS,
     )
 
     register_exception_handlers(application)

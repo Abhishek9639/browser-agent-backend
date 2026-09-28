@@ -143,5 +143,9 @@ def transition(task: HasStatus, new_status: TaskStatus) -> TaskStatus:
         raise IllegalTransition(current, new_status)
 
     task.status = new_status
-    logger.info("task_status_changed", **{"from": current.value, "to": new_status.value})
+    logger.info(
+        "task_status_changed",
+        status=new_status.value,
+        **{"from": current.value, "to": new_status.value},
+    )
     return current

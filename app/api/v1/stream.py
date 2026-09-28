@@ -13,7 +13,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Final
 
-from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect, status
 from pydantic import Field
 
 from app.api.deps import (
@@ -23,7 +23,9 @@ from app.api.deps import (
     StreamServiceDep,
     TaskServiceDep,
     TicketStoreDep,
+    rate_limit,
 )
+from app.core import metrics
 from app.core.logging import get_logger
 from app.schemas.base import CamelModel
 from app.services.events import AnyEvent, EventType, HeartbeatEvent, Subscription
@@ -63,7 +65,13 @@ class StreamTicketResponse(CamelModel):
         "parameter on `WS /api/v1/tasks/{id}/stream`; never put an access "
         "token in that URL."
     ),
-    responses={404: {"description": "No such task, or it belongs to someone else"}},
+    dependencies=[
+        Depends(rate_limit("stream_ticket", lambda s: s.RATE_LIMIT_STREAM_TICKET_PER_MINUTE))
+    ],
+    responses={
+        404: {"description": "No such task, or it belongs to someone else"},
+        429: {"description": "Too many tickets requested"},
+    },
 )
 async def create_stream_ticket(
     task_id: uuid.UUID,
@@ -190,6 +198,7 @@ def _log_latency(event: AnyEvent) -> None:
         return
 
     delay_ms = int((datetime.now(UTC) - event.timestamp).total_seconds() * 1000)
+    metrics.ws_delivery_latency_seconds.observe(delay_ms / 1000)
     logger.info(
         "stream_step_latency",
         task_id=str(event.task_id),
