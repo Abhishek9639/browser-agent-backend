@@ -14,7 +14,10 @@ venv/
 # Environment and secrets
 .env
 .env.*
+# The examples hold no values, which is the whole point of them: a real
+# value in one would be the bug.
 !.env.example
+!.env.full.example
 keys/
 *.pem
 *.key

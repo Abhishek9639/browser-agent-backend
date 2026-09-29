@@ -3,10 +3,14 @@
 
 .DEFAULT_GOAL := help
 .PHONY: help install browsers dev test test-unit test-fast test-int lint fmt typecheck check \
-	check-all audit chaos bench skyfare migrate revision downgrade db-up db-down db-reset
+	check-all audit chaos bench skyfare up down logs build \
+	migrate revision downgrade db-up db-down db-reset
 
 UV      ?= uv
+# The development database on its own, for running the suite from a checkout.
 COMPOSE ?= docker compose -f docker-compose.dev.yml
+# The whole backend in containers: Postgres, the API and SkyFare.
+STACK   ?= docker compose
 
 help:  ## show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -55,6 +59,21 @@ check: lint typecheck test-unit  ## the fast gate a part must pass
 
 check-all: lint typecheck test-unit test-int  ## the full gate: adds integration (needs `make db-up`)
 	@echo "check-all passed"
+
+up:  ## build and start the backend stack (postgres, api, skyfare)
+	$(STACK) up --build -d
+	@echo "api      http://localhost:$${API_PORT:-8000}/api/v1/health"
+	@echo "docs     http://localhost:$${API_PORT:-8000}/docs"
+	@echo "skyfare  http://localhost:$${SKYFARE_PORT:-8200}/"
+
+down:  ## stop the backend stack (keeps the volumes)
+	$(STACK) down
+
+logs:  ## follow the stack's logs
+	$(STACK) logs -f
+
+build:  ## build the images without starting anything
+	$(STACK) build
 
 audit:  ## known vulnerabilities in the locked dependencies, and a secret scan
 	$(UV) run pip-audit --strict --progress-spinner off

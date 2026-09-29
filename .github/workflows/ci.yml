@@ -1,0 +1,405 @@
+# The quality gate. Everything `make check-all` and `make audit` run locally,
+# plus the two suites that need a browser and the image build.
+#
+# Split into jobs that can run at once rather than one long script, because the
+# feedback that matters is "lint is wrong" arriving in a minute rather than
+# after the chaos suite. `gate` at the bottom is the single required check for
+# branch protection: see docs/cicd.md.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # So a rule can be re-run after a flake without pushing an empty commit.
+  workflow_dispatch:
+
+# A second push to the same branch makes the first one irrelevant. Not applied
+# to main, where every commit's result is worth keeping.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+env:
+  # Pinned. A resolver that changes under CI is a build nobody can reproduce.
+  UV_VERSION: "0.9.7"
+  PYTHON_VERSION: "3.12"
+  # Keeps the suite away from a developer's provider and from anybody's quota.
+  LLM_PROVIDER: mock
+
+jobs:
+  # ------------------------------------------------------------------- lint
+  lint:
+    name: Lint and typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          # Invalidated by the lockfile alone: the resolved set is what the
+          # cache holds, and nothing else changes it.
+          cache-dependency-glob: uv.lock
+
+      - run: uv python install ${{ env.PYTHON_VERSION }}
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy
+
+  # ------------------------------------------------------------------- unit
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - run: uv python install ${{ env.PYTHON_VERSION }}
+      - run: uv sync --frozen
+
+      # Around 400 MB. Keyed on the resolved Playwright version, so the cache is
+      # invalidated by the upgrade that would otherwise silently pair a new
+      # Python package with last week's browser.
+      - name: Resolve the Playwright version
+        id: playwright
+        run: echo "version=$(uv run python -c 'import importlib.metadata as m; print(m.version("playwright"))')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the Chromium build
+        id: browser-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+
+      - name: Install Chromium
+        # --with-deps on a miss only: the system libraries are outside the cached
+        # directory, so they are installed either way, but the browser download
+        # is the slow half.
+        run: |
+          if [ "${{ steps.browser-cache.outputs.cache-hit }}" = "true" ]; then
+            uv run playwright install-deps chromium
+          else
+            uv run playwright install --with-deps chromium
+          fi
+
+      - name: Run the unit suite
+        run: uv run pytest tests/unit --cov --cov-report=xml --cov-report=term-missing
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-unit
+          path: coverage.xml
+          if-no-files-found: warn
+
+  # ------------------------------------------------------------ integration
+  integration:
+    name: Integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: agent_core
+        ports:
+          - 5432:5432
+        # A service container cannot run the init script, so the databases are
+        # created by the step below instead.
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: agent_core
+      POSTGRES_TEST_DB: agent_core_test
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - run: uv python install ${{ env.PYTHON_VERSION }}
+      - run: uv sync --frozen
+
+      - name: Create the databases
+        # The same script the compose stack runs on first start, so CI and a
+        # developer's machine create the same three databases from one source.
+        #
+        # Read as a file rather than passed with `-c`: `\gexec` is a psql
+        # meta-command, and `-c` sends its argument straight to the server, which
+        # answers `syntax error at or near "\"`. That is exactly how the first
+        # run of this workflow failed.
+        run: |
+          PGPASSWORD=postgres psql -h localhost -U postgres -d agent_core \
+            -v ON_ERROR_STOP=1 -f scripts/db/init.sql
+
+      - name: Apply the migrations
+        # Against agent_core, the live database, not the test one. The suite
+        # builds agent_core_test from the model metadata, but one integration
+        # test asserts that the live database is at migration head, which is the
+        # state a developer's machine is in after `make migrate`. Without this
+        # step CI has an empty agent_core and that test fails on a missing
+        # alembic_version table, which is how the second run of this workflow
+        # failed. It also means CI proves the migrations apply from nothing.
+        run: uv run alembic upgrade head
+
+      - name: Generate signing keys
+        # The suite needs a keypair. Generated per run rather than committed: a
+        # private key in version control is a compromised private key.
+        run: uv run python scripts/gen_keys.py
+
+      - name: Resolve the Playwright version
+        id: playwright
+        run: echo "version=$(uv run python -c 'import importlib.metadata as m; print(m.version("playwright"))')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the Chromium build
+        id: browser-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+
+      - name: Install Chromium
+        run: |
+          if [ "${{ steps.browser-cache.outputs.cache-hit }}" = "true" ]; then
+            uv run playwright install-deps chromium
+          else
+            uv run playwright install --with-deps chromium
+          fi
+
+      - name: Run the integration suite
+        run: uv run pytest tests/integration -m integration
+
+  # ------------------------------------------------------------------ chaos
+  chaos:
+    name: Chaos suite and benchmark
+    runs-on: ubuntu-latest
+    # The longest job: ten configurations against a real Chromium.
+    timeout-minutes: 40
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: agent_core
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 20
+
+    env:
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: agent_core
+      POSTGRES_TEST_DB: agent_core_test
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - run: uv python install ${{ env.PYTHON_VERSION }}
+      - run: uv sync --frozen
+
+      - name: Create the databases
+        # The same script the compose stack runs on first start, so CI and a
+        # developer's machine create the same three databases from one source.
+        #
+        # Read as a file rather than passed with `-c`: `\gexec` is a psql
+        # meta-command, and `-c` sends its argument straight to the server, which
+        # answers `syntax error at or near "\"`. That is exactly how the first
+        # run of this workflow failed.
+        run: |
+          PGPASSWORD=postgres psql -h localhost -U postgres -d agent_core \
+            -v ON_ERROR_STOP=1 -f scripts/db/init.sql
+
+      - name: Generate signing keys
+        run: uv run python scripts/gen_keys.py
+
+      - name: Resolve the Playwright version
+        id: playwright
+        run: echo "version=$(uv run python -c 'import importlib.metadata as m; print(m.version("playwright"))')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the Chromium build
+        id: browser-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+
+      - name: Install Chromium
+        run: |
+          if [ "${{ steps.browser-cache.outputs.cache-hit }}" = "true" ]; then
+            uv run playwright install-deps chromium
+          else
+            uv run playwright install --with-deps chromium
+          fi
+
+      # The mock provider is rule-based and offline, so this costs nothing and
+      # measures the loop, the verifier and the recovery ladder rather than a
+      # model's judgement.
+      - name: Run the chaos suite
+        run: uv run pytest tests/chaos -m chaos
+
+      - name: Run the benchmark
+        run: uv run python scripts/benchmark.py --runs 1 --provider mock
+
+      - name: Upload the benchmark report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark
+          path: |
+            docs/benchmarks/*.md
+            docs/benchmarks/*.json
+          if-no-files-found: warn
+
+  # ------------------------------------------------------------------ audit
+  audit:
+    name: Dependency and secret audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # The gitleaks action reads the pull request's commit list.
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # gitleaks scans history, and a shallow clone has none to scan.
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - run: uv python install ${{ env.PYTHON_VERSION }}
+      - run: uv sync --frozen
+
+      - name: Known vulnerabilities
+        # --strict so an advisory with no fix available fails the job rather
+        # than printing a warning nobody reads.
+        run: uv run pip-audit --strict --progress-spinner off
+
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_CONFIG: .gitleaks.toml
+          # Required since the action's v2 breaking change: it lists a pull
+          # request's commits through the API and refuses to scan one without a
+          # token. The first run of this workflow failed on exactly that.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Only needed for the organisation licence on private repositories.
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+  # ------------------------------------------------------------------ image
+  image:
+    name: Docker build and smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+
+      # Compose does the building rather than buildx with a registry cache. That
+      # is slower, and it is the point: this job runs exactly what `make up`
+      # runs, so it cannot pass against an image assembled differently from the
+      # one a developer or a demo would get.
+      - name: Build the images
+        run: docker compose build
+
+      # A build proves the layers assemble. Starting it proves the entrypoint
+      # runs, the migrations apply against an empty database, the signing key is
+      # generated, Chromium launches, and SkyFare answers.
+      - name: Start the stack and check its health
+        run: |
+          docker compose up -d
+          for attempt in $(seq 1 40); do
+            if curl -fsS http://localhost:8000/api/v1/health > /dev/null 2>&1; then
+              echo "api healthy after ~$((attempt * 3))s"
+              curl -fsS http://localhost:8000/api/v1/health; echo
+              curl -fsS http://localhost:8200/healthz; echo
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "the api never became healthy"
+          docker compose ps
+          docker compose logs
+          exit 1
+
+      - name: Show the logs on failure
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: Stop the stack
+        if: always()
+        run: docker compose down -v
+
+  # ------------------------------------------------------------------- gate
+  # One required check for branch protection, so adding a job later does not
+  # mean editing the protection rule. `needs` alone is not enough: a skipped or
+  # cancelled dependency does not fail a job that only lists it.
+  gate:
+    name: Quality gate
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [lint, unit, integration, chaos, audit, image]
+    steps:
+      - name: Check every job succeeded
+        run: |
+          results='${{ join(needs.*.result, ' ') }}'
+          echo "results: ${results}"
+          for result in ${results}; do
+            if [ "${result}" != "success" ]; then
+              echo "a required job did not succeed"
+              exit 1
+            fi
+          done
+          echo "every required job succeeded"

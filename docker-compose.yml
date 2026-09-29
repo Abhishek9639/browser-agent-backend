@@ -1,0 +1,105 @@
+# The backend-only stack: Postgres, the API, and the SkyFare demo site.
+#
+# `make up` builds and starts it; `make logs` follows it; `make down` stops it.
+# This is the whole of AI-07's backend and is enough for a demo: submit a task
+# against SkyFare and watch it in the live stream.
+#
+# The full stack, with the frontend and the payments service, is in
+# deploy/docker-compose.full.yml.
+#
+# Not to be confused with docker-compose.dev.yml, which starts Postgres alone
+# for running the suite against a checkout.
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: browser-agent-postgres-stack
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-agent_core}
+    ports:
+      # Published on 5433 by default, because a developer running this stack
+      # usually has something on 5432 already.
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Creates agent_core, agent_core_test and payments. Runs once, only when
+      # the data volume is empty.
+      - ./scripts/db/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-agent_core}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  api:
+    build:
+      context: .
+      target: api
+    container_name: browser-agent-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        # Not `service_started`: the entrypoint runs migrations, and a migration
+        # against a server that is still starting fails the container.
+        condition: service_healthy
+    environment:
+      APP_ENV: ${APP_ENV:-dev}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Inside the network Postgres is on its own hostname and the container
+      # port, whatever the host publishes it as.
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-agent_core}
+      # The frontend in the full stack, and a dev server on the host.
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      # SkyFare by its service name: the agent's browser runs in this container
+      # and resolves it on the compose network.
+      AGENT_ALLOWED_DOMAINS: ${AGENT_ALLOWED_DOMAINS:-skyfare,localhost,127.0.0.1}
+      # Compose loads the repository's .env by itself, so a developer with a
+      # real provider configured there gets that provider here, and `mock` only
+      # when nothing is set. The key names have to match app/core/config.py
+      # exactly: LLM_PROVIDER=gemini with the key passed as GEMINI_API_KEY
+      # starts the container and then fails the first task, which is how this
+      # was found.
+      LLM_PROVIDER: ${LLM_PROVIDER:-mock}
+      LLM_MODEL: ${LLM_MODEL:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      # Off unless the payments service is running, which it is not in this
+      # stack (spec section 7).
+      BILLING_ENABLED: ${BILLING_ENABLED:-false}
+      METRICS_INTERNAL_TOKEN: ${METRICS_INTERNAL_TOKEN:-}
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      # Screenshots and the signing key outlive the container. The key
+      # especially: regenerating it on every restart would invalidate every
+      # token already issued.
+      - api_storage:/app/storage
+      - api_keys:/app/keys
+
+  skyfare:
+    build:
+      context: .
+      target: skyfare
+    container_name: browser-agent-skyfare
+    restart: unless-stopped
+    # Decision A12: its own service, never mounted into the API, so chaos
+    # behaviour cannot leak into real routes.
+    ports:
+      - "${SKYFARE_PORT:-8200}:8200"
+
+volumes:
+  postgres_data:
+    name: browser_agent_stack_postgres_data
+  api_storage:
+    name: browser_agent_stack_storage
+  api_keys:
+    name: browser_agent_stack_keys

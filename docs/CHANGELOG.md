@@ -4,6 +4,42 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### Fixed: the first CI run
+
+Three failures, none of which could have been reproduced locally.
+
+- `psql -c "... \gexec"` is a syntax error. `\gexec` is a psql meta-command and `-c` sends its argument straight to the server, which answers `syntax error at or near "\"`. The pattern had been copied from `scripts/db/init.sql`, where psql reads it as a file and it works. The step now runs that script with `-f`, so CI and the compose stack create the same three databases from one source rather than from a duplicated one-liner. This failed both the integration and the chaos jobs.
+- `gitleaks-action` requires `GITHUB_TOKEN` on a pull request: a breaking change in its v2, where it lists the pull request's commits through the API and refuses to scan one without a token. Added, along with `pull-requests: read` on that job. Nothing local would have caught it, because `make audit` runs the binary against a working tree with no pull request involved.
+- The quality gate reported `success success failure failure failure success` and failed, which is the gate doing its job rather than a fourth bug.
+- The second run failed on one test for the same class of reason: `test_live_database_is_at_migration_head` asserts that the live `agent_core` database is at head, which is the state `make migrate` leaves a developer's machine in and which nothing in CI had done. The suite builds `agent_core_test` from the model metadata and never touches the live database. The integration job now runs `alembic upgrade head`, which also means CI proves the migrations apply from nothing rather than only that the metadata does.
+
+`docs/cicd.md` records all three under verifying a workflow change, because two of them are the kind of thing that recurs.
+
+### B30 - Docker images and GitHub Actions
+
+Added
+
+- `Dockerfile`: multi-stage, two targets, on `mcr.microsoft.com/playwright/python` pinned to the same Playwright version as `pyproject.toml`. Dependencies are their own stage so the layer is cached on the lockfile alone. Runs as the base image's `pwuser`: a browser running as root is a sandbox with the door open, and screenshots written to a mounted volume would be root-owned on the host.
+- `docker/entrypoint.sh`: applies migrations, then generates a signing key if the volume has none, then starts uvicorn. Alembic serialises on its own version row, so several replicas starting at once is safe; `RUN_MIGRATIONS=0` and `JWT_GENERATE_KEYS=0` exist for a deployment that would rather do either itself.
+- `HEALTHCHECK` on `/api/v1/health` with a 40 second start period, which is what covers the migrations and the Chromium launch.
+- A second target for SkyFare: same layers, no database, no keys, no entrypoint.
+- `.dockerignore`, `docker-compose.yml` (postgres, api, skyfare, with health checks and `depends_on: service_healthy`), and `make up` / `down` / `logs` / `build`.
+- `deploy/docker-compose.full.yml` and `.env.full.example` for the three-repository stack with the frontend and payments service as sibling checkouts. Both of those repositories are still to be written, so their blocks are arranged to be commented out in one piece each; removing both leaves a valid file, which was checked.
+- `.github/workflows/ci.yml`: lint and typecheck, unit tests with coverage, integration tests against a Postgres service container, the chaos suite and one benchmark round, `pip-audit --strict` and gitleaks, and a Docker build that starts the stack and checks its health. Dependencies cached on `uv.lock`, the Chromium build cached on the resolved Playwright version.
+- `gate`, a single job that fails unless every other job succeeded, so branch protection names one check and adding a job later does not mean editing the rule. It reads the results explicitly rather than relying on `needs`, because a job that only lists dependencies does not fail when one is skipped or cancelled.
+- `docs/cicd.md`: the jobs and their timings, why the caches are keyed the way they are, how to verify a workflow change without pushing, and the branch protection settings for `main` to apply by hand.
+
+Verified
+
+- `docker compose up --build` from deleted volumes: all three containers healthy, migrations applied from empty, and a task run end to end inside the stack that reached SkyFare by its service name and answered "The cheapest option is Rs 4,870" — which is what SkyFare's oracle endpoint says the cheapest fare is. `GET /metrics` answers 401 anonymously and the B28 security headers are present, so that work survives containerisation.
+- The workflow was not executed: `act` is not installed here. `actionlint` was, and found a real bug before it could fail at the gate on every push.
+
+Fixed
+
+- The compose file passed the Gemini key as `GEMINI_API_KEY`; the setting is `GOOGLE_API_KEY`. Compose loads the repository's `.env` by itself, so the container inherited `LLM_PROVIDER=gemini` from a developer machine and then failed the first task with a missing key. The inheritance is kept and documented, because a developer with a provider configured probably wants it; `LLM_PROVIDER=mock make up` overrides it.
+- `join(needs.*.result, " ")` in the gate used double quotes, which GitHub's expression parser rejects.
+- `.gitignore` excluded `.env.full.example` along with every other `.env.*`.
+
 ### B29 - Billing client with outbox
 
 Added
