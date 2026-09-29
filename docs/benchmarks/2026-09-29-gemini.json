@@ -1,0 +1,57 @@
+{
+  "meta": {
+    "date": "2026-09-29",
+    "provider": "gemini",
+    "runs_per_config": 5,
+    "cache": false,
+    "machine": "darwin",
+    "price_in": 25.0,
+    "price_out": 100.0,
+    "caveat": "Run against a real provider, so model latency and cost are real.",
+    "generated_at": "2026-09-29T04:02:45+00:00"
+  },
+  "summary": {
+    "runs": 5,
+    "success_rate": 0.0,
+    "clean_rate": 1.0,
+    "recovery_rate": null,
+    "recovery_episodes": 0,
+    "recovery_attempts": 0,
+    "verification_accuracy": 1.0,
+    "median_seconds": 4.464,
+    "p90_seconds": 27.018,
+    "avg_steps": 0.2,
+    "vision_invocation_rate": 0.0,
+    "vision_calls": 0,
+    "approvals": 0,
+    "cache_hit_rate": 0.0,
+    "tokens_in": 0,
+    "tokens_out": 0,
+    "estimated_cost": 0.0,
+    "currency": "INR"
+  },
+  "by_config": [
+    {
+      "chaos": "none",
+      "runs": 5,
+      "correct": 0,
+      "clean": 5,
+      "attempts": 0,
+      "recovered": 0,
+      "seconds": [
+        27.018,
+        4.525,
+        4.464,
+        4.204,
+        4.089
+      ],
+      "steps": [
+        1,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}

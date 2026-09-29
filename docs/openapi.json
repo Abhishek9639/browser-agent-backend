@@ -1,0 +1,2888 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "browser-agent-backend",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/.well-known/jwks.json": {
+      "get": {
+        "tags": [
+          "ops"
+        ],
+        "summary": "Public keys for verifying access tokens",
+        "description": "The public half of the signing key, as a JWK Set.\n\nPublic by design: anyone may verify a token, only this service may mint one.\nCached for five minutes so payments does not refetch on every request, but\nnot so long that a key rotation takes hours to propagate.",
+        "operationId": "jwks__well_known_jwks_json_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "items": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "type": "object",
+                  "title": "Response Jwks  Well Known Jwks Json Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "tags": [
+          "ops"
+        ],
+        "summary": "Prometheus exposition",
+        "description": "Admin or internal only. Present an ADMIN bearer token, or the configured token in `X-Internal-Token` if the deployment sets one.",
+        "operationId": "prometheus_metrics_metrics_get",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "name": "x-internal-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Prometheus text format",
+            "content": {
+              "text/plain; version=0.0.4; charset=utf-8": {}
+            }
+          },
+          "401": {
+            "description": "No usable credential"
+          },
+          "403": {
+            "description": "Authenticated, but not an administrator"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/health": {
+      "get": {
+        "tags": [
+          "ops"
+        ],
+        "summary": "Liveness and readiness probe",
+        "operationId": "health_api_v1_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A dependency is down",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/register": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Create an account",
+        "description": "Register a TASK_SUBMITTER.\n\nThe response is built from an explicit schema rather than dumping the\nmodel, so the password hash cannot leak by accident.",
+        "operationId": "register_api_v1_auth_register_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Email already registered"
+          },
+          "429": {
+            "description": "Too many attempts"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/login": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Exchange credentials for an access token and a refresh cookie",
+        "description": "Authenticate, mint a 15 minute access token, and set the refresh cookie.",
+        "operationId": "login_api_v1_auth_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Email or password is incorrect"
+          },
+          "429": {
+            "description": "Too many attempts"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/refresh": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Rotate the refresh cookie for a new access token",
+        "description": "Single-use rotation.\n\nThe presented token is revoked and replaced. Presenting an already-revoked\ntoken destroys every session for that user: two parties holding one cookie\nmeans one of them stole it, and there is no way to tell which.\n\nReuse is caught here rather than left to the global handler. The service\nrevokes the chain in this request's transaction, and an exception escaping\nthe route would roll that back, throwing away the revocation at exactly the\nmoment it matters. Returning the 401 lets the request finish and commit.",
+        "operationId": "refresh_api_v1_auth_refresh_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RefreshResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid, expired or already-used token"
+          }
+        }
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Revoke the refresh token and clear the cookie",
+        "description": "Idempotent.\n\nLogging out is a request to end a session; a client that already lost its\ncookie has achieved that, so an unknown token is not an error.\n\nReturns nothing so FastAPI keeps the injected response, which is what\ncarries the cookie-clearing header.",
+        "operationId": "logout_api_v1_auth_logout_post",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        }
+      }
+    },
+    "/api/v1/auth/me": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "The authenticated user",
+        "description": "Read from the database, not from the token.\n\nThe role is whatever the row says now, so a demotion applies immediately\nrather than when the access token happens to expire.",
+        "operationId": "me_api_v1_auth_me_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid access token"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/tasks": {
+      "post": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Submit a task",
+        "description": "Queues a task and returns it in SUBMITTED. The agent starts when a slot frees, so a task can sit in SUBMITTED for a while on a busy server. Follow it with GET /tasks/{id} or the live stream.",
+        "operationId": "create_task_api_v1_tasks_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTaskRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The instruction is missing, too short or too long, or the start URL is not http(s) or not in the allowed domain list"
+          },
+          "409": {
+            "description": "You already have a live task with this instruction"
+          },
+          "429": {
+            "description": "Too many submissions"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "List your tasks",
+        "description": "Newest first. Admins see every task; everyone else sees their own. `status` may be repeated to match any of several states.",
+        "operationId": "list_tasks_api_v1_tasks_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TaskStatus"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Repeatable. Matches any of the given states.",
+              "title": "Status"
+            },
+            "description": "Repeatable. Matches any of the given states."
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only tasks created at or after this time.",
+              "title": "From"
+            },
+            "description": "Only tasks created at or after this time."
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only tasks created at or before this time.",
+              "title": "To"
+            },
+            "description": "Only tasks created at or before this time."
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Case-insensitive search of the instruction.",
+              "title": "Q"
+            },
+            "description": "Case-insensitive search of the instruction."
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1,
+              "title": "Page"
+            }
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Pagesize"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{task_id}": {
+      "get": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Get one task",
+        "operationId": "get_task_api_v1_tasks__task_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such task, or it belongs to someone else"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{task_id}/cancel": {
+      "post": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Cancel a task",
+        "description": "Stops a task that is still running. The agent finishes the step it is on, records it, and stops there, so the activity log always matches what the browser actually did.",
+        "operationId": "cancel_task_api_v1_tasks__task_id__cancel_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such task, or it belongs to someone else"
+          },
+          "409": {
+            "description": "The task has already finished"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{task_id}/cache-match": {
+      "get": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Is there a cached flow for this task?",
+        "description": "The task signature and, if one is stored, the flow's statistics. `eligible` is whether an ordinary run would replay it: a flow below the configured success rate is kept and not used, until three runs have passed judgement on it and it is deleted.",
+        "operationId": "cache_match_api_v1_tasks__task_id__cache_match_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CacheMatchResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such task, or it belongs to someone else"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{task_id}/replay": {
+      "post": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Run a finished task's flow again",
+        "description": "Creates a new task bound to the cached flow of this one, and queues it. The replay is unconditional: the success rate that gates ordinary runs is not consulted, because the user has asked for this sequence. The original task is untouched, since it is the record of what happened. Replay stops at the first step that does not verify and the planner carries on from there, so the new task completes on its own terms either way.",
+        "operationId": "replay_task_api_v1_tasks__task_id__replay_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not your task, or no cached flow for it"
+          },
+          "409": {
+            "description": "The task is still running, or a duplicate is"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{task_id}/steps": {
+      "get": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "List a task's steps",
+        "description": "In order. This is the activity log, without the per-step detail.",
+        "operationId": "list_steps_api_v1_tasks__task_id__steps_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/StepResponse"
+                  },
+                  "title": "Response List Steps Api V1 Tasks  Task Id  Steps Get"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such task, or it belongs to someone else"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{task_id}/steps/{step_id}": {
+      "get": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Get one step in full",
+        "description": "The step, the decision the model made, how it was verified, and every recovery attempt against it.",
+        "operationId": "get_step_api_v1_tasks__task_id__steps__step_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "step_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Step Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StepDetailResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such step on this task"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{task_id}/approve": {
+      "post": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Approve a high-risk action",
+        "description": "Lets a task that is parked on a human carry on. Allowed for APPROVER and ADMIN, and for the task's own submitter when the deployment permits it.",
+        "operationId": "approve_task_api_v1_tasks__task_id__approve_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApprovalDecisionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Your role does not allow approving"
+          },
+          "404": {
+            "description": "No such task, or it is not waiting for an approval"
+          },
+          "409": {
+            "description": "That approval has already been answered"
+          },
+          "429": {
+            "description": "Too many approval decisions"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{task_id}/reject": {
+      "post": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Reject a high-risk action",
+        "description": "Stops the task. A rejection is a person having looked and said no, which ends the run as REJECTED; an approval nobody answers is a different thing and times out instead.",
+        "operationId": "reject_task_api_v1_tasks__task_id__reject_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApprovalDecisionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Your role does not allow approving"
+          },
+          "404": {
+            "description": "No such task, or it is not waiting for an approval"
+          },
+          "409": {
+            "description": "That approval has already been answered"
+          },
+          "429": {
+            "description": "Too many approval decisions"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{task_id}/ground": {
+      "post": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Ask vision where something is on the current page",
+        "description": "Runs visual grounding against the page the agent is looking at right now and returns what it found. It does not click, type or otherwise act. Only works while the task is running on this worker.",
+        "operationId": "ground_api_v1_tasks__task_id__ground_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GroundRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroundResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such task, or it belongs to someone else"
+          },
+          "409": {
+            "description": "The task is not running, so it has no current page"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{task_id}/recovery-attempts": {
+      "get": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "List a task's recovery attempts",
+        "description": "Every rung of the recovery ladder this task climbed, across all steps, in order. Empty for a run where nothing needed rescuing.",
+        "operationId": "list_recovery_attempts_api_v1_tasks__task_id__recovery_attempts_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RecoveryAttemptResponse"
+                  },
+                  "title": "Response List Recovery Attempts Api V1 Tasks  Task Id  Recovery Attempts Get"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such task, or it belongs to someone else"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{task_id}/steps/{step_id}/screenshot": {
+      "get": {
+        "tags": [
+          "tasks"
+        ],
+        "summary": "Get a step's screenshot",
+        "description": "The JPEG captured just after the step ran. Served only to the task's owner or an admin, and marked private so no shared cache keeps a copy.",
+        "operationId": "get_step_screenshot_api_v1_tasks__task_id__steps__step_id__screenshot_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          },
+          {
+            "name": "step_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Step Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The frame",
+            "content": {
+              "image/jpeg": {}
+            }
+          },
+          "404": {
+            "description": "No such step, or it has no screenshot"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/stats/overview": {
+      "get": {
+        "tags": [
+          "stats"
+        ],
+        "summary": "Your task statistics",
+        "description": "Your own finished tasks by default. An administrator may pass `scope=all` for the whole deployment; anyone else asking for it gets 403 rather than their own numbers under a global heading.\n\nRates are null when there is nothing to divide by, because zero would claim that nothing succeeded.",
+        "operationId": "overview_api_v1_stats_overview_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "scope",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "mine",
+                "all"
+              ],
+              "type": "string",
+              "default": "mine",
+              "title": "Scope"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatsOverviewResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an administrator can read the global statistics"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{task_id}/stream-ticket": {
+      "post": {
+        "tags": [
+          "stream"
+        ],
+        "summary": "Get a ticket for the live stream",
+        "description": "Returns a single-use ticket for opening the task's WebSocket. Valid for 60 seconds and for one connection. Pass it as the `ticket` query parameter on `WS /api/v1/tasks/{id}/stream`; never put an access token in that URL.",
+        "operationId": "create_stream_ticket_api_v1_tasks__task_id__stream_ticket_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamTicketResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such task, or it belongs to someone else"
+          },
+          "429": {
+            "description": "Too many tickets requested"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ActionType": {
+        "type": "string",
+        "enum": [
+          "navigate",
+          "click",
+          "type",
+          "scroll",
+          "select",
+          "extract",
+          "wait",
+          "go_back",
+          "new_tab",
+          "switch_tab",
+          "close_tab",
+          "done"
+        ],
+        "title": "ActionType",
+        "description": "Spec section 4.4. Anything not in this list is rejected before execution."
+      },
+      "AppEnv": {
+        "type": "string",
+        "enum": [
+          "dev",
+          "test",
+          "prod"
+        ],
+        "title": "AppEnv",
+        "description": "Deployment environment. Drives log rendering and error verbosity."
+      },
+      "ApprovalDecisionRequest": {
+        "properties": {
+          "approved": {
+            "type": "boolean",
+            "title": "Approved",
+            "description": "Whether the proposed action may go ahead."
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "approved"
+        ],
+        "title": "ApprovalDecisionRequest",
+        "description": "Body of ``POST /tasks/{id}/approve`` and ``/reject``.\n\n``approved`` is in the body because spec section 6 puts it there, and the\nendpoint decides the outcome. The two must agree: the route checks it, so\n``{\"approved\": false}`` sent to ``/approve`` is a 400 rather than an\napproval. A client that disagrees with itself about something irreversible\nis a client to stop, not one to guess at."
+      },
+      "ApprovalResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "taskId": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Taskid"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ApprovalStatus",
+            "examples": [
+              "APPROVED"
+            ]
+          },
+          "riskFlag": {
+            "$ref": "#/components/schemas/RiskLevel",
+            "examples": [
+              "HIGH"
+            ]
+          },
+          "proposedAction": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Proposedaction"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason",
+            "examples": [
+              "Click 'Pay now' on SkyFare. Flagged because the control says 'pay now'."
+            ]
+          },
+          "approvedBy": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approvedby"
+          },
+          "decidedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decidedat"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Createdat"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "taskId",
+          "status",
+          "riskFlag",
+          "proposedAction",
+          "createdAt"
+        ],
+        "title": "ApprovalResponse",
+        "description": "An approval, after it has been answered."
+      },
+      "ApprovalStatus": {
+        "type": "string",
+        "enum": [
+          "PENDING",
+          "APPROVED",
+          "REJECTED",
+          "EXPIRED"
+        ],
+        "title": "ApprovalStatus",
+        "description": "Spec section 5, approvals.approval_status.\n\n``EXPIRED`` drives the task to ``TIMED_OUT`` per decision A4; ``REJECTED``\nis reserved for an explicit human rejection."
+      },
+      "CacheMatchResponse": {
+        "properties": {
+          "signature": {
+            "type": "string",
+            "title": "Signature",
+            "description": "sha256 of the normalised instruction and the start domain.",
+            "examples": [
+              "5f2b9c1d4e6a8f03b7c5d9e1a2f4b6c8d0e2f4a6b8c0d2e4f6a8b0c2d4e6f801"
+            ]
+          },
+          "found": {
+            "type": "boolean",
+            "title": "Found",
+            "description": "Is there a stored flow for this signature?"
+          },
+          "eligible": {
+            "type": "boolean",
+            "title": "Eligible",
+            "description": "Would an ordinary run replay it? False when the success rate is below the configured threshold, which a forced replay ignores.",
+            "default": false
+          },
+          "flowId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Flowid"
+          },
+          "stepCount": {
+            "type": "integer",
+            "title": "Stepcount",
+            "default": 0,
+            "examples": [
+              6
+            ]
+          },
+          "runCount": {
+            "type": "integer",
+            "title": "Runcount",
+            "default": 0,
+            "examples": [
+              4
+            ]
+          },
+          "successRate": {
+            "type": "number",
+            "title": "Successrate",
+            "default": 0.0,
+            "examples": [
+              0.75
+            ]
+          },
+          "lastUsedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lastusedat"
+          }
+        },
+        "type": "object",
+        "required": [
+          "signature",
+          "found"
+        ],
+        "title": "CacheMatchResponse",
+        "description": "Whether this task's instruction has been solved before (section 4.12)."
+      },
+      "CreateTaskRequest": {
+        "properties": {
+          "instruction": {
+            "type": "string",
+            "maxLength": 2000,
+            "minLength": 5,
+            "title": "Instruction",
+            "description": "What the agent should do, in plain language.",
+            "examples": [
+              "Find the cheapest flight from Delhi to Bengaluru on 20 Oct on SkyFare"
+            ]
+          },
+          "startUrl": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2048
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Starturl",
+            "description": "Where to begin. Must be http or https and inside the configured domain allow-list. Omit to start from a blank page.",
+            "examples": [
+              "https://skyfare.localhost:8200/"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "instruction"
+        ],
+        "title": "CreateTaskRequest",
+        "description": "Body of ``POST /tasks``."
+      },
+      "GroundRequest": {
+        "properties": {
+          "description": {
+            "type": "string",
+            "maxLength": 400,
+            "minLength": 2,
+            "title": "Description",
+            "description": "What to look for, in plain language.",
+            "examples": [
+              "the Select button next to the cheapest fare"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "description"
+        ],
+        "title": "GroundRequest",
+        "description": "Body of ``POST /tasks/{id}/ground``."
+      },
+      "GroundResponse": {
+        "properties": {
+          "resolved": {
+            "type": "boolean",
+            "title": "Resolved",
+            "description": "Whether the target was identified at all."
+          },
+          "elementIndex": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Elementindex",
+            "description": "Index into the current page state, if a marked element matched.",
+            "examples": [
+              7
+            ]
+          },
+          "point": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Point",
+            "description": "Centre of the target in page coordinates.",
+            "examples": [
+              {
+                "x": 640,
+                "y": 412
+              }
+            ]
+          },
+          "bbox": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bbox",
+            "examples": [
+              {
+                "height": 32,
+                "width": 120,
+                "x": 580,
+                "y": 396
+              }
+            ]
+          },
+          "confidence": {
+            "type": "number",
+            "title": "Confidence",
+            "examples": [
+              0.82
+            ]
+          },
+          "justification": {
+            "type": "string",
+            "title": "Justification",
+            "default": "",
+            "examples": [
+              "The box sits beside the lowest fare on the page."
+            ]
+          },
+          "usedVision": {
+            "type": "boolean",
+            "title": "Usedvision"
+          },
+          "latencyMs": {
+            "type": "integer",
+            "title": "Latencyms",
+            "examples": [
+              1840
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error",
+            "description": "Set when grounding could not answer. Never fails the task."
+          }
+        },
+        "type": "object",
+        "required": [
+          "resolved",
+          "confidence",
+          "usedVision",
+          "latencyMs"
+        ],
+        "title": "GroundResponse",
+        "description": "What visual grounding concluded. It does not act on the page."
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HealthResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "degraded"
+            ],
+            "title": "Status"
+          },
+          "version": {
+            "type": "string",
+            "title": "Version"
+          },
+          "env": {
+            "$ref": "#/components/schemas/AppEnv"
+          },
+          "db": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "down"
+            ],
+            "title": "Db"
+          },
+          "time": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Time"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "version",
+          "env",
+          "db",
+          "time"
+        ],
+        "title": "HealthResponse"
+      },
+      "LlmDecisionResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "promptVersion": {
+            "type": "string",
+            "title": "Promptversion",
+            "examples": [
+              "v1"
+            ]
+          },
+          "modelName": {
+            "type": "string",
+            "title": "Modelname",
+            "examples": [
+              "gemini-3.6-flash"
+            ]
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider",
+            "examples": [
+              "gemini"
+            ]
+          },
+          "reasoningSummary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoningsummary"
+          },
+          "confidence": {
+            "type": "number",
+            "title": "Confidence",
+            "examples": [
+              0.92
+            ]
+          },
+          "riskLevel": {
+            "$ref": "#/components/schemas/RiskLevel",
+            "examples": [
+              "LOW"
+            ]
+          },
+          "usedVision": {
+            "type": "boolean",
+            "title": "Usedvision"
+          },
+          "inputTokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inputtokens"
+          },
+          "outputTokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outputtokens"
+          },
+          "latencyMs": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latencyms"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Createdat"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "promptVersion",
+          "modelName",
+          "provider",
+          "confidence",
+          "riskLevel",
+          "usedVision",
+          "createdAt"
+        ],
+        "title": "LlmDecisionResponse",
+        "description": "What the model decided, and what it cost."
+      },
+      "LoginRequest": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "maxLength": 320,
+            "title": "Email"
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Password"
+          }
+        },
+        "type": "object",
+        "required": [
+          "email",
+          "password"
+        ],
+        "title": "LoginRequest"
+      },
+      "LoginResponse": {
+        "properties": {
+          "accessToken": {
+            "type": "string",
+            "title": "Accesstoken"
+          },
+          "tokenType": {
+            "type": "string",
+            "title": "Tokentype"
+          },
+          "expiresIn": {
+            "type": "integer",
+            "title": "Expiresin"
+          },
+          "user": {
+            "$ref": "#/components/schemas/UserResponse"
+          }
+        },
+        "type": "object",
+        "required": [
+          "accessToken",
+          "tokenType",
+          "expiresIn",
+          "user"
+        ],
+        "title": "LoginResponse",
+        "description": "The refresh token is not here on purpose: it is set as an httpOnly\ncookie, so no script in the page can read it."
+      },
+      "RecoveryAttemptResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "attemptNumber": {
+            "type": "integer",
+            "title": "Attemptnumber",
+            "examples": [
+              1
+            ]
+          },
+          "strategyUsed": {
+            "type": "string",
+            "title": "Strategyused",
+            "examples": [
+              "rescroll_and_retry"
+            ]
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/RecoveryOutcome",
+            "examples": [
+              "SUCCEEDED"
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Createdat"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "attemptNumber",
+          "strategyUsed",
+          "outcome",
+          "createdAt"
+        ],
+        "title": "RecoveryAttemptResponse",
+        "description": "One attempt from the recovery ladder."
+      },
+      "RecoveryOutcome": {
+        "type": "string",
+        "enum": [
+          "SUCCEEDED",
+          "FAILED",
+          "SKIPPED"
+        ],
+        "title": "RecoveryOutcome",
+        "description": "Result of one recovery attempt (spec section 4.8).\n\nNot enumerated in the spec; these three are what the strategy loop needs to\nrecord. All attempts failing drives the step to ``EXECUTION_FAILED``."
+      },
+      "RefreshResponse": {
+        "properties": {
+          "accessToken": {
+            "type": "string",
+            "title": "Accesstoken"
+          },
+          "tokenType": {
+            "type": "string",
+            "title": "Tokentype"
+          },
+          "expiresIn": {
+            "type": "integer",
+            "title": "Expiresin"
+          },
+          "user": {
+            "$ref": "#/components/schemas/UserResponse"
+          }
+        },
+        "type": "object",
+        "required": [
+          "accessToken",
+          "tokenType",
+          "expiresIn",
+          "user"
+        ],
+        "title": "RefreshResponse",
+        "description": "Same shape as login. The rotated cookie rides on the response."
+      },
+      "RegisterRequest": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "email": {
+            "type": "string",
+            "maxLength": 320,
+            "title": "Email"
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 10,
+            "title": "Password"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "email",
+          "password"
+        ],
+        "title": "RegisterRequest"
+      },
+      "RiskLevel": {
+        "type": "string",
+        "enum": [
+          "LOW",
+          "MEDIUM",
+          "HIGH"
+        ],
+        "title": "RiskLevel",
+        "description": "Spec section 4.5. Final risk is ``max(deterministic, LLM)``; HIGH needs approval."
+      },
+      "StatsOverviewResponse": {
+        "properties": {
+          "scope": {
+            "type": "string",
+            "title": "Scope",
+            "description": "`mine`, or `all` for an administrator.",
+            "examples": [
+              "mine"
+            ]
+          },
+          "tasksTotal": {
+            "type": "integer",
+            "title": "Taskstotal",
+            "description": "Tasks that have finished.",
+            "examples": [
+              42
+            ]
+          },
+          "tasksCompleted": {
+            "type": "integer",
+            "title": "Taskscompleted",
+            "examples": [
+              38
+            ]
+          },
+          "completionRate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completionrate",
+            "examples": [
+              0.905
+            ]
+          },
+          "medianDurationSeconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mediandurationseconds",
+            "examples": [
+              18.4
+            ]
+          },
+          "recoverySuccessRate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recoverysuccessrate",
+            "description": "Share of failed steps the ladder rescued, counted per step.",
+            "examples": [
+              0.8
+            ]
+          },
+          "recoveryEpisodes": {
+            "type": "integer",
+            "title": "Recoveryepisodes",
+            "description": "Steps that needed rescuing, which is the denominator above.",
+            "default": 0,
+            "examples": [
+              15
+            ]
+          },
+          "cacheHitRate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cachehitrate",
+            "description": "Share of finished tasks that replayed at least one cached step.",
+            "examples": [
+              0.25
+            ]
+          },
+          "approvalsRequested": {
+            "type": "integer",
+            "title": "Approvalsrequested",
+            "default": 0,
+            "examples": [
+              2
+            ]
+          },
+          "creditsUsed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Creditsused",
+            "description": "Null when billing is disabled for this deployment.",
+            "examples": [
+              57
+            ]
+          },
+          "trend": {
+            "items": {
+              "$ref": "#/components/schemas/TrendPointResponse"
+            },
+            "type": "array",
+            "title": "Trend"
+          }
+        },
+        "type": "object",
+        "required": [
+          "scope",
+          "tasksTotal",
+          "tasksCompleted"
+        ],
+        "title": "StatsOverviewResponse",
+        "description": "The section 9 KPIs for one caller, or for everyone.\n\nEvery rate is null rather than zero when there is nothing to divide by.\nZero would claim that nothing succeeded, which is a different thing to show\na user than an empty history and indistinguishable once it reaches JSON."
+      },
+      "StepDetailResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "stepNumber": {
+            "type": "integer",
+            "title": "Stepnumber",
+            "examples": [
+              1
+            ]
+          },
+          "action": {
+            "$ref": "#/components/schemas/ActionType",
+            "examples": [
+              "type"
+            ]
+          },
+          "target": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target",
+            "examples": [
+              "From"
+            ]
+          },
+          "targetIndex": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Targetindex",
+            "examples": [
+              3
+            ]
+          },
+          "valueRedacted": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valueredacted",
+            "description": "The typed value. Password and card-like fields read as a mask.",
+            "examples": [
+              "Delhi"
+            ]
+          },
+          "tabId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tabid",
+            "examples": [
+              "tab-1"
+            ]
+          },
+          "selectorUsed": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selectorused",
+            "examples": [
+              "[data-agent-idx=\"3\"]"
+            ]
+          },
+          "bbox": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bbox",
+            "description": "Where the target was, in viewport coordinates.",
+            "examples": [
+              {
+                "height": 32,
+                "width": 180,
+                "x": 120,
+                "y": 240
+              }
+            ]
+          },
+          "screenshotRef": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Screenshotref",
+            "description": "Storage reference, not a URL. Fetch the image from GET /tasks/{id}/steps/{stepId}/screenshot."
+          },
+          "status": {
+            "$ref": "#/components/schemas/StepStatus",
+            "examples": [
+              "VERIFIED"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Createdat"
+          },
+          "llmDecision": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LlmDecisionResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "verification": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VerificationResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "recoveryAttempts": {
+            "items": {
+              "$ref": "#/components/schemas/RecoveryAttemptResponse"
+            },
+            "type": "array",
+            "title": "Recoveryattempts"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "stepNumber",
+          "action",
+          "status",
+          "createdAt"
+        ],
+        "title": "StepDetailResponse",
+        "description": "A step with everything recorded about it."
+      },
+      "StepResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "stepNumber": {
+            "type": "integer",
+            "title": "Stepnumber",
+            "examples": [
+              1
+            ]
+          },
+          "action": {
+            "$ref": "#/components/schemas/ActionType",
+            "examples": [
+              "type"
+            ]
+          },
+          "target": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target",
+            "examples": [
+              "From"
+            ]
+          },
+          "targetIndex": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Targetindex",
+            "examples": [
+              3
+            ]
+          },
+          "valueRedacted": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valueredacted",
+            "description": "The typed value. Password and card-like fields read as a mask.",
+            "examples": [
+              "Delhi"
+            ]
+          },
+          "tabId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tabid",
+            "examples": [
+              "tab-1"
+            ]
+          },
+          "selectorUsed": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selectorused",
+            "examples": [
+              "[data-agent-idx=\"3\"]"
+            ]
+          },
+          "bbox": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bbox",
+            "description": "Where the target was, in viewport coordinates.",
+            "examples": [
+              {
+                "height": 32,
+                "width": 180,
+                "x": 120,
+                "y": 240
+              }
+            ]
+          },
+          "screenshotRef": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Screenshotref",
+            "description": "Storage reference, not a URL. Fetch the image from GET /tasks/{id}/steps/{stepId}/screenshot."
+          },
+          "status": {
+            "$ref": "#/components/schemas/StepStatus",
+            "examples": [
+              "VERIFIED"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Createdat"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "stepNumber",
+          "action",
+          "status",
+          "createdAt"
+        ],
+        "title": "StepResponse",
+        "description": "One step in the activity log."
+      },
+      "StepStatus": {
+        "type": "string",
+        "enum": [
+          "PENDING",
+          "AWAITING_APPROVAL",
+          "EXECUTING",
+          "VERIFYING",
+          "RECOVERING",
+          "VERIFIED",
+          "FAILED",
+          "SKIPPED"
+        ],
+        "title": "StepStatus",
+        "description": "Decision A8. Spec section 5 has ``task_steps.status`` but never lists it."
+      },
+      "StreamTicketResponse": {
+        "properties": {
+          "ticket": {
+            "type": "string",
+            "title": "Ticket",
+            "description": "Single-use, valid once, for one task.",
+            "examples": [
+              "kJ8s-3yT1QpX..."
+            ]
+          },
+          "expiresIn": {
+            "type": "integer",
+            "title": "Expiresin",
+            "description": "Seconds until it stops working.",
+            "examples": [
+              60
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "ticket",
+          "expiresIn"
+        ],
+        "title": "StreamTicketResponse"
+      },
+      "TaskListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TaskResponse"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "examples": [
+              57
+            ]
+          },
+          "page": {
+            "type": "integer",
+            "title": "Page",
+            "examples": [
+              1
+            ]
+          },
+          "pageSize": {
+            "type": "integer",
+            "title": "Pagesize",
+            "examples": [
+              20
+            ]
+          },
+          "totalPages": {
+            "type": "integer",
+            "title": "Totalpages",
+            "examples": [
+              3
+            ]
+          },
+          "hasNext": {
+            "type": "boolean",
+            "title": "Hasnext"
+          },
+          "hasPrevious": {
+            "type": "boolean",
+            "title": "Hasprevious"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total",
+          "page",
+          "pageSize",
+          "totalPages",
+          "hasNext",
+          "hasPrevious"
+        ],
+        "title": "TaskListResponse",
+        "description": "A page of tasks, plus what the client needs to ask for the next."
+      },
+      "TaskResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "taskNumber": {
+            "type": "string",
+            "title": "Tasknumber",
+            "examples": [
+              "T-000042"
+            ]
+          },
+          "instruction": {
+            "type": "string",
+            "title": "Instruction",
+            "examples": [
+              "Find the cheapest flight from Delhi to Bengaluru on 20 Oct on SkyFare"
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/TaskStatus",
+            "examples": [
+              "SUBMITTED"
+            ]
+          },
+          "startUrl": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Starturl"
+          },
+          "finalAnswer": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finalanswer",
+            "description": "Present once the task completes.",
+            "examples": [
+              {
+                "text": "Cheapest is IX-2841 at Rs 4,299."
+              }
+            ]
+          },
+          "failureReason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failurereason",
+            "description": "Present when the task did not complete."
+          },
+          "creditsUsed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Creditsused",
+            "description": "What the run cost at the prices in force when it ended. Present once the task is finished, whether or not billing is enabled.",
+            "examples": [
+              9
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Createdat"
+          },
+          "finishedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finishedat"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "taskNumber",
+          "instruction",
+          "status",
+          "createdAt"
+        ],
+        "title": "TaskResponse",
+        "description": "One task, as the history and detail screens show it."
+      },
+      "TaskStatus": {
+        "type": "string",
+        "enum": [
+          "SUBMITTED",
+          "PLANNING",
+          "ACTING",
+          "VERIFYING",
+          "RECOVERING",
+          "AWAITING_APPROVAL",
+          "COMPLETED",
+          "EXECUTION_FAILED",
+          "REJECTED",
+          "CANCELLED",
+          "TIMED_OUT"
+        ],
+        "title": "TaskStatus",
+        "description": "Spec section 4.3.\n\n``RECOVERING`` and ``VERIFYING`` are persisted, not merely shown in the UI,\nper decision A3: a client that reconnects must see the same state the live\nstream was showing."
+      },
+      "TrendPointResponse": {
+        "properties": {
+          "day": {
+            "type": "string",
+            "format": "date",
+            "title": "Day"
+          },
+          "tasks": {
+            "type": "integer",
+            "title": "Tasks",
+            "examples": [
+              4
+            ]
+          },
+          "completed": {
+            "type": "integer",
+            "title": "Completed",
+            "examples": [
+              3
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "day",
+          "tasks",
+          "completed"
+        ],
+        "title": "TrendPointResponse",
+        "description": "One day of the history page's chart."
+      },
+      "UserResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "email": {
+            "type": "string",
+            "title": "Email"
+          },
+          "role": {
+            "$ref": "#/components/schemas/UserRole"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Createdat"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "email",
+          "role",
+          "createdAt"
+        ],
+        "title": "UserResponse",
+        "description": "A user as the API shows them. Never carries the password hash."
+      },
+      "UserRole": {
+        "type": "string",
+        "enum": [
+          "TASK_SUBMITTER",
+          "APPROVER",
+          "ADMIN"
+        ],
+        "title": "UserRole",
+        "description": "Spec section 5, users.role."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "VerificationMethod": {
+        "type": "string",
+        "enum": [
+          "url_contains",
+          "element_visible",
+          "text_present",
+          "value_equals",
+          "dom_changed",
+          "new_tab_opened"
+        ],
+        "title": "VerificationMethod",
+        "description": "The ``expectedOutcome.type`` values from the section 4.5 schema.\n\nSection 4.7 describes the same set in prose (\"URL change/contains, element\nvisible, text present, input value equals, DOM hash changed, new tab\nopened\"), so the schema's six names are treated as canonical."
+      },
+      "VerificationResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "expectedOutcome": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Expectedoutcome",
+            "examples": [
+              {
+                "type": "value_equals",
+                "value": "Delhi"
+              }
+            ]
+          },
+          "actualOutcome": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actualoutcome"
+          },
+          "verified": {
+            "type": "boolean",
+            "title": "Verified"
+          },
+          "verificationMethod": {
+            "$ref": "#/components/schemas/VerificationMethod",
+            "examples": [
+              "value_equals"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Createdat"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "expectedOutcome",
+          "verified",
+          "verificationMethod",
+          "createdAt"
+        ],
+        "title": "VerificationResponse",
+        "description": "Whether the step did what it was supposed to."
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "type": "http",
+        "description": "Access token from POST /auth/login",
+        "scheme": "bearer"
+      }
+    }
+  }
+}
