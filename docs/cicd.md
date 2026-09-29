@@ -128,6 +128,14 @@ pull request involved.
 **The gate reported `success success failure failure failure success` and failed,**
 which is the gate working. Worth seeing once.
 
+The second run then failed on one test, for the same class of reason:
+`test_live_database_is_at_migration_head` asserts that `agent_core` is at head,
+which is the state a developer's machine is in after `make migrate` and which
+nothing in CI had put it in. The suite builds `agent_core_test` from the model
+metadata and never touches the live database. Fixed by running
+`alembic upgrade head` in the integration job, which also means CI now proves the
+migrations apply from nothing rather than only that the metadata does.
+
 `act` would cover part of this and not the service containers. Installing it is
 `brew install act`; it needs Docker and it does not reproduce the cache actions.
 

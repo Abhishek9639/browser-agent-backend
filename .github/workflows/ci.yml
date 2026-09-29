@@ -165,6 +165,16 @@ jobs:
           PGPASSWORD=postgres psql -h localhost -U postgres -d agent_core \
             -v ON_ERROR_STOP=1 -f scripts/db/init.sql
 
+      - name: Apply the migrations
+        # Against agent_core, the live database, not the test one. The suite
+        # builds agent_core_test from the model metadata, but one integration
+        # test asserts that the live database is at migration head, which is the
+        # state a developer's machine is in after `make migrate`. Without this
+        # step CI has an empty agent_core and that test fails on a missing
+        # alembic_version table, which is how the second run of this workflow
+        # failed. It also means CI proves the migrations apply from nothing.
+        run: uv run alembic upgrade head
+
       - name: Generate signing keys
         # The suite needs a keypair. Generated per run rather than committed: a
         # private key in version control is a compromised private key.
