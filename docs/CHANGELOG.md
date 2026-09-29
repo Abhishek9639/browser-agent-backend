@@ -4,6 +4,12 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### Changed: branch protection is documented, not enabled
+
+- GitHub does not enforce rulesets or branch protection on a private repository on the free plan: the settings can be saved and are then ignored, which is worse than not having them because the repository looks protected and is not. `docs/cicd.md` now says so plainly and keeps the configuration as the intended one.
+- The two ways it becomes enforceable are recorded: making the repository public, or moving it to a GitHub organization. Neither needs a change to the workflow, since `gate` already exists and is already the single check a rule would name.
+- The interim practice is written down as well: every part goes through a pull request, and a pull request is merged only when `Quality gate` is green. A red gate is fixed rather than merged around. This is a weaker guarantee than a ruleset and the document says so.
+
 ### Fixed: the first CI run
 
 Three failures, none of which could have been reproduced locally.
