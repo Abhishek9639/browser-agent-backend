@@ -153,10 +153,17 @@ jobs:
       - run: uv python install ${{ env.PYTHON_VERSION }}
       - run: uv sync --frozen
 
-      - name: Create the test database
+      - name: Create the databases
+        # The same script the compose stack runs on first start, so CI and a
+        # developer's machine create the same three databases from one source.
+        #
+        # Read as a file rather than passed with `-c`: `\gexec` is a psql
+        # meta-command, and `-c` sends its argument straight to the server, which
+        # answers `syntax error at or near "\"`. That is exactly how the first
+        # run of this workflow failed.
         run: |
           PGPASSWORD=postgres psql -h localhost -U postgres -d agent_core \
-            -c "SELECT 'CREATE DATABASE agent_core_test' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'agent_core_test')\gexec"
+            -v ON_ERROR_STOP=1 -f scripts/db/init.sql
 
       - name: Generate signing keys
         # The suite needs a keypair. Generated per run rather than committed: a
@@ -228,10 +235,17 @@ jobs:
       - run: uv python install ${{ env.PYTHON_VERSION }}
       - run: uv sync --frozen
 
-      - name: Create the test database
+      - name: Create the databases
+        # The same script the compose stack runs on first start, so CI and a
+        # developer's machine create the same three databases from one source.
+        #
+        # Read as a file rather than passed with `-c`: `\gexec` is a psql
+        # meta-command, and `-c` sends its argument straight to the server, which
+        # answers `syntax error at or near "\"`. That is exactly how the first
+        # run of this workflow failed.
         run: |
           PGPASSWORD=postgres psql -h localhost -U postgres -d agent_core \
-            -c "SELECT 'CREATE DATABASE agent_core_test' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'agent_core_test')\gexec"
+            -v ON_ERROR_STOP=1 -f scripts/db/init.sql
 
       - name: Generate signing keys
         run: uv run python scripts/gen_keys.py
@@ -279,6 +293,10 @@ jobs:
     name: Dependency and secret audit
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      # The gitleaks action reads the pull request's commit list.
+      pull-requests: read
     steps:
       - uses: actions/checkout@v5
         with:
@@ -304,6 +322,10 @@ jobs:
         uses: gitleaks/gitleaks-action@v2
         env:
           GITLEAKS_CONFIG: .gitleaks.toml
+          # Required since the action's v2 breaking change: it lists a pull
+          # request's commits through the API and refuses to scan one without a
+          # token. The first run of this workflow failed on exactly that.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Only needed for the organisation licence on private repositories.
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
 

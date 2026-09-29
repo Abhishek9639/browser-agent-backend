@@ -97,14 +97,36 @@ If those pass locally and `actionlint` is clean, what is left is the runner's
 own environment: the service container, the caches and the action versions.
 
 **3. Push to a branch and read the run.** The remaining failures are the ones
-only a runner can produce. Watch for:
+only a runner can produce, and the first run of this workflow produced three of
+them. Watch for:
 
 - the Postgres service container not being ready — the health options cover it,
-  and the `Create the test database` step fails immediately if not;
+  and the `Create the databases` step fails immediately if not;
 - `playwright install` needing a system library the runner lacks, which is what
   `--with-deps` is for;
 - the first run being slow, because both caches are cold. The second run is the
   one to judge.
+
+### What the first run actually failed on
+
+Worth keeping, because none of it could have been caught locally and two of the
+three are the kind of thing that recurs.
+
+**`\gexec` does not work with `psql -c`.** It is a psql meta-command, and `-c`
+sends its argument straight to the server, which answers `syntax error at or
+near "\"`. The pattern was copied from `scripts/db/init.sql`, where psql reads
+it as a file and it works. The step now runs that script with `-f`, so CI and the
+compose stack create the same databases from one source rather than from a
+duplicated one-liner.
+
+**The gitleaks action needs `GITHUB_TOKEN` on a pull request.** A breaking change
+in its v2: it lists the pull request's commits through the API and refuses to
+scan one without a token. The error message says so clearly; nothing local would
+have said it, because `make audit` runs the binary against a working tree with no
+pull request involved.
+
+**The gate reported `success success failure failure failure success` and failed,**
+which is the gate working. Worth seeing once.
 
 `act` would cover part of this and not the service containers. Installing it is
 `brew install act`; it needs Docker and it does not reproduce the cache actions.

@@ -4,6 +4,16 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### Fixed: the first CI run
+
+Three failures, none of which could have been reproduced locally.
+
+- `psql -c "... \gexec"` is a syntax error. `\gexec` is a psql meta-command and `-c` sends its argument straight to the server, which answers `syntax error at or near "\"`. The pattern had been copied from `scripts/db/init.sql`, where psql reads it as a file and it works. The step now runs that script with `-f`, so CI and the compose stack create the same three databases from one source rather than from a duplicated one-liner. This failed both the integration and the chaos jobs.
+- `gitleaks-action` requires `GITHUB_TOKEN` on a pull request: a breaking change in its v2, where it lists the pull request's commits through the API and refuses to scan one without a token. Added, along with `pull-requests: read` on that job. Nothing local would have caught it, because `make audit` runs the binary against a working tree with no pull request involved.
+- The quality gate reported `success success failure failure failure success` and failed, which is the gate doing its job rather than a fourth bug.
+
+`docs/cicd.md` records all three under verifying a workflow change, because two of them are the kind of thing that recurs.
+
 ### B30 - Docker images and GitHub Actions
 
 Added
