@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.agent.orchestrator import database_unit_of_work
 from app.api.ops import router as ops_router
 from app.api.v1.router import api_router
 from app.core.config import Settings, get_settings
@@ -22,6 +23,8 @@ from app.core.rate_limit import InMemoryRateLimiter
 from app.core.security_headers import BodySizeLimitMiddleware, SecurityHeadersMiddleware
 from app.db.session import Database
 from app.services.approvals import ApprovalRegistry
+from app.services.billing import OutboxWorker
+from app.services.billing_client import BillingClient
 from app.services.events import InMemoryEventBus
 from app.services.storage import LocalFileStorage
 from app.services.task_runner import TaskRunner
@@ -77,15 +80,29 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     )
     application.state.task_runner = runner
 
+    # Delivers the billing outbox. Started even when the backlog is empty,
+    # because a backlog left by the last process is the case it exists for; it
+    # does nothing at all when billing is disabled.
+    billing_client = BillingClient(settings)
+    application.state.billing_client = billing_client
+    outbox = OutboxWorker(database_unit_of_work(database), settings, billing_client)
+    application.state.billing_outbox_worker = outbox
+
     # Chromium takes a second or so to launch, and a failure here should stop
     # the process rather than surface as every task failing one by one.
     await runner.start()
+    await outbox.start()
 
     try:
         yield
     finally:
-        # Torn down in reverse order of startup.
+        # Torn down in reverse order of startup. The outbox goes before the
+        # database, because it needs the database to record what it delivered,
+        # and after the runner, so a task finishing during shutdown still gets
+        # its settle queued.
         await runner.stop()
+        await outbox.stop()
+        await billing_client.aclose()
         await database.dispose()
         logger.info("shutdown", app=settings.APP_NAME)
 

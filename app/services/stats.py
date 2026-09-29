@@ -17,6 +17,7 @@ from typing import Final
 from app.core.config import Settings
 from app.core.errors import Forbidden
 from app.core.logging import get_logger
+from app.domain.credits import CreditPrices, credits_for
 from app.domain.enums import UserRole
 from app.models.user import User
 from app.repositories.unit_of_work import UnitOfWork
@@ -28,11 +29,6 @@ logger = get_logger(__name__)
 # A week, which is what the history page shows. Long enough to see a pattern,
 # short enough that a bad afternoon is still visible in it.
 TREND_DAYS: Final = 7
-
-# Spec section 7 pricing, mirrored from the orchestrator so the endpoint can
-# report a cost for work that finished before this process started.
-CREDITS_PER_STEP: Final = 1
-CREDITS_PER_VISION_STEP: Final = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,7 +85,15 @@ class StatsService:
         credits: int | None = None
         if self._settings.BILLING_ENABLED:
             steps, vision = await self._uow.stats.step_and_vision_counts(owner_id)
-            credits = (steps - vision) * CREDITS_PER_STEP + vision * CREDITS_PER_VISION_STEP
+            # The same pricer the orchestrator and the outbox use. A second copy
+            # of the arithmetic would eventually disagree with what was charged,
+            # and the endpoint that shows somebody their bill is the wrong place
+            # for that to happen.
+            credits = credits_for(
+                steps,
+                vision_steps=vision,
+                prices=CreditPrices.from_settings(self._settings),
+            )
 
         overview = StatsOverview(
             scope="all" if owner_id is None else "mine",

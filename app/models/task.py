@@ -84,6 +84,11 @@ class Task(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     cache_flow_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("cached_flows.id", ondelete="SET NULL")
     )
+    # What this run cost, at the prices in force when it ended. Written for
+    # every terminal task, whether or not billing is enabled: it is the section
+    # 9 cost-per-task figure as well as the amount the outbox settles, and a
+    # deployment that turns billing on later still wants the history.
+    credits_used: Mapped[int | None] = mapped_column(Integer)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     creator: Mapped[User] = relationship(

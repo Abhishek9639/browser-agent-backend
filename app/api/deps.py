@@ -24,6 +24,8 @@ from app.models.user import User
 from app.repositories.unit_of_work import UnitOfWorkDep
 from app.services.approvals import ApprovalRegistry, ApprovalService
 from app.services.auth import AuthService
+from app.services.billing import BillingService
+from app.services.billing_client import BillingClient
 from app.services.events import EventBus, InMemoryEventBus
 from app.services.stats import StatsService
 from app.services.storage import LocalFileStorage, ScreenshotStorage
@@ -36,6 +38,8 @@ __all__ = [
     "ApprovalRegistryDep",
     "ApprovalServiceDep",
     "AuthServiceDep",
+    "BillingClientDep",
+    "BillingServiceDep",
     "CurrentUser",
     "EventBusDep",
     "KeyPairDep",
@@ -50,6 +54,8 @@ __all__ = [
     "get_app_settings",
     "get_approval_registry",
     "get_approval_service",
+    "get_billing_client",
+    "get_billing_service",
     "get_current_user",
     "get_event_bus",
     "get_key_pair",
@@ -128,12 +134,42 @@ def get_screenshot_storage(connection: HTTPConnection, settings: SettingsDep) ->
 ScreenshotStorageDep = Annotated[ScreenshotStorage, Depends(get_screenshot_storage)]
 
 
+def get_billing_client(connection: HTTPConnection, settings: SettingsDep) -> BillingClient:
+    """One client per process, held on app state.
+
+    One because it owns a connection pool, and pointing at the payments service
+    from a fresh client per request would open a connection per request. Built
+    lazily so a test app that never ran a lifespan still gets one.
+    """
+    client = getattr(connection.app.state, "billing_client", None)
+    if isinstance(client, BillingClient):
+        return client
+    client = BillingClient(settings)
+    connection.app.state.billing_client = client
+    return client
+
+
+BillingClientDep = Annotated[BillingClient, Depends(get_billing_client)]
+
+
+def get_billing_service(
+    uow: UnitOfWorkDep,
+    settings: SettingsDep,
+    client: BillingClientDep,
+) -> BillingService:
+    return BillingService(uow, settings, client=client)
+
+
+BillingServiceDep = Annotated[BillingService, Depends(get_billing_service)]
+
+
 def get_task_service(
     uow: UnitOfWorkDep,
     settings: SettingsDep,
     storage: ScreenshotStorageDep,
+    billing: BillingServiceDep,
 ) -> TaskService:
-    return TaskService(uow, settings, storage)
+    return TaskService(uow, settings, storage, billing=billing)
 
 
 TaskServiceDep = Annotated[TaskService, Depends(get_task_service)]

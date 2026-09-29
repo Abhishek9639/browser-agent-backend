@@ -4,6 +4,31 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B29 - Billing client with outbox
+
+Added
+
+- `app/services/billing_client.py`: the internal client for the payments service. Four calls, a three second timeout, retries on 5xx and network failures only, and an `Idempotency-Key` on every request derived from the thing it is about rather than generated.
+- `billing_outbox` table, with a migration. A grant, a settle and a release are written to it **in the same transaction as the business change they belong to**: the user row and its signup grant commit together, and the terminal task status and its settle commit together. A worker delivers them afterwards with an exponential backoff capped at an hour.
+- `app/services/billing.py`: `BillingService`, the one place `BILLING_ENABLED` is checked, and `OutboxWorker`, started in the lifespan.
+- `app/domain/credits.py`: the section 7 pricing in one place. 1 credit per step, 2 for a vision-grounded step, half for a replayed one, rounded up once over the whole task.
+- Wiring: registration queues a grant; `POST /tasks` reserves `AGENT_MAX_STEPS x RESERVE_MULTIPLIER` synchronously and answers 402 with `available` and `required` or 503 if payments cannot be reached; a terminal state queues a settle, or a release when the run used nothing.
+- `tasks.credits_used`, written for every finished task whether or not billing is enabled, and `creditsUsed` on the task detail response.
+- Settings: `PAYMENTS_BASE_URL`, `INTERNAL_API_TOKEN`, `PAYMENTS_TIMEOUT_SECONDS`, `PAYMENTS_MAX_ATTEMPTS`, `CREDITS_PER_STEP`, `CREDITS_PER_VISION_STEP`, `CREDITS_REPLAY_STEP_HALF`, `RESERVE_MULTIPLIER`, and three for the outbox worker.
+- `details` on the error envelope, so a 402 carries the two numbers a user needs rather than sending them to a wallet page to find out how short they are.
+- `docs/billing-integration.md`: every request and response, the idempotency keys, the pricing, the failure handling, and what this side expects of the payments repository.
+- 48 tests, driven against a fake payments app in the same process so the HTTP contract is exercised rather than mocked.
+
+Changed
+
+- `BILLING_BASE_URL` and `BILLING_INTERNAL_TOKEN` are renamed to `PAYMENTS_BASE_URL` and `INTERNAL_API_TOKEN`, the names the part brief uses. Both were unused scaffolding.
+- The credit arithmetic that was duplicated in the orchestrator and the stats service now comes from `app/domain/credits.py`. A settle that disagreed with what the agent reported is the one bug here that costs somebody money.
+- `tests/unit/test_models_metadata.py` now lists the two tables that are not in spec section 5 with the reason each exists, rather than naming one.
+
+With billing disabled, which is the default
+
+- No reservation, no outbox rows, no calls, and the agent behaves exactly as before. The only visible difference is that `creditsUsed` on the stats endpoint is null.
+
 ### B28 - Security hardening
 
 Added

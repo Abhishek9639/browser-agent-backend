@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import SessionDep
 from app.repositories.approval import ApprovalRepository
 from app.repositories.audit import AuditEventRepository
+from app.repositories.billing import BillingOutboxRepository
 from app.repositories.cache import CachedFlowRepository
 from app.repositories.stats import StatsRepository
 from app.repositories.task import (
@@ -98,6 +99,10 @@ class UnitOfWork:
     @property
     def stats(self) -> StatsRepository:
         return self._repository("_stats", StatsRepository)
+
+    @property
+    def billing_outbox(self) -> BillingOutboxRepository:
+        return self._repository("_billing_outbox", BillingOutboxRepository)
 
     async def flush(self) -> None:
         """Send pending changes so server defaults and ids are readable.
