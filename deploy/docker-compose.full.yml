@@ -1,0 +1,153 @@
+# The whole of AI-07: the backend, the frontend and the payments service.
+#
+#   cd deploy
+#   cp ../.env.full.example .env
+#   docker compose -f docker-compose.full.yml up --build
+#
+# The build contexts are sibling checkouts, so the three repositories sit beside
+# each other:
+#
+#   ai-07/
+#     browser-agent-backend/     <- this one
+#     browser-agent-frontend/
+#     browser-agent-payments/
+#
+# **Two of those do not exist yet.** The `frontend` and `payments` services are
+# written so they can be commented out in one block each, and the stack works
+# without them: the backend runs with BILLING_ENABLED=false, which is its
+# default, and the API is usable from the docs page or curl without a frontend.
+# Comment them out rather than deleting them, so turning them on later is
+# uncommenting rather than reconstructing.
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: ai07-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-agent_core}
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # One server, three databases: agent_core, agent_core_test and payments.
+      # The two services own separate schemas and never read each other's
+      # tables; sharing a server is a development convenience, not a design.
+      - ../scripts/db/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-agent_core}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  api:
+    build:
+      context: ..
+      target: api
+    container_name: ai07-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      # Uncomment with the payments service. `service_healthy` rather than
+      # started, because the API reserves credits on the first task and a
+      # payments service that is still booting answers 503.
+      # payments:
+      #   condition: service_healthy
+    environment:
+      APP_ENV: ${APP_ENV:-dev}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-agent_core}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      AGENT_ALLOWED_DOMAINS: ${AGENT_ALLOWED_DOMAINS:-skyfare,localhost,127.0.0.1}
+      LLM_PROVIDER: ${LLM_PROVIDER:-mock}
+      LLM_MODEL: ${LLM_MODEL:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      # Turn on with the payments service, and not before: enabled with nothing
+      # to call means every task submission answers 503.
+      BILLING_ENABLED: ${BILLING_ENABLED:-false}
+      PAYMENTS_BASE_URL: ${PAYMENTS_BASE_URL:-http://payments:8100}
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-}
+      METRICS_INTERNAL_TOKEN: ${METRICS_INTERNAL_TOKEN:-}
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - api_storage:/app/storage
+      - api_keys:/app/keys
+
+  skyfare:
+    build:
+      context: ..
+      target: skyfare
+    container_name: ai07-skyfare
+    restart: unless-stopped
+    ports:
+      - "${SKYFARE_PORT:-8200}:8200"
+
+  # --------------------------------------------------------------- frontend
+  # Comment this block out until ../browser-agent-frontend exists.
+  frontend:
+    build:
+      context: ../../browser-agent-frontend
+    container_name: ai07-frontend
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      # Read by the browser, so it is the address on the host rather than the
+      # service name: the compose network does not exist as far as a browser
+      # tab is concerned.
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+      NEXT_PUBLIC_WS_BASE_URL: ${NEXT_PUBLIC_WS_BASE_URL:-ws://localhost:8000}
+      NEXT_PUBLIC_RAZORPAY_KEY_ID: ${NEXT_PUBLIC_RAZORPAY_KEY_ID:-}
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+
+  # --------------------------------------------------------------- payments
+  # Comment this block out until ../browser-agent-payments exists, and leave
+  # BILLING_ENABLED=false while it is commented out.
+  payments:
+    build:
+      context: ../../browser-agent-payments
+    container_name: ai07-payments
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      APP_ENV: ${APP_ENV:-dev}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      # Its own database on the same server. The init script creates it.
+      POSTGRES_DB: ${PAYMENTS_DB:-payments}
+      # The other half of the shared secret the backend sends as
+      # X-Internal-Token. Both sides read the same variable.
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-}
+      # Razorpay TEST mode only for the OJT (spec section 7).
+      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
+      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-}
+      # Verifying tokens the backend minted, fetched from its JWKS endpoint.
+      JWKS_URL: ${JWKS_URL:-http://api:8000/.well-known/jwks.json}
+    ports:
+      - "${PAYMENTS_PORT:-8100}:8100"
+
+volumes:
+  postgres_data:
+    name: ai07_postgres_data
+  api_storage:
+    name: ai07_api_storage
+  api_keys:
+    name: ai07_api_keys

@@ -1,0 +1,52 @@
+# Everything the image does not need. The build context is sent to the daemon
+# before any layer is built, so a .venv in it costs a gigabyte of copying on
+# every build even though the Dockerfile never reads it.
+
+# Version control and CI
+.git
+.github
+.gitignore
+.gitleaks.toml
+
+# Local environments. The image builds its own from the lockfile.
+.venv
+venv
+__pycache__
+*.py[cod]
+*.egg-info
+
+# Secrets. `.env` holds real credentials on a developer machine and must never
+# be baked into an image; `.env.example` is not needed at runtime either.
+.env
+.env.*
+keys/
+
+# Caches
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.coverage
+htmlcov
+coverage.xml
+.uv-cache
+
+# Local state. Screenshots live on a volume, not in the image.
+storage/
+*.log
+
+# Documentation and tests. The image runs the service; CI runs the tests from a
+# checkout, not from the image.
+docs/
+tests/
+README.md
+CLAUDE.md
+
+# Compose files and the deploy directory describe how to run images, and are
+# read on the host rather than inside one.
+docker-compose*.yml
+deploy/
+
+# Editor and OS noise
+.vscode/
+.idea/
+.DS_Store
