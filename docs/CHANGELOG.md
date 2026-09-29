@@ -2,7 +2,41 @@
 
 All notable changes to the backend. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); parts are tracked by their id.
 
+## [1.0.0] - 2026-09-29
+
+The backend, feature-complete against `docs/PROJECT_SPEC.md`. Release notes in
+`docs/RELEASE_NOTES_v1.0.0.md`.
+
+### B31 - Architecture, ADRs, traceability and the v1.0.0 release
+
+Added
+
+- `docs/architecture.md`: five Mermaid diagrams — system context across the three repositories, the agent's layers, one loop iteration as a sequence, the task state machine, and deployment — each with prose and each marking what is implemented against what is future work. The state diagram is generated against `app/domain/state_machine.py` and checked to match it edge for edge.
+- `docs/adr/`: twelve architecture decision records. ADR-001 to 005 are the decisions the architecture rests on, written from what was built; ADR-004 is the one the specification cites by name. ADR-006 to 012 are decisions this project made and named itself: three repositories, the mock provider, SkyFare instead of live sites, WebSocket tickets, reserve-plus-outbox, set-of-marks grounding, and an asyncio runner before a job queue. Each names the alternative it rejected and the tests that hold it in place.
+- `docs/traceability.md`: BR-001 to BR-010 and FR-1 to FR-19 mapped to real modules, tables and test names, plus the specification's ten test ids. Six requirements are flagged as having no test or a weak one, with the reason for each.
+- `docs/api.md` and `docs/openapi.json`, generated from the application's own schema: all 23 endpoints, and every one of the eight WebSocket event types with a payload generated from the event models themselves.
+- `docs/viva-prep.md`: all 90 questions from the phase notes, grouped beginner, intermediate and advanced, with the answers unchanged from when each part was built.
+- `docs/RELEASE_NOTES_v1.0.0.md`, and a rewritten `README.md` with a quick start for Docker and local, an environment variable table, the benchmark, the three-repository map and a disclaimer.
+
+Fixed, from the accuracy pass
+
+- `docs/traceability.md` cited `test_a_cancel_stops_the_loop_at_a_phase_boundary`, which does not exist; the test is `test_a_cancel_between_iterations_stops_the_loop`.
+- ADR-004 cited `test_the_verifier_never_calls_a_model`; the test is `test_the_verifier_never_reaches_for_a_model`.
+- `docs/architecture.md` referenced `app/agent/perception/collector.js`; the file is `dom_extractor.js`. (The same stale name was fixed in `docs/security.md` during B28.)
+- The README claimed 1,147 unit tests, which is the number that pass; 1,148 are collected and one is skipped.
+- TEST-004 and TEST-005 were covered by tests that did not cite the id. The citations were added to `tests/unit/test_planner.py` and `tests/integration/test_orchestrator.py`, so all ten of the specification's test ids are now greppable rather than only claimed in a document.
+
+The live benchmark
+
+- Run with `--provider gemini`, five runs of the primary configuration, per instruction and without retrying. It produced no usable measurement: `gemini-3.6-flash` answered every request with `503 "This model is currently experiencing high traffic"`, so all five runs failed with `LLMUnavailable`. The report is kept as `docs/benchmarks/2026-09-29-gemini.md` with a note explaining that its 0% is a statement about provider availability rather than about the agent. What it does show is the degradation path working: five clean failures with a readable reason and no crash. The mock run remains the headline.
+
 ## [Unreleased]
+
+### Changed: branch protection is documented, not enabled
+
+- GitHub does not enforce rulesets or branch protection on a private repository on the free plan: the settings can be saved and are then ignored, which is worse than not having them because the repository looks protected and is not. `docs/cicd.md` now says so plainly and keeps the configuration as the intended one.
+- The two ways it becomes enforceable are recorded: making the repository public, or moving it to a GitHub organization. Neither needs a change to the workflow, since `gate` already exists and is already the single check a rule would name.
+- The interim practice is written down as well: every part goes through a pull request, and a pull request is merged only when `Quality gate` is green. A red gate is fixed rather than merged around. This is a weaker guarantee than a ruleset and the document says so.
 
 ### Fixed: the first CI run
 

@@ -62,6 +62,7 @@ def valid(**overrides: Any) -> dict[str, Any]:
 
 
 async def test_a_valid_decision_comes_straight_back() -> None:
+    """TEST-004: a valid summarised page state yields a valid next action."""
     planner = Planner(MockLLM(script=[valid()]))
 
     result = await planner.decide(GOAL, page(0))

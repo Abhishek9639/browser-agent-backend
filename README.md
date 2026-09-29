@@ -1,170 +1,259 @@
 # browser-agent-backend
 
-Backend for the Browser Automation Agent (AI-07). One of three repositories: **backend**, frontend, payments.
+A supervised autonomous browser agent. A user writes a task in plain language; a
+server-side Chromium reads the page, a language model proposes one structured
+action at a time, the backend executes it, a **deterministic** verifier checks
+what actually happened, and a recovery ladder handles the page breaking. Anything
+irreversible stops and waits for a human. Every step is stored and streamed live.
 
-A supervised autonomous browser agent. A user submits a natural-language task; a server-side Playwright browser perceives the page, an LLM proposes one structured action at a time, the backend executes it, a deterministic verifier confirms the outcome, and a recovery layer retries on failure. High-risk actions pause for human approval. Every step is persisted and streamed live over WebSocket.
+This is the backend of **AI-07**, one of three repositories. It owns identity — it
+is the only JWT issuer — the agent core, task and step persistence, the live
+stream, and the demo sites the agent is tested against.
 
-This service owns identity (it is the only JWT issuer), the agent core, task and step persistence, the live stream, and the demo sites.
+> **Student project.** Built for an OJT programme. It is not a product, it has
+> never been deployed, and the disclaimer at the bottom of this page is not
+> boilerplate: please read it before pointing it at anything.
 
-See [docs/PROJECT_SPEC.md](docs/PROJECT_SPEC.md) for the full specification and [docs/BACKEND_PLAN.md](docs/BACKEND_PLAN.md) for the build plan.
+## What it does
 
-## Prerequisites
+```mermaid
+graph LR
+    goal["Find the cheapest flight<br/>from Delhi to Bengaluru"] --> loop
+    subgraph loop["The loop, once per step"]
+        direction TB
+        perceive["perceive<br/>elements + compact summary"] --> plan["plan<br/>one structured action"]
+        plan --> risk{"risk?"}
+        risk -->|HIGH| human["wait for a human"]
+        risk -->|low| act["act"]
+        human --> act
+        act --> verify["verify<br/>deterministically"]
+        verify -->|failed| recover["recover<br/>ladder of 7"]
+        recover --> verify
+        verify -->|ok| perceive
+    end
+    loop --> answer["The cheapest option is Rs 4,870."]
+```
 
-- Python 3.12
-- [uv](https://docs.astral.sh/uv/)
-- Docker and Docker Compose (for Postgres)
-- Chromium for Playwright: `uv run playwright install chromium`, or `make browsers`
+Full diagrams — system context, agent layers, one loop iteration, the task state
+machine and deployment — are in **[docs/architecture.md](docs/architecture.md)**.
+
+## Features
+
+| | |
+|---|---|
+| **Perception** | Interactive elements from a real DOM, a ~3k-token summary, hidden elements excluded, BeautifulSoup fallback for static pages |
+| **Planning** | Structured output against a JSON schema, one repair turn, four providers (Anthropic, OpenAI, Gemini, and a rule-based mock), versioned prompts recorded per step |
+| **Visual grounding** | Set-of-marks: numbered boxes drawn over the elements, the model picks a number. Triggered rather than always on, and it degrades to DOM-only when vision is down |
+| **Verification** | Eleven deterministic checks comparing two page states. Never asks the model whether its own action worked |
+| **Recovery** | Seven ordered strategies, routed by the failure's error code, bounded at three attempts, one row per attempt |
+| **Safety** | Deterministic risk rules (English and Hinglish), human approval before anything irreversible, eight layers of prompt-injection defence |
+| **Multi-tab** | Stable tab ids, popups captured, a limit that holds against a page opening tabs in a loop |
+| **Cache** | A completed task's verified sequence is replayed by the next identical one. The final answer is never cached |
+| **Live view** | WebSocket with single-use tickets, replay from the database on reconnect, heartbeats |
+| **Observability** | Sixteen Prometheus metrics, a stats endpoint, structured logs that are tested for secret leakage |
+| **Billing** | Reserve synchronously, settle through a transactional outbox, against a payments service that is a separate repository |
 
 ## Quick start
 
-```bash
-cp .env.example .env     # then edit if you need to
-make install             # sync dependencies, install Chromium, install git hooks
-make db-up               # start Postgres, wait until it accepts connections
-make migrate             # apply migrations
-make check               # lint, typecheck, unit tests (drives Chromium, ~50s)
-make test-fast           # same tests without Chromium, for a tight loop
-make test-int            # integration tests, against agent_core_test
-```
-
-Then run it:
+### With Docker (nothing to install but Docker)
 
 ```bash
-make dev
-curl localhost:8000/api/v1/health
+git clone https://github.com/Abhishek9639/browser-agent-backend.git
+cd browser-agent-backend
+make up
 ```
 
-```json
-{"status":"ok","version":"0.1.0","env":"dev","db":"ok","time":"..."}
-```
+That builds two images and starts Postgres, the API and the SkyFare demo site.
+The container applies migrations and generates a signing key on first start, so
+there is no setup step.
 
-Health returns 503 with `"db":"down"` when Postgres is unreachable, so it works
-as a readiness probe as well as a liveness one.
+- API: <http://localhost:8000/api/v1/health>
+- Interactive docs: <http://localhost:8000/docs>
+- SkyFare: <http://localhost:8200>
 
-### If port 5432 is already in use
+`make logs` follows it, `make down` stops it. The default provider is `mock`,
+which is rule-based and offline, so the whole thing demonstrates itself with no
+API key.
 
-A Homebrew or Postgres.app install binds `127.0.0.1:5432` and shadows Docker's
-wildcard bind, so the app would silently talk to the wrong server. Set a free
-port in `.env` and both compose and the app follow it:
+### Locally
 
 ```bash
-POSTGRES_PORT=5433
+cp .env.example .env
+make install          # dependencies, Chromium, git hooks
+make db-up            # Postgres in Docker
+make migrate
+uv run python scripts/gen_keys.py
+make check            # lint, typecheck, unit tests
+make dev              # the API on :8000, with reload
+make skyfare          # the demo site on :8200, in another terminal
 ```
 
-Run `make help` for every target.
+### Run a task
 
-| Target | What it does |
+```bash
+# Register and log in
+curl -s -XPOST localhost:8000/api/v1/auth/register -H 'content-type: application/json' \
+  -d '{"name":"You","email":"you@example.test","password":"a-long-passphrase"}'
+TOKEN=$(curl -s -XPOST localhost:8000/api/v1/auth/login -H 'content-type: application/json' \
+  -d '{"email":"you@example.test","password":"a-long-passphrase"}' | jq -r .accessToken)
+
+# Submit a task against the demo site
+curl -s -XPOST localhost:8000/api/v1/tasks -H "authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"instruction":"Find the cheapest flight from Delhi to Bengaluru on 2026-10-29 on SkyFare",
+       "startUrl":"http://skyfare:8200/"}'
+```
+
+Watch it live with `uv run python scripts/ws_watch.py <task-id>`, or poll
+`GET /api/v1/tasks/{id}`.
+
+Use `http://localhost:8200/` as the start URL when running locally rather than in
+Docker: `skyfare` is the compose service name and only resolves inside the stack.
+
+## The demo site
+
+`demo_sites/skyfare/` is a flight search site written for this project. Flights
+are generated deterministically from a seed, so the same search returns the same
+results on any machine, and an oracle endpoint knows the right answer — which is
+what makes "completed" into "completed **correctly**".
+
+Nine chaos toggles reproduce what real sites do: `?chaos=cookie,popup,shuffle,layoutb,iframe,newtab,delay,inject`.
+
+![SkyFare results](docs/images/skyfare-results.png)
+
+## Benchmark and demo
+
+```bash
+make chaos                          # ten chaos configurations, ~5 minutes
+make bench runs=3 provider=mock     # writes docs/benchmarks/<date>-mock.md
+```
+
+The headline run is **[docs/benchmarks/2026-09-28-mock.md](docs/benchmarks/2026-09-28-mock.md)**:
+thirty runs over ten chaos configurations.
+
+| Metric | Result | Target |
+|---|---|---|
+| End-to-end success | **100%** | ≥80% |
+| Recovery success | **100%** | >70% |
+| Verification accuracy | 100% | — |
+| Median time per task | 5.6s | — |
+| p90 time per task | 27.4s | — |
+
+Success means the task finished **and** reported the fare the oracle says is
+cheapest. A run that completes with the wrong number counts as a failure, because
+a confident wrong answer is the one outcome a user cannot detect.
+
+Those numbers are measured under the mock provider, which is rule-based: they
+measure the loop, the verifier and the recovery ladder rather than a model's
+judgement. The one live attempt,
+[2026-09-29-gemini.md](docs/benchmarks/2026-09-29-gemini.md), produced no usable
+measurement — the provider answered every request with 503 — and is kept because
+it does show the degradation path working.
+
+## Configuration
+
+Everything is environment variables through pydantic-settings; `.env.example`
+lists all 94 with comments. The ones that matter:
+
+| Variable | Default | What it does |
+|---|---|---|
+| `APP_ENV` | `dev` | `dev`, `test` or `prod`. Production disables `/docs` and enables HSTS |
+| `LOG_LEVEL` | `INFO` | JSON logs in production, coloured console otherwise |
+| `CORS_ORIGINS` | `http://localhost:3000` | The frontend origin. Methods and headers are named, not `*` |
+| `POSTGRES_HOST` / `_PORT` / `_USER` / `_PASSWORD` / `_DB` | `localhost` / `5432` / `postgres` / — / `agent_core` | The database |
+| `LLM_PROVIDER` | `mock` | `mock`, `anthropic`, `openai`, `gemini`. `mock` is refused in production |
+| `LLM_MODEL` | unset | Overrides the provider's default model |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GOOGLE_API_KEY` | unset | Whichever provider you chose |
+| `PLANNER_PROMPT_VERSION` | `v2` | Which prompt file to load. Recorded on every decision |
+| `AGENT_MAX_STEPS` | `25` | Step budget per task |
+| `AGENT_MAX_TASK_SECONDS` | `300` | Time budget per task |
+| `AGENT_MAX_RETRIES_PER_STEP` | `3` | Recovery ladder budget |
+| `AGENT_MAX_CONCURRENT_TASKS` | `3` | Global semaphore; `_PER_USER` defaults to 2 |
+| `AGENT_ALLOWED_DOMAINS` | localhost set | **The sandbox.** The agent cannot navigate anywhere else |
+| `AGENT_HEADLESS` | `true` | Set false to watch it work |
+| `AGENT_APPROVAL_TIMEOUT_SECONDS` | `600` | After this an approval expires and the task times out |
+| `CACHE_ENABLED` / `CACHE_MIN_SUCCESS_RATE` | `true` / `0.5` | Flow replay, and the rate below which a flow is not used |
+| `BILLING_ENABLED` | `false` | Off means no reservation, no outbox, no calls |
+| `PAYMENTS_BASE_URL` / `INTERNAL_API_TOKEN` | `localhost:8100` / unset | The payments service and the shared secret |
+| `JWT_PRIVATE_KEY_PATH` / `_PUBLIC_` | `keys/` | RS256 keypair. `scripts/gen_keys.py` makes one |
+| `METRICS_INTERNAL_TOKEN` | unset | Lets a Prometheus scraper read `/metrics` without an account |
+| `MAX_REQUEST_BYTES` | `1048576` | Request body limit |
+| `RATE_LIMIT_ENABLED` | `true` | Per-process token buckets |
+| `STORAGE_DIR` | `storage` | Where screenshots go |
+
+## The three repositories
+
+| Repository | What it is | State |
+|---|---|---|
+| **browser-agent-backend** | This one. Agent, API, identity, demo sites | **Built** |
+| browser-agent-frontend | Next.js: task form, live view, history, wallet | Not built |
+| browser-agent-payments | Credits wallet, Razorpay TEST mode, internal API | Not built |
+
+They meet at two documented interfaces and nowhere else: this service calls
+payments over an internal API ([docs/billing-integration.md](docs/billing-integration.md)),
+and payments verifies this service's tokens through `/.well-known/jwks.json`
+([docs/auth.md](docs/auth.md)). Neither is a prerequisite for running or
+demonstrating the backend.
+
+`deploy/docker-compose.full.yml` describes all three as sibling checkouts, with
+the two unbuilt services arranged to be commented out until they exist. See
+[ADR-006](docs/adr/006-three-repositories.md) for why it is three and not one.
+
+## Documentation
+
+| Document | What is in it |
 |---|---|
-| `install` | Sync dependencies, install Chromium, install pre-commit hooks |
-| `browsers` | Install the Chromium build Playwright drives |
-| `dev` | Run the API with autoreload on :8000 |
-| `test` | Whole suite with coverage |
-| `test-unit` | Unit tests only, including the ones that drive Chromium |
-| `test-fast` | Unit tests without Chromium, for a tight edit loop |
-| `test-int` | Integration tests (needs `make db-up`) |
-| `lint` / `fmt` | ruff check / autofix and format |
-| `typecheck` | mypy strict on `app/` |
-| `check` | lint + typecheck + test-unit, the gate every part must pass |
-| `migrate` | Apply database migrations |
-| `revision` | Autogenerate a migration: `make revision m="add users"` |
-| `downgrade` | Roll back one migration |
-| `db-up` / `db-down` | Start and stop Postgres |
-| `db-reset` | Stop Postgres and delete its data volume |
+| [PROJECT_SPEC.md](docs/PROJECT_SPEC.md) | The specification. The source of truth |
+| [architecture.md](docs/architecture.md) | Five diagrams, and what is built versus future work |
+| [adr/](docs/adr/) | Twelve decisions, with the alternatives that were rejected |
+| [api.md](docs/api.md) | Every endpoint, generated from OpenAPI, plus the WebSocket events |
+| [traceability.md](docs/traceability.md) | Requirement → module → table → test, with the gaps flagged |
+| [security.md](docs/security.md) | Every section 10 rule, where it is enforced, and its test |
+| [observability.md](docs/observability.md) | Metrics, log queries, alert rules |
+| [billing-integration.md](docs/billing-integration.md) | The contract the payments repository implements |
+| [cicd.md](docs/cicd.md) | The workflow, and branch protection |
+| [database.md](docs/database.md), [auth.md](docs/auth.md), [agent.md](docs/agent.md) | Per-area detail |
+| [viva-prep.md](docs/viva-prep.md) | 90 questions and answers, by difficulty |
+| [phase-notes/](docs/phase-notes/) | One per part: what was built, why, and what broke |
+| [CHANGELOG.md](docs/CHANGELOG.md) | Every part, in order |
 
-## Layout
-
-```text
-app/          application package
-  api/        FastAPI routers (v1)
-  core/       config, logging, security, middleware
-  db/         engine and session
-  models/     SQLAlchemy models
-  schemas/    Pydantic request and response models
-  repositories/  data access
-  services/   orchestration and business logic
-  domain/     enums and the task state machine
-  agent/      the agent core, never imports FastAPI
-migrations/   alembic revisions
-demo_sites/   mock sites for demos and chaos tests (:8200)
-tests/        unit, integration, chaos, eval
-docs/         spec, plan, ADRs, phase notes, changelog
-```
-
-## SkyFare, the demo site
-
-A mock airline search site the agent is pointed at, in `demo_sites/skyfare/`.
-It is deliberately not a bare test page: the agent has to cope with a layout
-that looks like something a person would actually book a flight on.
+## Development
 
 ```bash
-make skyfare
+make check        # lint, typecheck, unit tests — the fast gate
+make check-all    # adds integration tests. Must pass before a pull request
+make audit        # pip-audit and gitleaks
+make chaos        # the chaos suite against SkyFare
+make test-int     # integration tests alone
 ```
 
-Then open <http://localhost:8200>. Nothing is ever charged and no seat is ever
-reserved.
+CI runs all of it on every pull request plus a Docker build that starts the stack.
+The single required check is **Quality gate**; see [docs/cicd.md](docs/cicd.md).
 
-| Search | Results |
-| --- | --- |
-| ![The search form](docs/images/skyfare-search.png) | ![Flight results](docs/images/skyfare-results.png) |
+**1,148 unit tests** (one skipped), **337 integration tests**, **23 chaos tests**.
 
-| Flight detail | Booking |
-| --- | --- |
-| ![One flight in detail](docs/images/skyfare-detail.png) | ![The passenger form and Pay now](docs/images/skyfare-book.png) |
+## Disclaimer
 
-Results are generated from a seed derived from the origin, destination and
-date, so the same search always returns the same flights on any machine. That
-is what makes an agent run scorable: the cheapest fare for a given query is a
-fixed answer rather than whatever was generated that time.
+**This is a student project built for an OJT programme. It is not a product.**
 
-### Chaos toggles
+- **Do not use it for real transactions.** The payments integration is Razorpay
+  **test mode** by design, the agent can be wrong, and the approval gate is the
+  only thing between a mistake and a purchase. Nothing here has had the kind of
+  review money deserves.
+- **Only automation-permitted sites.** The agent has a domain allow-list and it
+  is empty by default for a reason. Point it at a site whose terms of service
+  permit automation — ideally the bundled SkyFare, which exists so that no real
+  site has to be involved.
+- **No CAPTCHA bypass, and none of the twelve allowed actions can solve one.**
+  That is deliberate and it is not a gap to fill.
+- **No real personal data.** The demo site generates everything from a seed. Do
+  not put real names, cards or credentials into it, and note that the agent is
+  built to refuse to type a password or a card number at all.
+- **Not deployed, and not hardened for it.** It runs on one host, the rate
+  limiter and the event bus are per process, and there is no registry or
+  orchestration. The known limitations are written down in each phase note rather
+  than left to be discovered.
 
-Real sites misbehave. Each of these reproduces something that has broken a
-browser agent in practice. Turn them on per request with `?chaos=` or for a
-whole session with `SKYFARE_CHAOS`.
+## Licence
 
-```bash
-open "http://localhost:8200/results?from=Delhi&to=Bengaluru&date=2026-10-20&chaos=cookie,inject,layoutb"
-```
-
-![Cookie modal, injected instructions and the alternate layout](docs/images/skyfare-chaos.png)
-
-| Toggle | What it does |
-| --- | --- |
-| `delay` | Results render after 0.5 to 3 seconds |
-| `cookie` | A consent modal covers the page |
-| `popup` | A newsletter appears two seconds in, after a fast agent has read the page |
-| `shuffle` | Every id and class name is regenerated on each load |
-| `layoutb` | Filters move to the top and the button becomes "Find flights" |
-| `iframe` | Results move inside an iframe |
-| `newtab` | Flight details open in a new tab |
-| `inject` | Text addressed to the agent, both visible and hidden |
-| `slowtype` | Inputs debounce, so suggestions vanish and come back |
-
-`chaos=all` turns on everything at once.
-
-The `inject` toggle is a test fixture for the spec section 4.11 defences: the
-collector withholds hidden elements, the page state is fenced as untrusted, and
-the planner can only name an element it was shown. A run where the injected
-text changes what the agent does is the finding, not a bug in the site.
-
-### Ground truth
-
-`GET /api/cheapest?from=&to=&date=` returns the correct answer for a query, for
-scoring an agent's run against. It is behind a header and returns 404 without
-it, so an agent that guesses the path learns nothing from trying it. It is a
-measuring instrument, not part of the site.
-
-## Status
-
-The agent runs end to end: submit a task and it drives a browser, plans each
-step against an LLM, verifies what it did, and records every step with a
-screenshot. Built so far are the app core, the database layer and migrations,
-the data model and repositories, authentication, the browser driver, DOM
-perception, the LLM adapters and planner, the task lifecycle and event bus, the
-agent loop, the task runner and API, and the SkyFare demo site.
-
-Still to come: live streaming over WebSocket, verification, recovery, visual
-grounding, approvals, the flow cache, credits, and packaging. Parts land one at
-a time.
-
-Before running: `python scripts/gen_keys.py` to create the JWT signing keypair.
+No licence yet. Ask before reusing it.

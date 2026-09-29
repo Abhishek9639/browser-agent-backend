@@ -141,8 +141,53 @@ migrations apply from nothing rather than only that the metadata does.
 
 ## Branch protection for `main`
 
-To apply by hand, in **Settings → Branches → Add branch ruleset** (or the older
-**Branch protection rules**), targeting `main`:
+**Not enabled, and not currently possible.** GitHub does not enforce rulesets or
+branch protection on a private repository on the free plan: the settings can be
+saved and are then ignored, which is worse than not having them, because the
+repository looks protected and is not.
+
+The configuration below is therefore the **intended** one rather than the live
+one. It is written down now, while the reasoning is fresh, so that turning it on
+later is reading a list rather than rediscovering it.
+
+### What would make it enforceable
+
+Either one is enough:
+
+- **Make the repository public.** Rulesets are enforced on public repositories on
+  the free plan. For an OJT project whose whole content is its own source and
+  documentation, this is the cheaper of the two, and it costs nothing but the
+  decision.
+- **Move it to a GitHub organization.** Free organizations enforce rulesets on
+  private repositories. More setup, and the right answer if the repository should
+  stay private or will ever have more than one person pushing to it.
+
+Nothing in the workflow depends on either. The `gate` job already exists and is
+already the single check a rule would name, so enabling protection is one form
+and no code change.
+
+### The interim practice
+
+Until it is enforceable, the rule is kept by hand and it is not optional:
+
+- **Every part goes through a pull request.** Nothing is pushed to `main`
+  directly, which is already a standing rule in CLAUDE.md.
+- **A pull request is merged only when `Quality gate` is green.** The gate is the
+  one check to read: it fails unless lint, unit, integration, chaos, audit and
+  the image build all succeeded, so "the gate is green" is the whole statement.
+- **A red gate is fixed, not merged around.** A merge with a failing gate is the
+  thing protection would have prevented, and doing it by hand once teaches
+  everybody that the rule is advisory.
+
+This is a weaker guarantee than a ruleset, honestly: it depends on a person
+reading the checks. It is the same guarantee the project has had for every part
+so far, and the history shows it held.
+
+### The intended configuration
+
+To apply, once the repository is public or in an organization, in
+**Settings → Branches → Add branch ruleset** (or the older **Branch protection
+rules**), targeting `main`:
 
 1. **Require a pull request before merging.**
    - Required approvals: 1 for a team, 0 for a solo project. The review is worth
@@ -168,9 +213,12 @@ push has a signing key configured. It fails confusingly and at the last step.
 
 ### Checking it worked
 
-Push a branch with a deliberately failing test, open a pull request, and confirm
-the merge button is blocked with `Quality gate` listed as the reason. A rule
-nobody has seen refuse a merge is a rule nobody knows is on.
+Once it is enabled: push a branch with a deliberately failing test, open a pull
+request, and confirm the merge button is blocked with `Quality gate` listed as the
+reason. A rule nobody has seen refuse a merge is a rule nobody knows is on — and
+on a private free-plan repository it is a rule that is saved, displayed, and
+silently not applied, which is exactly why this check matters more than it
+sounds.
 
 ## Images
 
@@ -211,6 +259,11 @@ one piece until they exist.
 
 ## Known limitations
 
+- **Branch protection is not enforced**, because GitHub does not enforce it on a
+  private repository on the free plan. The intended configuration is documented
+  above along with the two ways it becomes enforceable, and the interim practice
+  is that every part goes through a pull request and is merged only on a green
+  `Quality gate`.
 - **No deployment.** CI builds images and throws them away: there is no registry
   and nowhere to deploy to. Pushing to one is a `docker/login-action` and two
   lines in the `image` job when there is somewhere to push.

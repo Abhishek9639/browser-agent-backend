@@ -455,12 +455,15 @@ async def test_an_approved_high_risk_action_goes_through(rig: dict[str, Any]) ->
 async def test_a_page_that_changes_under_the_agent_fails_the_step(
     rig: dict[str, Any], driver: PlaywrightDriver
 ) -> None:
-    """TEST-003, in the form it actually happens.
+    """TEST-003 and TEST-005, in the form they actually happen.
 
     The element was there when the page was read and is gone by the time the
     click lands. Emptying the page before the run would only prove the planner
     rejects an empty page; the gap worth testing is the one between perceiving
     and acting.
+
+    TEST-005 is the second half of the same run: the verification fails, the
+    ladder is tried, and every attempt is written to `recovery_attempts`.
     """
     session, task = rig["session"], rig["task"]
     origin = index_of(rig["state"], placeholder="From")
