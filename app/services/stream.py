@@ -26,6 +26,7 @@ from app.services.events import (
     ApprovalRequiredEvent,
     BoundingBox,
     FinalEvent,
+    PlanEvent,
     StatusEvent,
     StepEvent,
     TaskStats,
@@ -100,10 +101,13 @@ class StreamService:
             )
             approval = pending if pending_is_open else None
             snapshot = _snapshot(task, len(await uow.task_steps.list_for_task(task_id)))
+            plan = list(task.plan) if task.plan else None
 
         events: list[AnyEvent] = [
             StatusEvent(task_id=task_id, status=status, seq=REPLAY_SEQ),
         ]
+        if plan:
+            events.append(PlanEvent(task_id=task_id, steps=plan, seq=REPLAY_SEQ))
 
         for step in steps:
             events.append(await self._step_event(task_id, step))

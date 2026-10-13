@@ -78,6 +78,8 @@ class Task(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     start_url: Mapped[str | None] = mapped_column(String(2048))
     final_answer: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     failure_reason: Mapped[str | None] = mapped_column(Text)
+    # The outline shown before the first action: a forecast, not a contract.
+    plan: Mapped[list[str] | None] = mapped_column(JSONB)
     # Lives in the payments service's database, so it is an opaque id here and
     # deliberately not a foreign key: the two services own separate schemas.
     credits_reservation_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True))

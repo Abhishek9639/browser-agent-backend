@@ -201,6 +201,7 @@ class FakeTask:
     status: TaskStatus = TaskStatus.SUBMITTED
     final_answer: dict[str, Any] | None = None
     failure_reason: str | None = None
+    plan: list[str] | None = None
     finished_at: Any = None
 
 
@@ -1328,3 +1329,39 @@ async def test_grounding_cannot_move_a_type_onto_an_unnamed_input(settings: Sett
     assert outcome.status is TaskStatus.COMPLETED
     first = rig.browser.executed[0]
     assert "0" in first.selector or first.selector
+
+
+# ------------------------------------------------------------- plan preview
+
+
+async def test_the_outline_is_stored_and_published_before_the_first_step(
+    settings: Settings,
+) -> None:
+    from app.services.events import EventType
+
+    rig = build(
+        script=[
+            {"steps": ["Open the form", "Fill the origin", "Read the fare"]},
+            decision_payload(),
+            done_payload(),
+        ],
+        settings=settings.model_copy(update={"AGENT_PLAN_PREVIEW": True}),
+    )
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.COMPLETED
+    assert rig.store.task.plan == ["Open the form", "Fill the origin", "Read the fare"]
+    kinds = [event.type for event in rig.bus.published]
+    assert kinds.index(EventType.PLAN) < kinds.index(EventType.STEP)
+
+
+async def test_no_outline_call_is_made_when_the_preview_is_off(settings: Settings) -> None:
+    from app.services.events import EventType
+
+    rig = build(script=[decision_payload(), done_payload()], settings=settings)
+
+    await rig.orchestrator.run(TASK_ID)
+
+    assert EventType.PLAN not in [event.type for event in rig.bus.published]
+    assert rig.store.task.plan is None

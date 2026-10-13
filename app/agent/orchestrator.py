@@ -87,6 +87,7 @@ from app.services.events import (
     BoundingBox,
     EventBus,
     FinalEvent,
+    PlanEvent,
     RecoveryEvent,
     StatusEvent,
     StepEvent,
@@ -308,6 +309,8 @@ class Orchestrator:
             instruction = await self._instruction(task_id)
             await self._set_status(task_id, TaskStatus.PLANNING)
             plan = await self._cache.plan(task_id, instruction)
+            if plan is None and self._settings.AGENT_PLAN_PREVIEW:
+                await self._publish_outline(task_id, instruction)
             await self._iterate(task_id, instruction, plan, budget, tally)
         except _Stop as stop:
             status = stop.status
@@ -1114,6 +1117,21 @@ class Orchestrator:
                 replayed=replayed,
             ),
         )
+
+    async def _publish_outline(self, task_id: uuid.UUID, instruction: str) -> None:
+        """Say how many steps to expect, before the first one.
+
+        Stored on the task (so a reconnecting client still gets it) and then
+        published, in that order. Never fatal: a task with no outline is still a
+        task, and an outline is a forecast the agent is free to depart from.
+        """
+        steps = await self._planner.outline(instruction)
+        if not steps:
+            return
+        async with self._unit_of_work() as uow:
+            task = await uow.tasks.get_or_404(task_id)
+            task.plan = steps
+        await self._events.publish(task_id, PlanEvent(task_id=task_id, steps=steps))
 
     async def _instruction(self, task_id: uuid.UUID) -> str:
         async with self._unit_of_work() as uow:

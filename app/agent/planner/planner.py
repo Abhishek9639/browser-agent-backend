@@ -33,6 +33,7 @@ from app.agent.llm.base import (
 )
 from app.agent.perception.state import PageState
 from app.agent.perception.untrusted import wrap_page_state
+from app.agent.planner.outline import make_outline
 from app.agent.planner.registry import PromptRegistry
 from app.agent.planner.schema import DECISION_JSON_SCHEMA, Decision
 from app.core import metrics
@@ -251,6 +252,10 @@ class Planner:
         )
 
         return [LLMMessage(role=MessageRole.USER, text="\n\n".join(parts))]
+
+    async def outline(self, instruction: str) -> list[str]:
+        """The steps the task will probably take, for the person to see up front."""
+        return await make_outline(self._llm, instruction)
 
     async def decide(
         self,

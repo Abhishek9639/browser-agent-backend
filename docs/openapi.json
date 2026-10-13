@@ -2628,6 +2628,28 @@
             "title": "Failurereason",
             "description": "Present when the task did not complete."
           },
+          "plan": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan",
+            "description": "The steps expected, written before the first action. A forecast: the agent chooses each real step from the page, so the real count can differ.",
+            "examples": [
+              [
+                "Open the site",
+                "Search for the flight",
+                "Read the cheapest fare"
+              ]
+            ]
+          },
           "creditsUsed": {
             "anyOf": [
               {

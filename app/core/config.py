@@ -215,6 +215,11 @@ class Settings(BaseSettings):
         ]
     )
     AGENT_HEADLESS: bool = True
+    # One extra model call before the first action that outlines the expected
+    # steps, so the person can see how long the task is. A forecast only: the
+    # agent still chooses each real step from the page. Off here so a bare
+    # checkout and the scripted tests spend no extra request.
+    AGENT_PLAN_PREVIEW: bool = False
     # Which browser Playwright launches. Empty = its bundled Chromium. "chrome"
     # or "msedge" = the copy installed on this machine, which looks like a
     # normal browser to sites and is the one the user sees.

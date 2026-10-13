@@ -4,6 +4,14 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B39 - Plan preview
+
+Added
+
+- `AGENT_PLAN_PREVIEW` (default off). When on, one extra model call before the first action outlines the steps a task is expected to take. The outline is stored on the task (`tasks.plan`, migration `b3c1d9a47e20`), returned as `plan` on the task, sent once as a `plan` WebSocket event, and replayed first on reconnect.
+- The outline is a forecast. The agent still chooses each real step from the page (spec section 4.5), so a popup or a changed layout cannot break a plan it never depended on. A failed outline call is not an error: the task simply has no outline.
+- Spec sections 1, 5 and 6.1 amended to record the field and the event.
+
 ### B38 - Free-tier quotas, request pacing and model rotation
 
 Added

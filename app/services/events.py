@@ -57,6 +57,7 @@ class EventType(StrEnum):
     """The section 6.1 event names, as they appear on the wire."""
 
     STATUS = "status"
+    PLAN = "plan"
     STEP = "step"
     RECOVERY = "recovery"
     APPROVAL_REQUIRED = "approval_required"
@@ -74,6 +75,7 @@ class EventType(StrEnum):
 UNDROPPABLE: Final[frozenset[EventType]] = frozenset(
     {
         EventType.STATUS,
+        EventType.PLAN,
         EventType.APPROVAL_REQUIRED,
         EventType.APPROVAL_RESOLVED,
         EventType.FINAL,
@@ -132,6 +134,13 @@ class StatusEvent(BaseEvent):
     type: Literal[EventType.STATUS] = EventType.STATUS
     status: TaskStatus
     previous_status: TaskStatus | None = None
+
+
+class PlanEvent(BaseEvent):
+    """The expected steps, sent once before the first action."""
+
+    type: Literal[EventType.PLAN] = EventType.PLAN
+    steps: list[str]
 
 
 class StepEvent(BaseEvent):
@@ -213,6 +222,7 @@ class HeartbeatEvent(BaseEvent):
 
 Event = Annotated[
     StatusEvent
+    | PlanEvent
     | StepEvent
     | RecoveryEvent
     | ApprovalRequiredEvent
@@ -225,6 +235,7 @@ Event = Annotated[
 
 AnyEvent = (
     StatusEvent
+    | PlanEvent
     | StepEvent
     | RecoveryEvent
     | ApprovalRequiredEvent
