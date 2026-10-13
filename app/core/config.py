@@ -195,6 +195,11 @@ class Settings(BaseSettings):
         ]
     )
     AGENT_HEADLESS: bool = True
+    # Pause between browser operations, so a visible window is watchable.
+    # Opt-in: attach to the user's own Chrome (started with
+    # --remote-debugging-port) instead of launching an isolated browser.
+    AGENT_CDP_URL: str = ""
+    AGENT_SLOW_MO_MS: int = Field(default=0, ge=0)
     # Spec section 4.7. How long the page must stop changing before it is read
     # for verification, and how long to wait for that before reading anyway.
     AGENT_SETTLE_QUIET_MS: int = 300

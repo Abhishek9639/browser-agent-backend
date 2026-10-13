@@ -109,7 +109,10 @@ class TaskRunner:
         self._orchestrator_factory = orchestrator_factory
         self._open_unit_of_work: UnitOfWorkFactory = unit_of_work or database_unit_of_work(database)
 
-        self._semaphore = asyncio.Semaphore(settings.AGENT_MAX_CONCURRENT_TASKS)
+        # One shared user browser means one task at a time, or tasks would
+        # fight over focus and see each other's tabs.
+        slots = 1 if settings.AGENT_CDP_URL else settings.AGENT_MAX_CONCURRENT_TASKS
+        self._semaphore = asyncio.Semaphore(slots)
         self._tasks: dict[uuid.UUID, asyncio.Task[None]] = {}
         self._cancellations: dict[uuid.UUID, _Cancellation] = {}
         self._drivers: dict[uuid.UUID, PlaywrightDriver] = {}
@@ -142,9 +145,17 @@ class TaskRunner:
             return
 
         self._playwright = await async_playwright().start()
-        self._browser = await self._playwright.chromium.launch(
-            headless=self._settings.AGENT_HEADLESS
-        )
+        if self._settings.AGENT_CDP_URL:
+            # Opt-in: drive the user's own Chrome. Disconnects on stop; the
+            # browser itself keeps running.
+            self._browser = await self._playwright.chromium.connect_over_cdp(
+                self._settings.AGENT_CDP_URL, slow_mo=self._settings.AGENT_SLOW_MO_MS
+            )
+        else:
+            self._browser = await self._playwright.chromium.launch(
+                headless=self._settings.AGENT_HEADLESS,
+                slow_mo=self._settings.AGENT_SLOW_MO_MS,
+            )
         self._started = True
         logger.info("task_runner_started", max_concurrent=self._settings.AGENT_MAX_CONCURRENT_TASKS)
 

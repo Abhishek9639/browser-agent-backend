@@ -5,6 +5,8 @@ suite never reaches the internet, so it is deterministic, offline-capable, and
 any failure is our bug rather than someone else's outage.
 """
 
+from dataclasses import replace
+
 import pytest
 
 from app.agent.browser.actions import (
@@ -507,3 +509,72 @@ async def test_the_main_frame_still_wins_when_both_match(
     result = await driver.execute(ClickAction(selector="#outer"))
 
     assert result.ok
+
+
+# ------------------------------------------------------------------ focus
+
+
+async def test_visible_browser_raises_the_tab_it_acts_on(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    """A headed run must put the active tab in front of the user."""
+    raised: list[str] = []
+    real = driver.page.bring_to_front
+
+    async def spy() -> None:
+        raised.append("front")
+        await real()
+
+    driver._config = replace(driver._config, headless=False)
+    await driver.execute(NewTabAction(url=f"{html_server}/select.html"))
+    driver.page.bring_to_front = spy  # type: ignore[method-assign]
+    await driver._focus()
+
+    assert raised == ["front"]
+
+
+async def test_headless_never_tries_to_raise_a_tab(driver: PlaywrightDriver) -> None:
+    called = False
+
+    async def spy() -> None:
+        nonlocal called
+        called = True
+
+    driver.page.bring_to_front = spy  # type: ignore[method-assign]
+    await driver._focus()
+
+    assert not called
+
+
+# ------------------------------------------------------------------ own browser
+
+
+async def test_attached_driver_uses_the_users_browser_and_leaves_it_running(
+    browser_settings: Settings, html_server: str
+) -> None:
+    """CDP mode opens its own tab in the user's context and closes only that."""
+    from playwright.async_api import async_playwright
+
+    async with async_playwright() as pw:
+        user_browser = await pw.chromium.launch(args=["--remote-debugging-port=9333"])
+        try:
+            context = await user_browser.new_context()
+            existing = await context.new_page()
+            await existing.goto(f"{html_server}/buttons.html")
+
+            attached = browser_settings.model_copy(
+                update={"AGENT_CDP_URL": "http://127.0.0.1:9333"}
+            )
+            instance = PlaywrightDriver(attached)
+            await instance.launch()
+            try:
+                assert instance.attached
+                await instance.execute(NavigateAction(url=f"{html_server}/select.html"))
+            finally:
+                await instance.close()
+
+            # The user's own tab and browser survive the task.
+            assert user_browser.is_connected()
+            assert not existing.is_closed()
+        finally:
+            await user_browser.close()

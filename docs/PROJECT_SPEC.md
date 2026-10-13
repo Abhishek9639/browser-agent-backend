@@ -173,7 +173,7 @@ Page text goes inside `<page_state>` delimiters and is described to the model as
 
 ### 4.13 Sandboxing & budgets
 
-New browser context per task, no shared storage, downloads disabled, domain allow-list (`ALLOWED_DOMAINS`, default = demo sites + a few permitted practice sites), max steps/time, screenshots stored under task-scoped keys served only to the task owner.
+New browser context per task, no shared storage, downloads disabled (one opt-in exception: `AGENT_CDP_URL` attaches to the user's own Chrome so they can watch and work alongside the agent; see ADR-013), domain allow-list (`ALLOWED_DOMAINS`, default = demo sites + a few permitted practice sites), max steps/time, screenshots stored under task-scoped keys served only to the task owner.
 
 ## 5. Backend database (Postgres, db `agent_core`)
 

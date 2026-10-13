@@ -1,6 +1,6 @@
 # Architecture decision records
 
-Twelve decisions, each with the alternatives that were rejected and the tests that
+Thirteen decisions, each with the alternatives that were rejected and the tests that
 hold it in place. An ADR here is not a design document: it records a choice that
 was hard to reverse, so that somebody arriving later can tell the difference
 between a decision and an accident.
@@ -19,6 +19,7 @@ between a decision and an accident.
 | [010](010-credits-reservation-and-outbox.md) | Reserve synchronously, settle through an outbox | Implemented (client side) |
 | [011](011-set-of-marks-visual-grounding.md) | Set-of-marks for visual grounding, not raw coordinates | Implemented |
 | [012](012-asyncio-runner-before-a-queue.md) | An asyncio runner with a semaphore, before a job queue | Implemented; a queue is future work |
+| [013](013-opt-in-own-browser-mode.md) | An opt-in mode that drives the user's own Chrome | Implemented |
 
 ## On the numbering
 

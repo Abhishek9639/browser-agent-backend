@@ -2,6 +2,22 @@
 
 All notable changes to the backend. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); parts are tracked by their id.
 
+## [Unreleased]
+
+### B32 - Drive the user's own browser
+
+Added
+
+- `AGENT_CDP_URL` (default empty). When set, the driver and the task runner attach to the user's running Chrome over CDP instead of launching an isolated Chromium. The agent opens its own tabs in that browser, closes only those, and never closes the user's context or browser.
+- `AGENT_SLOW_MO_MS` (default 0): a pause between browser operations so a visible window can be followed.
+- The driver raises the active tab to the front when it opens, switches or closes one, in any visible mode (`PlaywrightDriver._focus`).
+- `scripts/chrome_debug.ps1`: starts Chrome with a remote debugging port and a dedicated profile.
+- ADR-013, and an exception noted in spec section 4.13.
+
+Changed
+
+- In CDP mode the task runner allows one task at a time.
+
 ## [1.0.0] - 2026-09-29
 
 The backend, feature-complete against `docs/PROJECT_SPEC.md`. Release notes in

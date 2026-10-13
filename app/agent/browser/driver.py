@@ -81,6 +81,8 @@ class BrowserConfig:
     """
 
     headless: bool = True
+    slow_mo_ms: int = 0
+    cdp_url: str = ""
     viewport_width: int = 1280
     viewport_height: int = 800
     locale: str = "en-IN"
@@ -95,6 +97,8 @@ class BrowserConfig:
     def from_settings(cls, settings: Settings) -> "BrowserConfig":
         return cls(
             headless=settings.AGENT_HEADLESS,
+            slow_mo_ms=settings.AGENT_SLOW_MO_MS,
+            cdp_url=settings.AGENT_CDP_URL,
             allowed_domains=tuple(settings.AGENT_ALLOWED_DOMAINS),
             action_timeout_ms=settings.BROWSER_ACTION_TIMEOUT_MS,
             navigation_timeout_ms=settings.BROWSER_NAVIGATION_TIMEOUT_MS,
@@ -211,6 +215,7 @@ class PlaywrightDriver:
         self._owns_browser = browser is None
         self._browser: Browser | None = browser
         self._context: BrowserContext | None = None
+        self._owns_context = True
         self._sessions = TabSessionManager(max_tabs=self._config.max_tabs)
 
     # ------------------------------------------------------------ lifecycle
@@ -221,19 +226,28 @@ class PlaywrightDriver:
 
         if self._browser is None:
             self._playwright = await async_playwright().start()
-            self._browser = await self._playwright.chromium.launch(headless=self._config.headless)
+            self._browser = await self._connect_or_launch(self._playwright)
 
-        self._context = await self._browser.new_context(
-            viewport={
-                "width": self._config.viewport_width,
-                "height": self._config.viewport_height,
-            },
-            locale=self._config.locale,
-            timezone_id=self._config.timezone,
-            # Spec section 4.13: the agent never writes to the host disk.
-            accept_downloads=False,
-            user_agent=self._config.user_agent,
-        )
+        if self.attached:
+            # The user's own browser: reuse its default context so their
+            # sign-ins are visible, and never close it. Viewport, locale and
+            # download settings belong to the user's browser, not to us.
+            contexts = self._browser.contexts
+            self._owns_context = not contexts
+            self._context = contexts[0] if contexts else await self._browser.new_context()
+        else:
+            self._owns_context = True
+            self._context = await self._browser.new_context(
+                viewport={
+                    "width": self._config.viewport_width,
+                    "height": self._config.viewport_height,
+                },
+                locale=self._config.locale,
+                timezone_id=self._config.timezone,
+                # Spec section 4.13: the agent never writes to the host disk.
+                accept_downloads=False,
+                user_agent=self._config.user_agent,
+            )
         self._context.set_default_timeout(self._config.action_timeout_ms)
         self._context.set_default_navigation_timeout(self._config.navigation_timeout_ms)
 
@@ -243,7 +257,24 @@ class PlaywrightDriver:
         self._sessions = TabSessionManager(max_tabs=self._config.max_tabs)
         self._sessions.attach(self._context)
         await self._sessions.open(self._context)
-        logger.info("browser_context_launched", headless=self._config.headless)
+        await self._focus()
+        logger.info(
+            "browser_context_launched", headless=self._config.headless, attached=self.attached
+        )
+
+    @property
+    def attached(self) -> bool:
+        """Is this driving the user's own browser over CDP (opt-in, see ADR)?"""
+        return bool(self._config.cdp_url)
+
+    async def _connect_or_launch(self, playwright: Playwright) -> Browser:
+        if self.attached:
+            return await playwright.chromium.connect_over_cdp(
+                self._config.cdp_url, slow_mo=self._config.slow_mo_ms
+            )
+        return await playwright.chromium.launch(
+            headless=self._config.headless, slow_mo=self._config.slow_mo_ms
+        )
 
     async def close(self) -> None:
         """Tear down. Safe to call twice, and never raises."""
@@ -263,7 +294,9 @@ class PlaywrightDriver:
 
     async def _close_context(self) -> None:
         if self._context is not None:
-            await self._context.close()
+            # Never close the user's own context: that would shut their windows.
+            if self._owns_context:
+                await self._context.close()
             self._context = None
 
     async def _close_browser(self) -> None:
@@ -407,7 +440,7 @@ class PlaywrightDriver:
             case NewTabAction():
                 await self._new_tab(action)
             case SwitchTabAction():
-                self._switch_tab(action.tab_id)
+                await self._switch_tab(action.tab_id)
             case CloseTabAction():
                 await self._close_tab(action)
             case DoneAction():
@@ -486,17 +519,33 @@ class PlaywrightDriver:
             raise RuntimeError("The driver has not been launched.")
 
         await self._sessions.open(self._context, action.url)
+        await self._focus()
 
         if action.url is not None:
             # A redirect can land outside the sandbox, so the page we ended up
             # on is checked rather than the URL we asked for.
             self._require_allowed(self.page.url)
 
-    def _switch_tab(self, tab_id: str) -> None:
+    async def _switch_tab(self, tab_id: str) -> None:
         self._sessions.switch(tab_id)
+        await self._focus()
+
+    async def _focus(self) -> None:
+        """Raise the active tab in front of the user.
+
+        Only meaningful with a visible browser, so it is skipped headless. A
+        failure is logged and swallowed: losing focus must never fail an action.
+        """
+        if (self._config.headless and not self.attached) or self._sessions.active is None:
+            return
+        try:
+            await self.page.bring_to_front()
+        except PlaywrightError as exc:
+            logger.debug("bring_to_front_failed", error_type=type(exc).__name__)
 
     async def _close_tab(self, action: CloseTabAction) -> None:
         await self._sessions.close(action.tab_id)
+        await self._focus()
 
     # ------------------------------------------------------------ helpers
 
