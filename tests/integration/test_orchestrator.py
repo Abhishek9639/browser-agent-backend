@@ -96,7 +96,11 @@ async def rig(
     browser = DriverBrowser(driver, settings)
     bus = InMemoryEventBus()
     user = await make_user(db_session, f"owner-{uuid.uuid4().hex[:8]}@example.test")
-    task = await make_task(db_session, user, instruction="Search for a flight from Delhi")
+    task = await make_task(
+        db_session,
+        user,
+        instruction="Fill the form, including the password, and search for a flight from Delhi",
+    )
     await db_session.commit()
 
     yield {

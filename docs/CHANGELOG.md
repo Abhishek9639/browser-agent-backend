@@ -4,6 +4,18 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B36 - Sign-in hand-off and a working indicator
+
+Added
+
+- When the page needs a sign-in or sign-up (a usable password field, or a login-looking path with an email field), the agent stops and hands the browser to the person through the existing approval flow. The person signs in in the visible window and presses Approve; the agent re-reads the page and carries on. Declining stops the task, an unanswered prompt times it out, and after three hand-offs on the same task it fails with "The site still needs you to sign in or sign up." A goal that mentions a password or credentials is left to the agent.
+- A frame around every tab the agent uses in a visible browser: blue with "Agent is working", amber with "Waiting for you to sign in" while handed off. It ignores clicks, survives navigation, and is hidden while a screenshot is taken so the model never sees it.
+- The frontend approval card reads "Sign-in needed" with an "I've signed in, continue" button for a hand-off.
+
+Changed
+
+- Tests that type into a password field now state a goal about signing in, because otherwise the agent correctly hands over.
+
 ### B35 - Run in installed Chrome, and say why an action failed
 
 Added

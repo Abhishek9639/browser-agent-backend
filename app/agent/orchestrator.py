@@ -18,6 +18,7 @@ never behind the live view, so there is nothing a client can have seen that it
 cannot be told again.
 """
 
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -59,7 +60,7 @@ from app.agent.llm.base import LLMRateLimited, LLMTimeout, LLMUnavailable
 from app.agent.perception.dom_extractor import MASK, ElementInfo
 from app.agent.perception.state import PageState
 from app.agent.planner.planner import Planner, PlannerOutputError, PlannerResult, StepSummary
-from app.agent.planner.schema import Decision
+from app.agent.planner.schema import Decision, ExpectedOutcome
 from app.agent.recovery.runner import RecoveryRunner, failure_sentence
 from app.agent.safety.risk import DeterministicRiskPolicy, RiskAssessment
 from app.agent.verification.verifier import DeterministicVerifier
@@ -69,7 +70,7 @@ from app.core.config import Settings
 from app.core.logging import get_logger, step_context, task_context
 from app.db.session import Database
 from app.domain.credits import CreditPrices, Usage, credits_for_usage
-from app.domain.enums import ActionType, RiskLevel, StepStatus, TaskStatus
+from app.domain.enums import ActionType, RiskLevel, StepStatus, TaskStatus, VerificationMethod
 from app.domain.state_machine import transition
 from app.models.billing import OutboxKind, release_key, settle_key
 from app.models.task import LLMDecision, RecoveryAttempt, Task, TaskStep, Verification
@@ -367,6 +368,7 @@ class Orchestrator:
     ) -> None:
         """The loop proper. Only ever leaves by raising ``_Stop``."""
         history: list[StepSummary] = []
+        login_pauses = 0
         # Carried between iterations: the state read after one action is the
         # state the next one plans against, so a step costs one perception
         # rather than two.
@@ -392,6 +394,19 @@ class Orchestrator:
             if state is None:
                 state = await self._browser.perceive()
             self._stop_if_cancelled()
+
+            if _login_wall(state, instruction):
+                # The agent does not create accounts or guess credentials. It
+                # hands the browser to the person, then looks at the page again.
+                if login_pauses >= MAX_LOGIN_PAUSES:
+                    raise _Stop(
+                        TaskStatus.EXECUTION_FAILED,
+                        failure_reason="The site still needs you to sign in or sign up.",
+                    )
+                login_pauses += 1
+                await self._wait_for_login(task_id, len(history) + 1, state)
+                state = None
+                continue
 
             planned = await self._planner.decide(instruction, state, history, _hint_text(hint))
             self._stop_if_cancelled()
@@ -462,6 +477,19 @@ class Orchestrator:
                     extracted=result.extracted,
                 )
             )
+
+            if (
+                not verdict.ok
+                and login_pauses < MAX_LOGIN_PAUSES
+                and _login_wall(after, instruction)
+            ):
+                # The click that failed was probably blocked by a sign-in
+                # prompt. Ask the person to sign in, then carry on from the page
+                # as they leave it.
+                login_pauses += 1
+                await self._wait_for_login(task_id, step_number, after)
+                state = None
+                continue
 
             if not verdict.ok:
                 raise _Stop(
@@ -748,6 +776,46 @@ class Orchestrator:
                 failure_reason="The planner chose an element that is not on the page.",
             )
         return element
+
+    async def _wait_for_login(self, task_id: uuid.UUID, step_number: int, state: PageState) -> None:
+        """Hand the browser to the person to sign in or sign up, and wait.
+
+        Rides the approval gate: the person is shown a prompt, signs in in the
+        visible browser window, and presses Approve to let the agent continue.
+        Rejecting stops the task, and an unanswered prompt times it out, exactly
+        as for any other approval.
+        """
+        site = _site_of(state)
+        prompt = (
+            f"{site or 'This site'} needs you to sign in or sign up. Do it in the "
+            "browser window, then press Approve and the agent will carry on."
+        )
+        decision = Decision(
+            action=ActionType.WAIT,
+            target="for you to sign in or sign up",
+            reasoning="A sign-in page or form is blocking the task.",
+            expected_outcome=ExpectedOutcome(type=VerificationMethod.DOM_CHANGED),
+            risk_level=RiskLevel.HIGH,
+            requires_approval=True,
+            confidence=1.0,
+        )
+        await self._indicate("waiting")
+        try:
+            await self._gate(task_id, step_number, decision, RiskLevel.HIGH, None, [prompt], state)
+        finally:
+            await self._indicate("working")
+        # Approve resumes into ACTING, and the machine only allows ACTING ->
+        # VERIFYING -> PLANNING from there. Walk it, so the task does not sit
+        # in AWAITING_APPROVAL while the planner thinks.
+        await self._set_status(task_id, TaskStatus.ACTING)
+        await self._set_status(task_id, TaskStatus.VERIFYING)
+        await self._set_status(task_id, TaskStatus.PLANNING)
+
+    async def _indicate(self, mode: str) -> None:
+        """Tell the visible browser what the agent is doing, if it can show it."""
+        hook = getattr(self._browser, "set_indicator", None)
+        if hook is not None:
+            await hook(mode)
 
     async def _gate(
         self,
@@ -1152,6 +1220,30 @@ def _assess(policy: RiskPolicy, decision: Decision, state: PageState) -> RiskAss
     if callable(evaluate):
         return cast(RiskAssessment, evaluate(decision, state))
     return RiskAssessment(policy.assess(decision, state), [])
+
+
+MAX_LOGIN_PAUSES: Final = 3
+
+_LOGIN_PATH: Final = re.compile(r"/(log-?in|sign-?in|sign-?up|register|accounts?/login)(/|$)", re.I)
+# A goal that mentions credentials is a goal about signing in; do not second-guess it.
+_GOAL_IS_LOGIN: Final = re.compile(r"password|credential|log ?in with|sign ?in with", re.I)
+
+
+def _login_wall(state: PageState, instruction: str) -> bool:
+    """Is the page asking for a sign-in or sign-up the agent must not do?
+
+    Deterministic and cheap: a usable password field, or a login-looking path
+    with an email field. Nothing here asks the model, because "should I invent
+    an account" is not a question to put to one.
+    """
+    if _GOAL_IS_LOGIN.search(instruction):
+        return False
+    usable = [e for e in state.elements if not e.disabled and not e.covered]
+    if any(e.input_type == "password" for e in usable):
+        return True
+    if _LOGIN_PATH.search(urlsplit(state.url).path):
+        return any(e.input_type in {"email", "tel"} or "email" in e.name.lower() for e in usable)
+    return False
 
 
 def _site_of(state: PageState) -> str:

@@ -49,7 +49,15 @@ class DriverBrowser:
         )
 
     async def screenshot(self) -> Screenshot:
-        return await capture(self._driver.page)  # type: ignore[arg-type]
+        # The coloured frame is for the person watching, not for the model.
+        await self._driver.hide_indicator(True)
+        try:
+            return await capture(self._driver.page)  # type: ignore[arg-type]
+        finally:
+            await self._driver.hide_indicator(False)
+
+    async def set_indicator(self, mode: str) -> None:
+        await self._driver.set_indicator(mode)
 
     async def capture_state(self) -> BrowserSnapshot:
         return await self._driver.capture_state()

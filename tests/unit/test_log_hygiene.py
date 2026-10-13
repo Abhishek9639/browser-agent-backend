@@ -26,6 +26,8 @@ from tests.unit.test_orchestrator import (
     TASK_ID,
     ApprovingGate,
     FakeBrowser,
+    FakeStore,
+    FakeTask,
     build,
     decision_payload,
     done_payload,
@@ -121,6 +123,8 @@ async def test_a_whole_run_logs_nothing_forbidden(
             done_payload(f"Paid. {PAGE_SENTENCE}"),
         ],
         settings=settings,
+        # A goal about signing in is left to the agent rather than handed back.
+        store=FakeStore(task=FakeTask(instruction="Log in with my password")),
         browser=FakeBrowser(secret_page()),
         approvals=ApprovingGate(),
     )

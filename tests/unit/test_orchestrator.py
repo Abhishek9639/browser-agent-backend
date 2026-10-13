@@ -528,6 +528,8 @@ async def test_a_typed_password_never_reaches_the_database_or_the_wire(
     state = page(element(0, name="Password", input_type="password"))
     rig = build(
         script=[decision_payload(value=secret, target="Password"), done_payload()],
+        # A goal about signing in is left to the agent; otherwise it would pause.
+        store=FakeStore(task=FakeTask(instruction="Log in with my password")),
         browser=FakeBrowser(state),
         settings=settings,
         # Typing into a password field is high risk now, so without a gate
@@ -1104,6 +1106,7 @@ async def test_a_masked_value_is_never_stored(settings: Settings) -> None:
             done_payload(),
         ],
         settings=settings,
+        store=FakeStore(task=FakeTask(instruction="Log in with my password")),
         browser=FakeBrowser(page(secret)),
         cache=cache,
         approvals=ApprovingGate(),
@@ -1216,3 +1219,83 @@ async def test_run_outcome_is_returned_for_the_caller(settings: Settings) -> Non
     assert isinstance(outcome, RunOutcome)
     assert outcome.duration_ms >= 0
     assert outcome.steps == 2
+
+
+# ------------------------------------------------------------- sign-in hand-off
+
+
+class LoginThenFormBrowser(FakeBrowser):
+    """Shows a sign-in page first, then the real page once the person has signed in."""
+
+    def __init__(self) -> None:
+        super().__init__(page(element(0)))
+        self.indicators: list[str] = []
+
+    async def perceive(self) -> PageState:
+        self.perceive_calls += 1
+        if self.perceive_calls == 1:
+            return page(
+                element(0, name="Email", input_type="email"),
+                element(1, name="Password", input_type="password"),
+                url="https://example.test/login",
+            )
+        return self._state
+
+    async def set_indicator(self, mode: str) -> None:
+        self.indicators.append(mode)
+
+
+async def test_a_sign_in_page_hands_the_browser_to_the_person(settings: Settings) -> None:
+    gate = ApprovingGate()
+    browser = LoginThenFormBrowser()
+    rig = build(
+        script=[done_payload("Signed in and done")],
+        settings=settings,
+        browser=browser,
+        approvals=gate,
+    )
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.COMPLETED
+    assert len(gate.requests) == 1
+    prompt = gate.requests[0]["reasons"][0]
+    assert "sign in or sign up" in prompt
+    # Nothing was typed into the sign-in form, and the page was read again afterwards.
+    assert browser.executed == [] or all(a.action.value == "done" for a in browser.executed)
+    assert browser.perceive_calls >= 2
+    assert browser.indicators == ["waiting", "working"]
+
+
+async def test_declining_to_sign_in_stops_the_task(settings: Settings) -> None:
+    class Decline:
+        async def request(self, **kwargs: Any) -> ApprovalOutcome:
+            return ApprovalOutcome(approved=False, approval_id=uuid.uuid4(), reason="No thanks")
+
+    rig = build(
+        script=[done_payload()],
+        settings=settings,
+        browser=LoginThenFormBrowser(),
+        approvals=Decline(),
+    )
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.REJECTED
+
+
+def test_login_wall_detection_is_deterministic() -> None:
+    from app.agent.orchestrator import _login_wall
+
+    password = page(element(0, name="Password", input_type="password"))
+    plain = page(element(0, name="Search"))
+    login_path = page(
+        element(0, name="Email address", input_type="email"),
+        url="https://example.test/accounts/login",
+    )
+
+    assert _login_wall(password, "find internships")
+    assert not _login_wall(plain, "find internships")
+    assert _login_wall(login_path, "find internships")
+    # A goal that is itself about credentials is left alone.
+    assert not _login_wall(password, "log in with my password")

@@ -12,6 +12,7 @@ together:
 """
 
 import asyncio
+import json
 import time
 from dataclasses import dataclass
 from types import TracebackType
@@ -192,6 +193,49 @@ def host_is_allowed(url: str, allowed: tuple[str, ...]) -> bool:
     return any(entry.strip().lower() in candidates for entry in allowed)
 
 
+INDICATOR_ID = "__baa_indicator__"
+
+_INDICATOR_JS = """
+(function (mode) {
+  if (window.top !== window) return;
+  function apply() {
+    var root = document.documentElement;
+    if (!root) return;
+    var waiting = mode === 'waiting';
+    var color = waiting ? '#f59e0b' : '#1a73e8';
+    var el = document.getElementById('__baa_indicator__');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = '__baa_indicator__';
+      el.setAttribute('aria-hidden', 'true');
+      el.appendChild(document.createElement('div'));
+      root.appendChild(el);
+    }
+    el.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:2147483647;' +
+      'box-sizing:border-box;border:3px solid ' + color + ';' +
+      'box-shadow:inset 0 0 22px 2px ' + color + '66;';
+    var label = el.firstChild;
+    label.textContent = waiting ? 'Waiting for you to sign in' : 'Agent is working';
+    label.style.cssText = 'position:absolute;top:0;left:50%;transform:translateX(-50%);' +
+      'padding:3px 14px;border-radius:0 0 10px 10px;font:600 12px/1.4 system-ui,sans-serif;' +
+      'color:#fff;background:' + color + ';';
+  }
+  apply();
+  document.addEventListener('DOMContentLoaded', apply);
+})(__MODE__);
+"""
+
+
+def indicator_script(mode: str) -> str:
+    """The script that draws the coloured frame around a tab the agent is using.
+
+    ``working`` is blue and ``waiting`` is amber. It is pointer-events: none, so
+    it never intercepts a click, and it has no role or label the perception
+    layer would list as something to act on.
+    """
+    return _INDICATOR_JS.replace("__MODE__", json.dumps(mode))
+
+
 class PlaywrightDriver:
     """One isolated browser context per task.
 
@@ -218,6 +262,8 @@ class PlaywrightDriver:
         self._browser: Browser | None = browser
         self._context: BrowserContext | None = None
         self._owns_context = True
+        self._indicator_mode = "working"
+        self._indicated: set[int] = set()
         self._sessions = TabSessionManager(max_tabs=self._config.max_tabs)
 
     # ------------------------------------------------------------ lifecycle
@@ -260,6 +306,8 @@ class PlaywrightDriver:
         self._sessions.attach(self._context)
         await self._sessions.open(self._context)
         await self._focus()
+        self._indicated.clear()
+        await self._sync_indicator()
         logger.info(
             "browser_context_launched", headless=self._config.headless, attached=self.attached
         )
@@ -385,6 +433,12 @@ class PlaywrightDriver:
     # ------------------------------------------------------------ execute
 
     async def execute(self, action: BaseModel) -> ActionResult:
+        """Run one action, then make sure every tab it touched shows the indicator."""
+        result = await self._run_action(action)
+        await self._sync_indicator()
+        return result
+
+    async def _run_action(self, action: BaseModel) -> ActionResult:
         """Run one action.
 
         The allow-list is checked first, before the browser is touched at all.
@@ -533,6 +587,51 @@ class PlaywrightDriver:
     async def _switch_tab(self, tab_id: str) -> None:
         self._sessions.switch(tab_id)
         await self._focus()
+
+    @property
+    def _shows_indicator(self) -> bool:
+        return not self._config.headless or self.attached
+
+    async def set_indicator(self, mode: str) -> None:
+        """Switch the frame on every tab between ``working`` (blue) and ``waiting``."""
+        self._indicator_mode = mode
+        self._indicated.clear()
+        await self._sync_indicator()
+
+    async def _sync_indicator(self) -> None:
+        """Draw the frame on any tab that does not have it yet.
+
+        Registered as an init script so it survives navigation, and run once
+        now so it appears on the page that is already open. Best effort: a tab
+        that closed mid-way, or a page that forbids it, is not an action failure.
+        """
+        if not self._shows_indicator:
+            return
+        script = indicator_script(self._indicator_mode)
+        for tab in self._sessions.open_tabs:
+            key = id(tab.page)
+            if key in self._indicated:
+                continue
+            self._indicated.add(key)
+            try:
+                await tab.page.add_init_script(script)
+                await tab.page.evaluate(script)
+            except PlaywrightError as exc:
+                logger.debug("indicator_failed", error_type=type(exc).__name__)
+
+    async def hide_indicator(self, hidden: bool) -> None:
+        """Hide the frame while a screenshot is taken, so it never reaches the model."""
+        if not self._shows_indicator or self._sessions.active is None:
+            return
+        display = "none" if hidden else "block"
+        try:
+            await self.page.evaluate(
+                "d => { const e = document.getElementById('__baa_indicator__');"
+                " if (e) e.style.display = d; }",
+                display,
+            )
+        except PlaywrightError:
+            return
 
     async def _focus(self) -> None:
         """Raise the active tab in front of the user.

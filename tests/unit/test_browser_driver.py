@@ -578,3 +578,46 @@ async def test_attached_driver_uses_the_users_browser_and_leaves_it_running(
             assert not existing.is_closed()
         finally:
             await user_browser.close()
+
+
+# ------------------------------------------------------------------ indicator
+
+
+async def test_a_visible_run_draws_a_frame_that_is_hidden_for_screenshots(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    """The person sees the blue frame; the model's screenshot does not."""
+    driver._config = replace(driver._config, headless=False)
+    await goto(driver, html_server, "buttons.html")
+    await driver.set_indicator("working")
+
+    present = await driver.page.evaluate("!!document.getElementById('__baa_indicator__')")
+    label = await driver.page.evaluate("document.getElementById('__baa_indicator__').textContent")
+    await driver.hide_indicator(True)
+    hidden = await driver.page.evaluate(
+        "document.getElementById('__baa_indicator__').style.display"
+    )
+
+    assert present
+    assert label == "Agent is working"
+    assert hidden == "none"
+
+
+async def test_waiting_switches_the_frame_to_amber_and_it_survives_navigation(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    driver._config = replace(driver._config, headless=False)
+    await goto(driver, html_server, "buttons.html")
+    await driver.set_indicator("waiting")
+
+    await goto(driver, html_server, "select.html")
+    label = await driver.page.evaluate("document.getElementById('__baa_indicator__')?.textContent")
+
+    assert label == "Waiting for you to sign in"
+
+
+async def test_headless_runs_draw_no_frame(driver: PlaywrightDriver, html_server: str) -> None:
+    await goto(driver, html_server, "buttons.html")
+    await driver.set_indicator("working")
+
+    assert not await driver.page.evaluate("!!document.getElementById('__baa_indicator__')")
