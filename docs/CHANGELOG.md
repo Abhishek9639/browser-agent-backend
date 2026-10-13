@@ -4,6 +4,18 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B33 - Groq provider and fast rate-limit fallback
+
+Added
+
+- `app/agent/llm/groq.py`: a Groq adapter over Groq's OpenAI-compatible endpoint, using the existing `openai` SDK (no new dependency). JSON mode with the schema in the system prompt; a separate vision model is used when images are attached.
+- `GROQ_API_KEY`, `GROQ_MODEL`, `GROQ_VISION_MODEL` settings. `groq` is now a valid `LLM_PROVIDER` and `LLM_FALLBACK_PROVIDER`. Groq never reads `LLM_MODEL`, so a Groq fallback is not sent the primary's model name.
+- `RetryingLLM(retry_rate_limits=...)`.
+
+Changed
+
+- When `LLM_FALLBACK_PROVIDER` is set, a rate-limited primary hands over to the fallback immediately instead of sleeping out its retry-after. Other transient failures are still retried first.
+
 ### B32 - Drive the user's own browser
 
 Added

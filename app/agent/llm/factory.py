@@ -16,6 +16,7 @@ from pydantic import SecretStr
 from app.agent.llm.anthropic import AnthropicLLM
 from app.agent.llm.base import FallbackLLM, LLMClient, RetryingLLM
 from app.agent.llm.gemini import GeminiLLM
+from app.agent.llm.groq import GroqLLM
 from app.agent.llm.mock import MockLLM
 from app.agent.llm.openai import OpenAILLM
 from app.core.config import Settings
@@ -33,7 +34,7 @@ logger = get_logger(__name__)
 
 # Named in spec section 4.1. Listed even before they are implemented, so a
 # typo and a not-yet-built provider give different errors.
-KNOWN_PROVIDERS: Final = ("mock", "anthropic", "openai", "gemini")
+KNOWN_PROVIDERS: Final = ("mock", "anthropic", "openai", "gemini", "groq")
 
 
 class UnknownProviderError(ValueError):
@@ -89,11 +90,17 @@ def _build_gemini(settings: Settings) -> LLMClient:
     return GeminiLLM(settings)
 
 
+def _build_groq(settings: Settings) -> LLMClient:
+    _require_key("groq", settings.GROQ_API_KEY, "GROQ_API_KEY")
+    return GroqLLM(settings)
+
+
 _BUILDERS: Final[dict[str, Callable[[Settings], LLMClient]]] = {
     "mock": _build_mock,
     "anthropic": _build_anthropic,
     "openai": _build_openai,
     "gemini": _build_gemini,
+    "groq": _build_groq,
 }
 
 
@@ -118,7 +125,12 @@ def build_llm(settings: Settings, *, provider: str | None = None) -> LLMClient:
     answered badly.
     """
     name = (provider or settings.LLM_PROVIDER).strip().lower()
-    client: LLMClient = RetryingLLM(_build_bare(name, settings))
+    fallback = (settings.LLM_FALLBACK_PROVIDER or "").strip().lower()
+    has_fallback = bool(fallback) and fallback != name
+    # With a fallback configured, a rate limit moves on at once instead of
+    # sleeping out the primary's retry-after: waiting on a quota that will not
+    # clear for a minute is exactly what the fallback is for.
+    client: LLMClient = RetryingLLM(_build_bare(name, settings), retry_rate_limits=not has_fallback)
 
     if settings.is_prod and name == "mock":
         # Fatal, not a warning. An agent running on the mock accepts tasks,
@@ -130,8 +142,7 @@ def build_llm(settings: Settings, *, provider: str | None = None) -> LLMClient:
             "Set a real provider, or set APP_ENV to dev or test."
         )
 
-    fallback = (settings.LLM_FALLBACK_PROVIDER or "").strip().lower()
-    if fallback and fallback != name:
+    if has_fallback:
         client = FallbackLLM(client, RetryingLLM(_build_bare(fallback, settings)))
         logger.info("llm_fallback_configured", primary=name, fallback=fallback)
 

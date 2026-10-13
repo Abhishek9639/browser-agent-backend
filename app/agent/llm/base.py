@@ -196,6 +196,7 @@ class RetryingLLM:
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
         base_delay_s: float = DEFAULT_BASE_DELAY_S,
         max_delay_s: float = DEFAULT_MAX_DELAY_S,
+        retry_rate_limits: bool = True,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         rng: random.Random | None = None,
     ) -> None:
@@ -205,6 +206,7 @@ class RetryingLLM:
         self._max_attempts = max_attempts
         self._base_delay_s = base_delay_s
         self._max_delay_s = max_delay_s
+        self._retry_rate_limits = retry_rate_limits
         # Injected so tests do not sleep and backoff is reproducible.
         self._sleep = sleep
         self._rng = rng or random.Random()  # noqa: S311 - jitter, not crypto
@@ -252,6 +254,8 @@ class RetryingLLM:
                     # LLMBadOutput lands here, and so does anything unexpected.
                     # Re-sending an identical prompt would produce an identical
                     # answer at the same cost.
+                    raise
+                if isinstance(error, LLMRateLimited) and not self._retry_rate_limits:
                     raise
                 last = error
                 if attempt == self._max_attempts:

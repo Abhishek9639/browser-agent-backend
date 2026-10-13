@@ -154,6 +154,11 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: SecretStr | None = None
     OPENAI_API_KEY: SecretStr | None = None
     GOOGLE_API_KEY: SecretStr | None = None
+    GROQ_API_KEY: SecretStr | None = None
+    # Groq's own model names, separate from LLM_MODEL so a Groq fallback is
+    # never sent the primary provider's model name.
+    GROQ_MODEL: str | None = None
+    GROQ_VISION_MODEL: str | None = None
     LLM_TIMEOUT_SECONDS: int = 60
     LLM_MAX_OUTPUT_TOKENS: int = 2048
     PLANNER_PROMPT_VERSION: str = "v2"
