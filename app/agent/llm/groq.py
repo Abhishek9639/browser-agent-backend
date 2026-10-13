@@ -38,8 +38,8 @@ logger = get_logger(__name__)
 
 PROVIDER: Final = "groq"
 BASE_URL: Final = "https://api.groq.com/openai/v1"
-DEFAULT_MODEL: Final = "llama-3.3-70b-versatile"
-DEFAULT_VISION_MODEL: Final = "meta-llama/llama-4-scout-17b-16e-instruct"
+DEFAULT_MODEL: Final = "openai/gpt-oss-120b"
+DEFAULT_VISION_MODEL: Final = "qwen/qwen3.8-27b"
 
 
 class GroqLLM:
