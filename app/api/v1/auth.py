@@ -166,7 +166,9 @@ async def refresh(
         user=UserResponse.model_validate(user),
     )
     accepted = JSONResponse(content=body.model_dump(by_alias=True, mode="json"))
-    set_refresh_cookie(accepted, settings, raw_refresh)
+    if raw_refresh is not None:
+        # None means a tolerated race: the winning request already set the cookie.
+        set_refresh_cookie(accepted, settings, raw_refresh)
     return accepted
 
 

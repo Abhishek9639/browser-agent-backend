@@ -169,13 +169,25 @@ async def test_refresh_with_an_unknown_token_is_401(api_client: AsyncClient) -> 
     assert response.status_code == 401
 
 
+async def age_rotations(db_session: Any, seconds: int = 3600) -> None:
+    """Pretend the rotation happened a while ago, outside the race window."""
+    await db_session.execute(
+        text(
+            "UPDATE refresh_tokens SET revoked_at = revoked_at - make_interval(secs => :s) "
+            "WHERE revoked_at IS NOT NULL"
+        ),
+        {"s": seconds},
+    )
+
+
 # ------------------------------------------------------------ reuse detection
 
 
-async def test_replaying_a_rotated_token_is_401(api_client: AsyncClient) -> None:
+async def test_replaying_a_rotated_token_is_401(api_client: AsyncClient, db_session: Any) -> None:
     await signed_in(api_client)
     stolen = api_client.cookies.get(COOKIE)
     await api_client.post("/api/v1/auth/refresh")
+    await age_rotations(db_session)
 
     response = await post_with_cookie(api_client, "/api/v1/auth/refresh", stolen)
 
@@ -190,6 +202,7 @@ async def test_reuse_revokes_the_whole_chain(api_client: AsyncClient, db_session
     await signed_in(api_client)
     stolen = api_client.cookies.get(COOKIE)
     await api_client.post("/api/v1/auth/refresh")
+    await age_rotations(db_session)
 
     await post_with_cookie(api_client, "/api/v1/auth/refresh", stolen)
 
@@ -199,11 +212,12 @@ async def test_reuse_revokes_the_whole_chain(api_client: AsyncClient, db_session
     assert live == 0
 
 
-async def test_the_legitimate_session_dies_too(api_client: AsyncClient) -> None:
+async def test_the_legitimate_session_dies_too(api_client: AsyncClient, db_session: Any) -> None:
     """The cost of the policy, and it is the right cost."""
     await signed_in(api_client)
     stolen = api_client.cookies.get(COOKIE)
     await api_client.post("/api/v1/auth/refresh")
+    await age_rotations(db_session)
 
     await post_with_cookie(api_client, "/api/v1/auth/refresh", stolen)
 
@@ -215,6 +229,7 @@ async def test_reuse_is_audited(api_client: AsyncClient, db_session: Any) -> Non
     await signed_in(api_client)
     stolen = api_client.cookies.get(COOKIE)
     await api_client.post("/api/v1/auth/refresh")
+    await age_rotations(db_session)
 
     await post_with_cookie(api_client, "/api/v1/auth/refresh", stolen)
 
@@ -228,6 +243,41 @@ async def test_reuse_is_audited(api_client: AsyncClient, db_session: Any) -> Non
     assert "sessions_revoked" in rows[0]
     # session_id, not token_id: the redaction rule would have masked the latter.
     assert "[REDACTED]" not in rows[0]
+
+
+async def test_a_racing_refresh_is_tolerated_and_keeps_the_session(
+    api_client: AsyncClient, db_session: Any
+) -> None:
+    """Two tabs refresh with one cookie at once. The loser must not log anyone out."""
+    await signed_in(api_client)
+    first_cookie = api_client.cookies.get(COOKIE)
+    winner = await api_client.post("/api/v1/auth/refresh")
+    assert winner.status_code == 200
+
+    loser = await post_with_cookie(api_client, "/api/v1/auth/refresh", first_cookie)
+
+    assert loser.status_code == 200
+    assert loser.json()["accessToken"]
+    # No second rotation, and no theft alarm: one live session, no reuse audit.
+    assert "set-cookie" not in loser.headers
+    reuse_events = await db_session.scalar(
+        text("SELECT count(*) FROM audit_events WHERE action = 'TOKEN_REUSE_DETECTED'")
+    )
+    assert reuse_events == 0
+    live = await db_session.scalar(
+        text("SELECT count(*) FROM refresh_tokens WHERE revoked_at IS NULL")
+    )
+    assert live == 1
+
+
+async def test_a_logged_out_token_is_never_forgiven(api_client: AsyncClient) -> None:
+    await signed_in(api_client)
+    cookie = api_client.cookies.get(COOKIE)
+    await api_client.post("/api/v1/auth/logout")
+
+    response = await post_with_cookie(api_client, "/api/v1/auth/refresh", cookie)
+
+    assert response.status_code == 401
 
 
 # ------------------------------------------------------------------ logout

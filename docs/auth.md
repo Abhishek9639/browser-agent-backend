@@ -127,7 +127,9 @@ sequenceDiagram
 
 Rotation is **single-use**: every refresh invalidates the token that was presented and issues a new one. That turns a stolen cookie from a seven day pass into a race, and `replaced_by_id` records the chain so the race is detectable.
 
-If a revoked token is presented again, **every session for that user is revoked**. Two parties hold one cookie and there is no way to tell which is the thief, so both are cut off and the real user logs in again. The legitimate session dying is the cost, and it is the right cost: the alternative leaves an attacker with a live session.
+**Race tolerance.** Two requests from one browser can refresh at the same instant: two tabs, or a page that mounts twice in development. The loser presents a token the winner just rotated. A token rotated within `REFRESH_REUSE_GRACE_SECONDS` (default 10) is therefore answered with a fresh access token and no new cookie, because the winner's rotated cookie is already on its way. This does not apply to a token revoked by logout, to one older than the window, or when the user has no live session. The trade-off: a cookie replayed within the window gets one 15 minute access token but can never mint another refresh token. Set it to 0 to disable.
+
+If a revoked token is presented again outside that window, **every session for that user is revoked**. Two parties hold one cookie and there is no way to tell which is the thief, so both are cut off and the real user logs in again. The legitimate session dying is the cost, and it is the right cost: the alternative leaves an attacker with a live session.
 
 **Why the 401 does not discard the revocation.** The chain revocation is written in the request's own transaction, because the rows it touches are that transaction's state and a second connection cannot see them. An exception escaping the route would roll it back at exactly the wrong moment, so the route catches `RefreshTokenReuse` and *returns* the 401 instead of raising it. The request finishes normally, and the revocation commits with it.
 

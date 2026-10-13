@@ -117,6 +117,11 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_TTL_MIN: int = 15  # spec section 2
     REFRESH_TOKEN_TTL_DAYS: int = 7  # spec section 2
     JWT_REFRESH_COOKIE_NAME: str = "refresh_token"
+    # A just-rotated refresh token presented again within this many seconds is
+    # a client race (two tabs, a double mount), not a theft: it gets an access
+    # token but no new refresh cookie, and the session chain survives. 0 turns
+    # the tolerance off and every reuse destroys the chain.
+    REFRESH_REUSE_GRACE_SECONDS: int = Field(default=10, ge=0)
 
     # ---------------------------------------------------------------- llm (B23, B24)
     LLM_PROVIDER: str = "mock"

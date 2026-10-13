@@ -4,6 +4,20 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B34 - Tolerate a racing refresh
+
+Added
+
+- `REFRESH_REUSE_GRACE_SECONDS` (default 10, 0 disables). A refresh token rotated within this window and presented again gets an access token but no new refresh cookie, and the session chain survives. Previously two tabs (or a double mount) refreshing at once made the loser look like a thief, and every session for the user was revoked.
+
+Unchanged
+
+- A token revoked by logout, or presented after the window, or when the user has no live session, still destroys the chain and is audited as `TOKEN_REUSE_DETECTED`.
+
+Tests
+
+- The four existing replay tests now age the rotation past the window first; new tests cover a tolerated race and a logged-out token never being forgiven.
+
 ### B33 - Groq provider and fast rate-limit fallback
 
 Added
