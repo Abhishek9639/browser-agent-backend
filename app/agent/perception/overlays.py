@@ -36,6 +36,8 @@ CLOSE_LABELS: Final[tuple[str, ...]] = (
     "✕",
     "x",
     "got it",
+    # A language gate in front of the whole site: English is the safe reading.
+    "english",
 )
 
 _ICON_TAGS: Final = frozenset({"i", "button", "span", "a", "svg", "img"})
@@ -97,9 +99,12 @@ def safe_closers(state: PageState) -> list[ElementInfo]:
     for element in state.elements:
         if element.tag not in {"button", "a"} or not _usable(element):
             continue
-        label = _label(element)
-        if label in CLOSE_LABELS:
-            labelled.append((CLOSE_LABELS.index(label), element))
+        # Some pages give a control a long or garbled accessible name and keep
+        # the words a person reads in its text, so either may carry the label.
+        for label in (element.name.strip().casefold(), element.text.strip().casefold()):
+            if label in CLOSE_LABELS:
+                labelled.append((CLOSE_LABELS.index(label), element))
+                break
     labelled.sort(key=lambda pair: pair[0])
 
     return [element for _, element in labelled] + icon_closers(state)

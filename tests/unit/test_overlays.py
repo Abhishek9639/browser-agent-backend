@@ -85,3 +85,20 @@ def test_nothing_is_offered_when_the_page_is_not_blocked() -> None:
     close = el(5, tag="button", name="Close", x=500, y=600)
 
     assert safe_closers(state(close)) == []
+
+
+def test_a_language_gate_is_dismissed_by_choosing_english() -> None:
+    english = el(0, tag="button", name="Confirmation. SafeValue must use binding", x=574, y=566)
+    english = english.model_copy(update={"text": "English"})
+
+    closers = safe_closers(state(*covered_page(), english))
+
+    assert [e.index for e in closers] == [0]
+
+
+def test_a_control_matches_on_its_text_when_its_name_is_garbled() -> None:
+    garbled = el(3, tag="button", name="x1 y2 internal", x=0, y=0).model_copy(
+        update={"text": "No thanks"}
+    )
+
+    assert [e.index for e in safe_closers(state(*covered_page(), garbled))] == [3]

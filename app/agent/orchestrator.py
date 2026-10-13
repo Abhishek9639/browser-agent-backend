@@ -59,7 +59,7 @@ from app.agent.contracts import (
 )
 from app.agent.llm.base import LLMRateLimited, LLMTimeout, LLMUnavailable
 from app.agent.perception.dom_extractor import MASK, ElementInfo
-from app.agent.perception.overlays import safe_closers
+from app.agent.perception.overlays import is_blocked, safe_closers
 from app.agent.perception.state import PageState
 from app.agent.planner.planner import (
     Planner,
@@ -810,10 +810,19 @@ class Orchestrator:
         a click that does not clear the popup stops the attempts rather than
         looping.
         """
-        for _ in range(MAX_OVERLAY_CLEARS):
+        for attempt in range(MAX_OVERLAY_CLEARS):
             closers = safe_closers(state)
             selector = selector_for(closers[0]) if closers else None
             if selector is None:
+                if attempt == 0 and is_blocked(state):
+                    # Something covers the page and nothing on it says "close".
+                    # Escape closes a well-built dialog and does nothing to a
+                    # page without one, so it is safe to try once.
+                    await self._browser.press("Escape")
+                    await self._browser.settle()
+                    after_escape = await self._browser.perceive()
+                    logger.info("overlay_escape", cleared=not is_blocked(after_escape))
+                    return after_escape
                 return state
             result = await self._browser.execute(ClickAction(selector=selector))
             logger.info("overlay_dismissed", ok=result.ok, label=closers[0].name[:40])

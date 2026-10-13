@@ -573,3 +573,50 @@ def test_naming_only_a_kind_of_control_matches_any_visible_one() -> None:
 
     assert _find(state, "input") is field
     assert _find(PageState(url="https://x.test/", elements=[]), "input") is None
+
+
+# ------------------------------------------------------------------ weak expectations
+
+
+def _click(target: str, outcome_type: str, value: str) -> Any:
+    from app.agent.planner.schema import Decision
+
+    return Decision.model_validate(
+        {
+            "action": "click",
+            "targetIndex": 0,
+            "target": target,
+            "expectedOutcome": {"type": outcome_type, "value": value},
+        }
+    )
+
+
+def test_a_fragment_of_the_goal_is_not_held_against_the_page() -> None:
+    from app.agent.verification.verifier import DeterministicVerifier
+    from app.domain.enums import VerificationMethod
+
+    expectation = DeterministicVerifier()._expectation(_click("Next", "element_visible", "7"))
+
+    assert expectation.type is VerificationMethod.DOM_CHANGED
+
+
+def test_closing_a_popup_is_verified_by_the_page_changing() -> None:
+    from app.agent.verification.verifier import DeterministicVerifier
+    from app.domain.enums import VerificationMethod
+
+    expectation = DeterministicVerifier()._expectation(
+        _click("close confirmation modal", "text_present", "Mathura to Delhi")
+    )
+
+    assert expectation.type is VerificationMethod.DOM_CHANGED
+
+
+def test_a_real_expectation_is_left_alone() -> None:
+    from app.agent.verification.verifier import DeterministicVerifier
+    from app.domain.enums import VerificationMethod
+
+    expectation = DeterministicVerifier()._expectation(
+        _click("Search flights", "url_contains", "/results")
+    )
+
+    assert expectation.type is VerificationMethod.URL_CONTAINS

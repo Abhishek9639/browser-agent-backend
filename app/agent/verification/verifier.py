@@ -144,6 +144,15 @@ class DeterministicVerifier:
 
         if check in NEEDS_VALUE and not declared.value.strip():
             return self._default_for(decision)
+        if check in {Check.ELEMENT_VISIBLE, Check.TEXT_PRESENT} and _is_throwaway(declared.value):
+            # "7", "x": a fragment of the goal, not something a page can be
+            # held to. Checking it fails a step that worked.
+            return self._default_for(decision)
+        if decision.action is ActionType.CLICK and _is_dismissal(decision):
+            # Closing a popup has one observable effect: the page changed. What
+            # the planner expects to see afterwards is a guess about the page
+            # underneath, which it has not seen yet.
+            return ExpectedOutcome(type=VerificationMethod.DOM_CHANGED, value="")
         return declared
 
     def _default_for(self, decision: Decision) -> ExpectedOutcome:
@@ -495,6 +504,28 @@ _KIND_TAGS: Final = {
     "button": frozenset({"button"}),
     "link": frozenset({"a"}),
 }
+
+
+_DISMISSAL: Final = re.compile(
+    r"\b(close|dismiss|not now|no thanks|maybe later|skip)\b|[×✕]|\b(modal|popup|pop-up|dialog)\b",  # noqa: RUF001
+    re.IGNORECASE,
+)
+
+
+def _is_dismissal(decision: Decision) -> bool:
+    """Is this click meant to close a popup, going by what the planner called it?"""
+    return bool(_DISMISSAL.search(decision.target or ""))
+
+
+def _is_throwaway(value: str) -> bool:
+    """Too short to be a real thing to look for (fewer than three letters or digits)."""
+    return (
+        len(_WORDS_ALNUM.findall(value)) == 0
+        or sum(len(w) for w in _WORDS_ALNUM.findall(value)) < 3
+    )
+
+
+_WORDS_ALNUM: Final = re.compile(r"[A-Za-z0-9]+")
 
 
 def _find(state: PageState, wanted: str) -> ElementInfo | None:

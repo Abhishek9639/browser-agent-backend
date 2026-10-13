@@ -4,6 +4,13 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B40 - Language gates, popup verification
+
+Changed
+
+- A step is no longer failed for an expectation that is not meaningful: an `element_visible` or `text_present` value with fewer than three letters or digits ("7", from a date in the goal) falls back to the action's default check, and a click whose target is a popup closer is verified by the page changing rather than by a guess about the page underneath. A real run had marked a working "close confirmation modal" click as failed this way.
+- The popup closer also matches on a control's text when its accessible name is garbled, accepts "English" so a language gate in front of a site is passed, and presses Escape once when a popup blocks the page but nothing on it says "close".
+
 ### B39 - Plan preview
 
 Added
