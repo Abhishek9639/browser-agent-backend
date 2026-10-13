@@ -14,7 +14,7 @@ from typing import Final
 from pydantic import SecretStr
 
 from app.agent.llm.anthropic import AnthropicLLM
-from app.agent.llm.base import FallbackLLM, LLMClient, RetryingLLM
+from app.agent.llm.base import FallbackLLM, LLMClient, PacedLLM, RequestPacer, RetryingLLM
 from app.agent.llm.gemini import GeminiLLM
 from app.agent.llm.groq import GroqLLM
 from app.agent.llm.mock import MockLLM
@@ -104,6 +104,28 @@ _BUILDERS: Final[dict[str, Callable[[Settings], LLMClient]]] = {
 }
 
 
+# One pacer per provider and interval, shared by every client built for it.
+_PACERS: dict[tuple[str, float], RequestPacer] = {}
+
+
+def _requests_per_minute(name: str, settings: Settings) -> int:
+    return {
+        "gemini": settings.GEMINI_REQUESTS_PER_MINUTE,
+        "groq": settings.GROQ_REQUESTS_PER_MINUTE,
+    }.get(name, 0)
+
+
+def _paced(name: str, client: LLMClient, settings: Settings) -> LLMClient:
+    rpm = _requests_per_minute(name, settings)
+    if rpm <= 0:
+        return client
+    # A little over 60/rpm: the provider counts in a sliding window, so landing
+    # exactly on the boundary still trips it now and then.
+    interval = round(60.0 / rpm + 0.5, 2)
+    pacer = _PACERS.setdefault((name, interval), RequestPacer(interval))
+    return PacedLLM(client, pacer)
+
+
 def _build_bare(name: str, settings: Settings) -> LLMClient:
     """One client, no retry or fallback wrapping."""
     normalised = name.strip().lower()
@@ -113,7 +135,7 @@ def _build_bare(name: str, settings: Settings) -> LLMClient:
             f"{name!r} is not a known LLM provider. Choose one of: {', '.join(KNOWN_PROVIDERS)}."
         )
 
-    return _BUILDERS[normalised](settings)
+    return _paced(normalised, _BUILDERS[normalised](settings), settings)
 
 
 def build_llm(settings: Settings, *, provider: str | None = None) -> LLMClient:

@@ -514,10 +514,20 @@ def _find(state: PageState, wanted: str) -> ElementInfo | None:
     # word. "search results" still does not match a lone "Search" button.
     all_words = _WORDS.findall(needle)
     wanted_words = [w for w in all_words if w not in _KIND_WORDS and w not in _STOP_WORDS]
-    if not wanted_words:
-        return None
     # "search input field" must be an input, not the "Search" button next to it.
     kinds = [_KIND_TAGS[w] for w in all_words if w in _KIND_TAGS]
+    if not wanted_words:
+        # Only a kind was named ("input"): any visible control of that kind counts.
+        if not kinds:
+            return None
+        return next(
+            (
+                e
+                for e in state.elements
+                if any(e.tag in tags for tags in kinds) and e.in_viewport and not e.covered
+            ),
+            None,
+        )
     for element in state.elements:
         if kinds and not any(element.tag in tags for tags in kinds):
             continue

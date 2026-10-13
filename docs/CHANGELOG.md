@@ -4,6 +4,16 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B38 - Free-tier quotas, request pacing and model rotation
+
+Added
+
+- `GEMINI_FALLBACK_MODELS` (default `gemini-3-flash-preview,gemini-3.1-flash-lite,gemini-3.5-flash-lite`): when a Gemini model is used up or not available to the account, the next answers, and a used-up model is skipped until its quota returns. Found because the free tier allows only 20 requests a day per model, and a new account gets a 404 on `gemini-2.5-flash`.
+- `GEMINI_REQUESTS_PER_MINUTE` and `GROQ_REQUESTS_PER_MINUTE` (default 0, off): requests are spaced so a per-minute limit is never hit, sharing one pacer per provider.
+- When the fallback is also rate limited and the primary asked for 30 seconds or less, the primary is waited for once.
+- Gemini network failures (a failed DNS lookup, a dropped connection) count as "provider unreachable", so they retry and fall back instead of ending the task. A 429 keeps the wait Google asks for.
+- Grounding may no longer move a `type` onto an unnamed or covered input that the planner was already refused for.
+
 ### B37 - Popups, unnamed inputs and rate limits
 
 Added

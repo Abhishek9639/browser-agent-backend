@@ -127,6 +127,14 @@ class Settings(BaseSettings):
     LLM_PROVIDER: str = "mock"
     # Used when the primary provider is unreachable. Blank disables it.
     LLM_FALLBACK_PROVIDER: str | None = None
+    # Requests per minute the provider's plan allows; 0 means do not pace. Free
+    # tiers are tight (Gemini's is 5), and pacing is cheaper than a 429.
+    GEMINI_REQUESTS_PER_MINUTE: int = Field(default=0, ge=0)
+    GROQ_REQUESTS_PER_MINUTE: int = Field(default=0, ge=0)
+    # Tried in order when LLM_MODEL is used up or unavailable. Comma separated.
+    GEMINI_FALLBACK_MODELS: str = (
+        "gemini-3-flash-preview,gemini-3.1-flash-lite,gemini-3.5-flash-lite"
+    )
     # Optional. Left unset, each provider picks its own sensible default, so
     # switching LLM_PROVIDER does not also require knowing that vendor's model
     # names. Set it to pin a specific model.

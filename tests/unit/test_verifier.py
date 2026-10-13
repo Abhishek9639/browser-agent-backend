@@ -539,7 +539,6 @@ def test_every_meaningful_word_must_match() -> None:
     state = PageState(url="https://x.test/", elements=[_named(3, "Search")])
 
     assert _find(state, "search results") is None
-    assert _find(state, "input field") is None
 
 
 def test_an_input_description_does_not_match_a_button() -> None:
@@ -564,3 +563,13 @@ def test_a_described_input_matches_when_half_the_meaningful_words_do() -> None:
     state = PageState(url="https://x.test/", elements=[field])
 
     assert _find(state, "Search input field for internships") is field
+
+
+def test_naming_only_a_kind_of_control_matches_any_visible_one() -> None:
+    from app.agent.verification.verifier import _find
+
+    field = _named(88, "Search here...")
+    state = PageState(url="https://x.test/", elements=[field])
+
+    assert _find(state, "input") is field
+    assert _find(PageState(url="https://x.test/", elements=[]), "input") is None

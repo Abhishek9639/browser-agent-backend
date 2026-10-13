@@ -477,3 +477,78 @@ async def test_live_text_round_trip() -> None:
 
     assert "colour" in response.parsed
     assert response.usage.input_tokens > 0
+
+
+async def test_gemini_network_failures_are_unavailable_not_internal_errors() -> None:
+    import httpx
+
+    from app.agent.llm.base import LLMUnavailable
+
+    client = GeminiLLM(
+        settings_with(), client=FakeGemini(raises=httpx.ConnectError("getaddrinfo failed"))
+    )
+
+    with pytest.raises(LLMUnavailable):
+        await client.generate_json("s", [user("go")], SCHEMA)
+
+
+async def test_gemini_rate_limit_keeps_the_wait_it_asks_for() -> None:
+    from google.genai import errors as genai_errors
+
+    from app.agent.llm.base import LLMRateLimited
+
+    error = genai_errors.ClientError(
+        429,
+        {
+            "error": {
+                "code": 429,
+                "message": "Quota exceeded. Please retry in 9.16s.",
+                "status": "RESOURCE_EXHAUSTED",
+            }
+        },
+    )
+    client = GeminiLLM(settings_with(), client=FakeGemini(raises=error))
+
+    with pytest.raises(LLMRateLimited) as caught:
+        await client.generate_json("s", [user("go")], SCHEMA)
+
+    assert caught.value.retry_after_s == pytest.approx(9.16)
+
+
+async def test_gemini_moves_to_the_next_model_when_one_is_used_up() -> None:
+    from google.genai import errors as genai_errors
+
+    daily = genai_errors.ClientError(
+        429,
+        {
+            "error": {
+                "code": 429,
+                "message": "Quota exceeded. Please retry in 47870s.",
+                "status": "RESOURCE_EXHAUSTED",
+            }
+        },
+    )
+    seen: list[str] = []
+
+    class Picky(FakeGemini):
+        def __init__(self) -> None:
+            super().__init__()
+            original = self.aio.models.generate_content
+
+            async def generate_content(**kwargs: Any) -> Any:
+                seen.append(kwargs["model"])
+                if kwargs["model"] == "test-model":
+                    raise daily
+                return await original(**kwargs)
+
+            self.aio.models.generate_content = generate_content
+
+    client = GeminiLLM(settings_with(GEMINI_FALLBACK_MODELS="second-model"), client=Picky())
+
+    first = await client.generate_json("s", [user("go")], SCHEMA)
+    second = await client.generate_json("s", [user("go")], SCHEMA)
+
+    assert first.model_name == "second-model"
+    # The used-up model is remembered, so the second call does not retry it.
+    assert seen == ["test-model", "second-model", "second-model"]
+    assert second.model_name == "second-model"

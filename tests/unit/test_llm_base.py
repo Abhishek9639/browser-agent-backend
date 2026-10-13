@@ -234,3 +234,42 @@ async def test_fallback_does_not_mask_a_bad_answer() -> None:
         await call(client)
 
     assert secondary.call_count == 0
+
+
+# ------------------------------------------------------------------ pacing
+
+
+async def test_the_pacer_spaces_calls_by_the_interval() -> None:
+    from app.agent.llm.base import RequestPacer
+
+    now = [0.0]
+    slept: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        slept.append(seconds)
+        now[0] += seconds
+
+    pacer = RequestPacer(12.0, clock=lambda: now[0], sleep=sleep)
+
+    for _ in range(3):
+        await pacer.wait_turn()
+
+    # The first call goes straight through; each later one waits for its turn.
+    assert slept == [12.0, 12.0]
+
+
+async def test_a_call_after_a_long_gap_does_not_wait() -> None:
+    from app.agent.llm.base import RequestPacer
+
+    now = [0.0]
+    slept: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    pacer = RequestPacer(12.0, clock=lambda: now[0], sleep=sleep)
+    await pacer.wait_turn()
+    now[0] = 100.0
+    await pacer.wait_turn()
+
+    assert slept == []

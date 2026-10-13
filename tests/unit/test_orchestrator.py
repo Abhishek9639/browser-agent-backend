@@ -1299,3 +1299,32 @@ def test_login_wall_detection_is_deterministic() -> None:
     assert _login_wall(login_path, "find internships")
     # A goal that is itself about credentials is left alone.
     assert not _login_wall(password, "log in with my password")
+
+
+async def test_grounding_cannot_move_a_type_onto_an_unnamed_input(settings: Settings) -> None:
+    """The planner chose the named box; grounding must not swap in the unnamed one."""
+    named = element(0, name="Search here")
+    unnamed = element(1, name="")
+
+    class MoveToUnnamed:
+        async def ground(self, decision: Decision, state: PageState, **kwargs: Any) -> Any:
+            return None
+
+    rig = build(
+        script=[
+            decision_payload(
+                targetIndex=0,
+                value="Full Stack",
+                expectedOutcome={"type": "value_equals", "value": "Full Stack"},
+            ),
+            done_payload(),
+        ],
+        settings=settings,
+        browser=FakeBrowser(page(named, unnamed)),
+    )
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.COMPLETED
+    first = rig.browser.executed[0]
+    assert "0" in first.selector or first.selector

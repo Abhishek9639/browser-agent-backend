@@ -5,10 +5,12 @@ to our schema directly rather than through a Pydantic conversion. Shapes were
 checked against the current SDK and documentation rather than recalled.
 """
 
+import re
 import time
 from collections.abc import Sequence
 from typing import Any, Final
 
+import httpx
 from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types as genai_types
@@ -38,6 +40,9 @@ PROVIDER: Final = "gemini"
 # Used when LLM_MODEL is unset. A flash model: the fast, inexpensive tier.
 DEFAULT_MODEL: Final = "gemini-3.6-flash"
 TOO_MANY_REQUESTS: Final = 429
+NOT_FOUND: Final = 404
+DEFAULT_EXHAUSTED_S: Final = 60.0
+MAX_EXHAUSTED_S: Final = 3600.0
 SERVER_ERROR: Final = 500
 
 
@@ -47,6 +52,18 @@ class GeminiLLM:
     def __init__(self, settings: Settings, *, client: Any | None = None) -> None:
         key = settings.GOOGLE_API_KEY
         self._model = settings.LLM_MODEL or DEFAULT_MODEL
+        # Free-tier quotas are per model (some as low as 20 requests a day), so
+        # when one is used up, or unavailable to this account, the next answers.
+        self._models = [
+            self._model,
+            *[
+                m.strip()
+                for m in settings.GEMINI_FALLBACK_MODELS.split(",")
+                if m.strip() and m.strip() != self._model
+            ],
+        ]
+        self._exhausted_until: dict[str, float] = {}
+        self._last_model = self._model
         self._client: Any = client or genai.Client(
             api_key=key.get_secret_value() if key else None,
         )
@@ -57,7 +74,7 @@ class GeminiLLM:
 
     @property
     def model_name(self) -> str:
-        return self._model
+        return self._last_model
 
     def _contents_for(self, turns: Sequence[LLMMessage]) -> list[Any]:
         """Flatten to the parts list the SDK takes.
@@ -95,14 +112,37 @@ class GeminiLLM:
         )
 
         started = time.perf_counter()
-        try:
-            response = await self._client.aio.models.generate_content(
-                model=self._model,
-                contents=self._contents_for(turns),
-                config=config,
-            )
-        except Exception as exc:
-            raise _translate(exc) from exc
+        now = time.monotonic()
+        # Skip models known to be used up, but never end up with nothing to try.
+        candidates = [m for m in self._models if self._exhausted_until.get(m, 0.0) <= now]
+        candidates = candidates or self._models[:1]
+
+        response: Any = None
+        model = candidates[0]
+        for position, model in enumerate(candidates):
+            try:
+                response = await self._client.aio.models.generate_content(
+                    model=model,
+                    contents=self._contents_for(turns),
+                    config=config,
+                )
+                break
+            except Exception as exc:
+                translated = _translate(exc)
+                limited = isinstance(translated, LLMRateLimited)
+                missing = getattr(exc, "code", None) == NOT_FOUND
+                if isinstance(translated, LLMRateLimited):
+                    wait = translated.retry_after_s or DEFAULT_EXHAUSTED_S
+                    self._exhausted_until[model] = time.monotonic() + min(wait, MAX_EXHAUSTED_S)
+                elif missing:
+                    self._exhausted_until[model] = time.monotonic() + MAX_EXHAUSTED_S
+                if (limited or missing) and position < len(candidates) - 1:
+                    logger.warning(
+                        "gemini_model_unavailable", model=model, next=candidates[position + 1]
+                    )
+                    continue
+                raise translated from exc
+        self._last_model = model
 
         text = getattr(response, "text", "") or ""
         metadata = getattr(response, "usage_metadata", None)
@@ -113,7 +153,7 @@ class GeminiLLM:
         logger.info(
             "llm_call",
             provider=PROVIDER,
-            model=self._model,
+            model=model,
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
             images=sum(len(turn.images) for turn in turns),
@@ -124,19 +164,32 @@ class GeminiLLM:
             raw_text=text,
             usage=usage,
             latency_ms=elapsed_ms(started),
-            model_name=self._model,
+            model_name=model,
             provider=PROVIDER,
         )
 
 
+_RETRY_IN: Final = re.compile(r"retry in ([0-9]+(?:\.[0-9]+)?)s", re.IGNORECASE)
+
+
+def _retry_in(exc: Exception) -> float | None:
+    """The wait Gemini asks for, from "Please retry in 9.1s" in its message."""
+    match = _RETRY_IN.search(str(exc))
+    return float(match.group(1)) if match else None
+
+
 def _translate(exc: Exception) -> Exception:
     """Gemini reports everything as APIError with a status code."""
-    if isinstance(exc, TimeoutError):
+    if isinstance(exc, TimeoutError | httpx.TimeoutException):
         return LLMTimeout("Gemini timed out.")
+    if isinstance(exc, httpx.TransportError):
+        # A dropped connection or a failed DNS lookup: the provider was never
+        # reached, which is exactly what retry and fallback are for.
+        return LLMUnavailable("Could not reach Gemini.")
     if isinstance(exc, genai_errors.APIError):
         code = getattr(exc, "code", None) or 0
         if code == TOO_MANY_REQUESTS:
-            return LLMRateLimited("Gemini rate limit.")
+            return LLMRateLimited("Gemini rate limit.", retry_after_s=_retry_in(exc))
         if code >= SERVER_ERROR:
             return LLMUnavailable(f"Gemini returned {code}.")
         if code:

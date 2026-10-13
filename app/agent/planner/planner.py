@@ -85,7 +85,7 @@ MAX_ATTEMPTS: Final = 2
 _TEXT_INPUT_TYPES = {None, "text", "search", "email", "tel", "url"}
 
 
-def _covered_input_problem(decision: Decision, page_state: PageState) -> str | None:
+def input_target_problem(decision: Decision, page_state: PageState) -> str | None:
     """Refuse typing into a hidden or unnamed field when a proper one exists.
 
     Widgets such as dropdown pickers keep an unnamed search box under the
@@ -344,7 +344,7 @@ class Planner:
                 f"Available indices: {shown}. Choose one of those, or scroll first."
             )
 
-        return _covered_input_problem(decision, page_state)
+        return input_target_problem(decision, page_state)
 
     @staticmethod
     def _repair_turn(problem: str) -> LLMMessage:

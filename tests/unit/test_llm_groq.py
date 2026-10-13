@@ -277,3 +277,60 @@ async def test_the_output_allowance_is_capped_for_groq() -> None:
     await client.generate_json("s", [user("go")], SCHEMA)
 
     assert fake.kwargs["max_tokens"] == 1024
+
+
+async def test_when_both_are_limited_a_short_primary_wait_is_honoured() -> None:
+    waits: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        waits.append(seconds)
+
+    class Primary:
+        provider = "gemini"
+        model_name = "m"
+        calls = 0
+
+        async def generate_json(self, *args: Any, **kwargs: Any) -> Any:
+            type(self).calls += 1
+            if type(self).calls == 1:
+                raise LLMRateLimited("quota", retry_after_s=9.0)
+            return await GroqLLM(Settings(), client=FakeGroq()).generate_json(
+                "s", [user("go")], SCHEMA
+            )
+
+    class Limited:
+        provider = "groq"
+        model_name = "g"
+
+        async def generate_json(self, *args: Any, **kwargs: Any) -> Any:
+            raise LLMRateLimited("tokens per minute")
+
+    Primary.calls = 0
+    client = FallbackLLM(Primary(), Limited(), sleep=sleep)
+
+    result = await client.generate_json("s", [user("go")], SCHEMA)
+
+    assert result.provider == "groq"  # the stand-in primary answered through FakeGroq
+    assert Primary.calls == 2
+    assert waits == [9.5]
+
+
+async def test_a_long_primary_wait_is_not_waited_for() -> None:
+    class Primary:
+        provider = "gemini"
+        model_name = "m"
+
+        async def generate_json(self, *args: Any, **kwargs: Any) -> Any:
+            raise LLMRateLimited("daily", retry_after_s=600.0)
+
+    class Limited:
+        provider = "groq"
+        model_name = "g"
+
+        async def generate_json(self, *args: Any, **kwargs: Any) -> Any:
+            raise LLMRateLimited("tokens per minute")
+
+    client = FallbackLLM(Primary(), Limited())
+
+    with pytest.raises(LLMRateLimited):
+        await client.generate_json("s", [user("go")], SCHEMA)

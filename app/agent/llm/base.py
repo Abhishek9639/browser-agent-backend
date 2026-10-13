@@ -301,6 +301,75 @@ class RetryingLLM:
 
 DEFAULT_RATE_LIMIT_COOLDOWN_S: Final = 60.0
 MAX_RATE_LIMIT_COOLDOWN_S: Final = 300.0
+# A primary that needs no more than this is worth waiting for once the fallback is also limited.
+SHORT_WAIT_S: Final = 30.0
+
+
+class RequestPacer:
+    """Spaces requests so a provider's requests-per-minute limit is never hit.
+
+    Failing over after a 429 costs a failed call and lands on a provider with
+    limits of its own. Waiting a few seconds for a turn costs only the wait.
+    One pacer is shared by every client of a provider, because the limit is the
+    account's, not the client's.
+    """
+
+    def __init__(
+        self,
+        min_interval_s: float,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
+        self._interval = min_interval_s
+        self._clock = clock
+        self._sleep = sleep
+        self._next_at = 0.0
+        self._lock: asyncio.Lock | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    def _lock_for_this_loop(self) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        if self._lock is None or self._loop is not loop:
+            self._lock, self._loop = asyncio.Lock(), loop
+        return self._lock
+
+    async def wait_turn(self) -> None:
+        async with self._lock_for_this_loop():
+            wait = self._next_at - self._clock()
+            if wait > 0:
+                await self._sleep(wait)
+            self._next_at = max(self._clock(), self._next_at) + self._interval
+
+
+class PacedLLM:
+    """A client that takes its turn on a :class:`RequestPacer` before each call."""
+
+    def __init__(self, inner: LLMClient, pacer: RequestPacer) -> None:
+        self._inner = inner
+        self._pacer = pacer
+
+    @property
+    def provider(self) -> str:
+        return self._inner.provider
+
+    @property
+    def model_name(self) -> str:
+        return self._inner.model_name
+
+    async def generate_json(
+        self,
+        system: str,
+        messages: Sequence[LLMMessage],
+        json_schema: dict[str, Any],
+        *,
+        images: Sequence[bytes] | None = None,
+        timeout_s: float = DEFAULT_TIMEOUT_S,
+    ) -> LLMResponse:
+        await self._pacer.wait_turn()
+        return await self._inner.generate_json(
+            system, messages, json_schema, images=images, timeout_s=timeout_s
+        )
 
 
 class FallbackLLM:
@@ -319,9 +388,11 @@ class FallbackLLM:
         *,
         rate_limit_cooldown_s: float = DEFAULT_RATE_LIMIT_COOLDOWN_S,
         clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self._primary = primary
         self._fallback = fallback
+        self._sleep = sleep
         self._cooldown_s = rate_limit_cooldown_s
         self._clock = clock
         # While the primary is known to be rate limited, go straight to the
@@ -368,9 +439,22 @@ class FallbackLLM:
                 fallback=self._fallback.provider,
                 error_type=type(error).__name__,
             )
-            return await self._fallback.generate_json(
-                system, messages, json_schema, images=images, timeout_s=timeout_s
-            )
+            try:
+                return await self._fallback.generate_json(
+                    system, messages, json_schema, images=images, timeout_s=timeout_s
+                )
+            except LLMRateLimited:
+                # Both are limited. If the primary only needs a few seconds,
+                # waiting for it beats failing the task.
+                hint = error.retry_after_s if isinstance(error, LLMRateLimited) else None
+                if not hint or hint > SHORT_WAIT_S:
+                    raise
+                logger.warning("llm_waiting_for_primary", seconds=hint)
+                await self._sleep(hint + 0.5)
+                self._primary_blocked_until = 0.0
+                return await self._primary.generate_json(
+                    system, messages, json_schema, images=images, timeout_s=timeout_s
+                )
 
 
 def merge_images(

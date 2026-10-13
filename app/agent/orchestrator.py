@@ -61,7 +61,13 @@ from app.agent.llm.base import LLMRateLimited, LLMTimeout, LLMUnavailable
 from app.agent.perception.dom_extractor import MASK, ElementInfo
 from app.agent.perception.overlays import safe_closers
 from app.agent.perception.state import PageState
-from app.agent.planner.planner import Planner, PlannerOutputError, PlannerResult, StepSummary
+from app.agent.planner.planner import (
+    Planner,
+    PlannerOutputError,
+    PlannerResult,
+    StepSummary,
+    input_target_problem,
+)
 from app.agent.planner.schema import Decision, ExpectedOutcome
 from app.agent.recovery.runner import RecoveryRunner, failure_sentence
 from app.agent.safety.risk import DeterministicRiskPolicy, RiskAssessment
@@ -419,6 +425,17 @@ class Orchestrator:
             decision = grounded.decision
             if grounded.used_vision:
                 tally.vision_steps += 1
+            if decision.target_index != planned.decision.target_index and input_target_problem(
+                decision, state
+            ):
+                # Grounding moved the target onto an unnamed or covered input
+                # that the planner was already refused for. Keep the planner's.
+                logger.info(
+                    "grounding_override_refused",
+                    planned=planned.decision.target_index,
+                    grounded=decision.target_index,
+                )
+                decision = planned.decision
 
             element = self._resolve_target(decision, state)
             assessment = _assess(self._risk, decision, state)

@@ -404,34 +404,34 @@ def _state_with(*elements: ElementInfo) -> PageState:
 
 
 def test_typing_into_a_covered_box_is_refused_when_a_visible_one_exists() -> None:
-    from app.agent.planner.planner import _covered_input_problem
+    from app.agent.planner.planner import input_target_problem
 
     state = _state_with(_field(11, covered=True), _field(24, covered=False, name="Search"))
 
-    problem = _covered_input_problem(_type_decision(11), state)
+    problem = input_target_problem(_type_decision(11), state)
 
     assert problem is not None
     assert "24" in problem
 
 
 def test_a_covered_box_is_allowed_when_it_is_the_only_input() -> None:
-    from app.agent.planner.planner import _covered_input_problem
+    from app.agent.planner.planner import input_target_problem
 
     state = _state_with(_field(11, covered=True))
 
-    assert _covered_input_problem(_type_decision(11), state) is None
+    assert input_target_problem(_type_decision(11), state) is None
 
 
 def test_a_visible_target_is_never_refused() -> None:
-    from app.agent.planner.planner import _covered_input_problem
+    from app.agent.planner.planner import input_target_problem
 
     state = _state_with(_field(11, covered=True), _field(24, covered=False, name="Search"))
 
-    assert _covered_input_problem(_type_decision(24), state) is None
+    assert input_target_problem(_type_decision(24), state) is None
 
 
 def test_an_unnamed_input_is_refused_when_a_named_one_is_below_the_fold() -> None:
-    from app.agent.planner.planner import _covered_input_problem
+    from app.agent.planner.planner import input_target_problem
 
     unnamed = _field(8, covered=False)
     named = ElementInfo(
@@ -443,7 +443,7 @@ def test_an_unnamed_input_is_refused_when_a_named_one_is_below_the_fold() -> Non
         in_viewport=False,
     )
 
-    problem = _covered_input_problem(_type_decision(8), _state_with(unnamed, named))
+    problem = input_target_problem(_type_decision(8), _state_with(unnamed, named))
 
     assert problem is not None
     assert "21" in problem
