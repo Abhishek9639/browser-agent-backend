@@ -82,6 +82,7 @@ class BrowserConfig:
 
     headless: bool = True
     slow_mo_ms: int = 0
+    channel: str = ""
     cdp_url: str = ""
     viewport_width: int = 1280
     viewport_height: int = 800
@@ -98,6 +99,7 @@ class BrowserConfig:
         return cls(
             headless=settings.AGENT_HEADLESS,
             slow_mo_ms=settings.AGENT_SLOW_MO_MS,
+            channel=settings.AGENT_BROWSER_CHANNEL,
             cdp_url=settings.AGENT_CDP_URL,
             allowed_domains=tuple(settings.AGENT_ALLOWED_DOMAINS),
             action_timeout_ms=settings.BROWSER_ACTION_TIMEOUT_MS,
@@ -273,7 +275,9 @@ class PlaywrightDriver:
                 self._config.cdp_url, slow_mo=self._config.slow_mo_ms
             )
         return await playwright.chromium.launch(
-            headless=self._config.headless, slow_mo=self._config.slow_mo_ms
+            headless=self._config.headless,
+            slow_mo=self._config.slow_mo_ms,
+            channel=self._config.channel or None,
         )
 
     async def close(self) -> None:

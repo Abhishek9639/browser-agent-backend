@@ -155,6 +155,7 @@ class TaskRunner:
             self._browser = await self._playwright.chromium.launch(
                 headless=self._settings.AGENT_HEADLESS,
                 slow_mo=self._settings.AGENT_SLOW_MO_MS,
+                channel=self._settings.AGENT_BROWSER_CHANNEL or None,
             )
         self._started = True
         logger.info("task_runner_started", max_concurrent=self._settings.AGENT_MAX_CONCURRENT_TASKS)

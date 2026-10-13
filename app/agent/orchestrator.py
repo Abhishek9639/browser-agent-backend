@@ -29,7 +29,7 @@ from urllib.parse import urlsplit
 
 from app.agent.browser.action_builder import build_action, selector_for
 from app.agent.browser.driver import ActionResult
-from app.agent.browser.errors import BrowserError
+from app.agent.browser.errors import ActionErrorCode, BrowserError
 from app.agent.browser.screenshots import Screenshot, to_base64
 from app.agent.budget import BudgetExceeded, BudgetReason, TaskBudget
 from app.agent.cache.flow import Locator, ReplayStep, hint_for
@@ -114,6 +114,31 @@ _SAFE_REASONS: Final[tuple[tuple[type[BaseException], str], ...]] = (
     (LLMTimeout, "The model did not answer in time."),
     (LLMUnavailable, "The model provider is unavailable."),
 )
+_NOT_RUN_HINTS: Final[dict[ActionErrorCode, str]] = {
+    ActionErrorCode.NAVIGATION_FAILED: "the page could not be loaded; check the address",
+    ActionErrorCode.TIMEOUT: "the page or element did not respond in time",
+    ActionErrorCode.ELEMENT_NOT_FOUND: "the element was not on the page",
+    ActionErrorCode.NOT_INTERACTABLE: "the element could not be clicked or typed into",
+    ActionErrorCode.TAB_NOT_FOUND: "that tab no longer exists",
+    ActionErrorCode.TAB_LIMIT_REACHED: "too many tabs are open",
+}
+
+
+def _why_not_run(result: ActionResult) -> str:
+    """A sentence for the failure reason: what stopped the action, in plain words.
+
+    The driver already reduces Playwright's message to one line with no page
+    content, so it is safe to show. Without it every failure read the same.
+    """
+    hint = _NOT_RUN_HINTS.get(result.error_code) if result.error_code else None
+    base = "The action did not run"
+    if hint:
+        base = f"{base}: {hint}"
+    if result.error_message:
+        base = f"{base} ({result.error_message})"
+    return f"{base}."
+
+
 _FALLBACK_REASON: Final = "The task stopped after an internal error ({name})."
 
 
@@ -784,6 +809,7 @@ class Orchestrator:
         otherwise moved on, and the next step has to plan against that.
         """
         if not result.ok:
+            why = _why_not_run(result)
             # Nothing happened, so there is nothing to check. Running the
             # verifier anyway invites a lenient check to call a step that never
             # ran a success. Recovery still gets its turn: a click that missed
@@ -798,8 +824,9 @@ class Orchestrator:
                 actual={
                     "reason": "The action did not run.",
                     "errorCode": result.error_code.value if result.error_code else None,
+                    "message": result.error_message,
                 },
-                detail="The action did not run.",
+                detail=why,
             )
         else:
             verdict = await self._verifier.check(decision, before, after, result)

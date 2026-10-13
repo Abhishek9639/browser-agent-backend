@@ -205,6 +205,10 @@ class Settings(BaseSettings):
         ]
     )
     AGENT_HEADLESS: bool = True
+    # Which browser Playwright launches. Empty = its bundled Chromium. "chrome"
+    # or "msedge" = the copy installed on this machine, which looks like a
+    # normal browser to sites and is the one the user sees.
+    AGENT_BROWSER_CHANNEL: str = ""
     # Pause between browser operations, so a visible window is watchable.
     # Opt-in: attach to the user's own Chrome (started with
     # --remote-debugging-port) instead of launching an isolated browser.

@@ -4,6 +4,18 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B35 - Run in installed Chrome, and say why an action failed
+
+Added
+
+- `AGENT_BROWSER_CHANNEL` (default empty = bundled Chromium). `chrome` or `msedge` launches the browser installed on the machine, for both the shared task browser and a standalone driver.
+
+Changed
+
+- A step whose action did not run now reports why, e.g. `The action did not run: the page could not be loaded; check the address (Page.goto: net::ERR_NAME_NOT_RESOLVED at ...)`. Before, every such failure read "The action did not run."
+- Groq default models replaced with ones that exist: `openai/gpt-oss-120b` for text, `qwen/qwen3.8-27b` for images.
+- Planner prompt: guidance not to `wait` when the answer is already on the page. A `wait` that expected the DOM to change failed a finished page.
+
 ### B34 - Tolerate a racing refresh
 
 Added
