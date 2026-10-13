@@ -37,6 +37,7 @@ from app.agent.planner.registry import PromptRegistry
 from app.agent.planner.schema import DECISION_JSON_SCHEMA, Decision
 from app.core import metrics
 from app.core.logging import get_logger
+from app.domain.enums import ActionType
 
 __all__ = [
     "HISTORY_WINDOW",
@@ -79,6 +80,54 @@ def _clip(text: str) -> str:
 
 # One initial attempt plus one repair (spec section 4.5).
 MAX_ATTEMPTS: Final = 2
+
+
+_TEXT_INPUT_TYPES = {None, "text", "search", "email", "tel", "url"}
+
+
+def _covered_input_problem(decision: Decision, page_state: PageState) -> str | None:
+    """Refuse typing into a hidden or unnamed field when a proper one exists.
+
+    Widgets such as dropdown pickers keep an unnamed search box under the
+    control, often marked covered. Typing there either fails or goes nowhere,
+    while the real search box, with a name or a placeholder, sits further down
+    the list or just below the fold.
+    """
+    if decision.action is not ActionType.TYPE or decision.target_index is None:
+        return None
+    target = page_state.element_at(decision.target_index)
+    if target is None:
+        return None
+
+    unnamed = not (target.name or target.placeholder or "").strip()
+    if not (target.covered or unnamed):
+        return None
+
+    alternatives = [
+        e
+        for e in page_state.elements
+        if e.tag in {"input", "textarea"}
+        and e.input_type in _TEXT_INPUT_TYPES
+        and not e.disabled
+        and e.index != target.index
+        and (e.name or e.placeholder or "").strip()
+        and (not e.covered or target.covered is False)
+    ]
+    if not alternatives:
+        return None
+
+    alternatives.sort(key=lambda e: (not e.in_viewport, e.index))
+    shown = ", ".join(
+        f"[{e.index}] {(e.name or e.placeholder or '')[:30]!r}"
+        + ("" if e.in_viewport else " (below the fold: scroll first)")
+        for e in alternatives[:6]
+    )
+    reason = "is covered by something else" if target.covered else "has no name or placeholder"
+    return (
+        f"targetIndex {target.index} {reason}, so typing into it will not work. "
+        f"Named text inputs on the page: {shown}. Pick the one that matches what you "
+        "want to type, or dismiss the overlay first."
+    )
 
 
 class PlannerOutputError(RuntimeError):
@@ -295,7 +344,7 @@ class Planner:
                 f"Available indices: {shown}. Choose one of those, or scroll first."
             )
 
-        return None
+        return _covered_input_problem(decision, page_state)
 
     @staticmethod
     def _repair_turn(problem: str) -> LLMMessage:

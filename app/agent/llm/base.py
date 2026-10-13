@@ -47,6 +47,8 @@ logger = get_logger(__name__)
 DEFAULT_MAX_ATTEMPTS: Final = 3
 DEFAULT_BASE_DELAY_S: Final = 0.5
 DEFAULT_MAX_DELAY_S: Final = 8.0
+# A rate limit asking for longer than this is a quota, not a blip: do not sleep through it.
+DEFAULT_MAX_RETRY_WAIT_S: Final = 90.0
 DEFAULT_TIMEOUT_S: Final = 60.0
 
 
@@ -197,6 +199,7 @@ class RetryingLLM:
         base_delay_s: float = DEFAULT_BASE_DELAY_S,
         max_delay_s: float = DEFAULT_MAX_DELAY_S,
         retry_rate_limits: bool = True,
+        max_retry_wait_s: float = DEFAULT_MAX_RETRY_WAIT_S,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         rng: random.Random | None = None,
     ) -> None:
@@ -207,6 +210,7 @@ class RetryingLLM:
         self._base_delay_s = base_delay_s
         self._max_delay_s = max_delay_s
         self._retry_rate_limits = retry_rate_limits
+        self._max_retry_wait_s = max_retry_wait_s
         # Injected so tests do not sleep and backoff is reproducible.
         self._sleep = sleep
         self._rng = rng or random.Random()  # noqa: S311 - jitter, not crypto
@@ -257,6 +261,20 @@ class RetryingLLM:
                     raise
                 if isinstance(error, LLMRateLimited) and not self._retry_rate_limits:
                     raise
+                if (
+                    isinstance(error, LLMRateLimited)
+                    and (error.retry_after_s or 0.0) > self._max_retry_wait_s
+                ):
+                    # A quota that clears in minutes (a daily limit, say) is
+                    # not a delay worth sleeping through: the task has a time
+                    # budget, and a person is watching it. Fail now, so the
+                    # fallback or the user can decide what to do.
+                    logger.warning(
+                        "llm_rate_limit_too_long",
+                        provider=self.provider,
+                        retry_after_s=error.retry_after_s,
+                    )
+                    raise
                 last = error
                 if attempt == self._max_attempts:
                     break
@@ -281,6 +299,10 @@ class RetryingLLM:
         raise last if last else LLMUnavailable("The provider could not be reached.")
 
 
+DEFAULT_RATE_LIMIT_COOLDOWN_S: Final = 60.0
+MAX_RATE_LIMIT_COOLDOWN_S: Final = 300.0
+
+
 class FallbackLLM:
     """Try one client, then another.
 
@@ -290,9 +312,22 @@ class FallbackLLM:
     is the transport-level half of that.
     """
 
-    def __init__(self, primary: LLMClient, fallback: LLMClient) -> None:
+    def __init__(
+        self,
+        primary: LLMClient,
+        fallback: LLMClient,
+        *,
+        rate_limit_cooldown_s: float = DEFAULT_RATE_LIMIT_COOLDOWN_S,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._primary = primary
         self._fallback = fallback
+        self._cooldown_s = rate_limit_cooldown_s
+        self._clock = clock
+        # While the primary is known to be rate limited, go straight to the
+        # fallback instead of spending a request (and a second or two) finding
+        # that out again on every step.
+        self._primary_blocked_until = 0.0
 
     @property
     def provider(self) -> str:
@@ -311,11 +346,18 @@ class FallbackLLM:
         images: Sequence[bytes] | None = None,
         timeout_s: float = DEFAULT_TIMEOUT_S,
     ) -> LLMResponse:
+        if self._clock() < self._primary_blocked_until:
+            return await self._fallback.generate_json(
+                system, messages, json_schema, images=images, timeout_s=timeout_s
+            )
         try:
             return await self._primary.generate_json(
                 system, messages, json_schema, images=images, timeout_s=timeout_s
             )
         except LLMError as error:
+            if isinstance(error, LLMRateLimited):
+                wait = error.retry_after_s if error.retry_after_s else self._cooldown_s
+                self._primary_blocked_until = self._clock() + min(wait, MAX_RATE_LIMIT_COOLDOWN_S)
             if isinstance(error, LLMBadOutput):
                 # The provider is healthy and the model answered badly. Asking
                 # a different model the same question hides a prompt problem.

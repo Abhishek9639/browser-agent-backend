@@ -16,6 +16,7 @@ stays one of the six, so the enum column does not have to grow to hold a
 detail that belongs in JSON.
 """
 
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Final
@@ -478,6 +479,23 @@ def _as_check(method: VerificationMethod) -> Check:
     return Check(method.value)
 
 
+_WORDS: Final = re.compile(r"[a-z0-9]+")
+# Words that name the kind of control rather than which one it is.
+_KIND_WORDS: Final = frozenset(
+    {"a", "an", "the", "input", "field", "box", "bar", "button", "link", "text", "element", "icon"}
+)
+
+
+# The element tags a kind word implies.
+_KIND_TAGS: Final = {
+    "input": frozenset({"input", "textarea"}),
+    "field": frozenset({"input", "textarea", "select"}),
+    "box": frozenset({"input", "textarea", "select"}),
+    "button": frozenset({"button"}),
+    "link": frozenset({"a"}),
+}
+
+
 def _find(state: PageState, wanted: str) -> ElementInfo | None:
     """An element whose name, text or role matches, loosely."""
     needle = wanted.strip().casefold()
@@ -487,6 +505,25 @@ def _find(state: PageState, wanted: str) -> ElementInfo | None:
     for element in state.elements:
         haystack = f"{element.name} {element.text} {element.role or ''}".casefold()
         if needle in haystack:
+            return element
+
+    # The planner names a control it has not seen yet ("search input field"),
+    # and the page calls it something else ("Search here..."). Drop the words
+    # that only say what kind of control it is, and require every remaining
+    # word. "search results" still does not match a lone "Search" button.
+    all_words = _WORDS.findall(needle)
+    wanted_words = [w for w in all_words if w not in _KIND_WORDS]
+    if not wanted_words:
+        return None
+    # "search input field" must be an input, not the "Search" button next to it.
+    kinds = [_KIND_TAGS[w] for w in all_words if w in _KIND_TAGS]
+    for element in state.elements:
+        if kinds and not any(element.tag in tags for tags in kinds):
+            continue
+        words = set(
+            _WORDS.findall(f"{element.name} {element.text} {element.placeholder or ''}".casefold())
+        )
+        if all(any(word == w or w.startswith(word) for w in words) for word in wanted_words):
             return element
     return None
 

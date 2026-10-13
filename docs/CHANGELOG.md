@@ -4,6 +4,20 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B37 - Popups, unnamed inputs and rate limits
+
+Added
+
+- `app/agent/perception/overlays.py`: finds a popup that covers the page (eight or more covered elements) and the control that closes it, including an unnamed icon in the popup's top-right corner. Before planning, the loop closes such a popup by clicking a dismissal (never "Accept"). The recovery ladder's popup step now recognises the same icons.
+- The planner refuses a `type` into a covered or unnamed input when a named one exists, and says which and whether to scroll first, using the existing repair turn.
+- `GROQ_FALLBACK_MODELS` (default `openai/gpt-oss-20b,qwen/qwen3.8-27b`): when the Groq model is rate limited, the next is tried, since daily limits are per model.
+- The fallback provider skips a rate-limited primary until its cooldown ends instead of retrying it every step.
+
+Changed
+
+- A rate limit that asks for more than 90 seconds is no longer slept through. It fails at once, so the fallback or the person decides. A real run lost 12 minutes to a 756 second Groq daily limit.
+- `element_visible` accepts a planner's description that differs from the page's label ("search input field" for "Search here..."): words that only name the kind of control are dropped, every other word must match, and the element must be the right kind (an input, not the Search button beside it).
+
 ### B36 - Sign-in hand-off and a working indicator
 
 Added

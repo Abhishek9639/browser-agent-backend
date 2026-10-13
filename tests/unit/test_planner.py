@@ -15,6 +15,7 @@ from app.agent.planner.planner import (
     compress_history,
 )
 from app.agent.planner.registry import PromptRegistry
+from app.agent.planner.schema import Decision
 
 GOAL = "find the cheapest flight from Delhi to Bengaluru on 20 Oct"
 
@@ -369,3 +370,81 @@ def test_every_acceptable_action_is_on_the_allow_list() -> None:
     for case in cases:
         for entry in case["acceptable"]:
             assert entry["action"] in allowed, f"{case['id']}: {entry['action']}"
+
+
+# ------------------------------------------------------------------ covered inputs
+
+
+def _field(index: int, *, covered: bool, name: str = "") -> ElementInfo:
+    return ElementInfo(
+        index=index,
+        tag="input",
+        name=name,
+        input_type="text",
+        bbox=BoundingBox(x=10, y=10 * index, width=100, height=20),
+        in_viewport=True,
+        covered=covered,
+    )
+
+
+def _type_decision(index: int) -> Decision:
+    return Decision.model_validate(
+        {
+            "action": "type",
+            "targetIndex": index,
+            "target": "search",
+            "value": "Full Stack",
+            "expectedOutcome": {"type": "value_equals", "value": "Full Stack"},
+        }
+    )
+
+
+def _state_with(*elements: ElementInfo) -> PageState:
+    return PageState(url="https://example.test/", elements=list(elements))
+
+
+def test_typing_into_a_covered_box_is_refused_when_a_visible_one_exists() -> None:
+    from app.agent.planner.planner import _covered_input_problem
+
+    state = _state_with(_field(11, covered=True), _field(24, covered=False, name="Search"))
+
+    problem = _covered_input_problem(_type_decision(11), state)
+
+    assert problem is not None
+    assert "24" in problem
+
+
+def test_a_covered_box_is_allowed_when_it_is_the_only_input() -> None:
+    from app.agent.planner.planner import _covered_input_problem
+
+    state = _state_with(_field(11, covered=True))
+
+    assert _covered_input_problem(_type_decision(11), state) is None
+
+
+def test_a_visible_target_is_never_refused() -> None:
+    from app.agent.planner.planner import _covered_input_problem
+
+    state = _state_with(_field(11, covered=True), _field(24, covered=False, name="Search"))
+
+    assert _covered_input_problem(_type_decision(24), state) is None
+
+
+def test_an_unnamed_input_is_refused_when_a_named_one_is_below_the_fold() -> None:
+    from app.agent.planner.planner import _covered_input_problem
+
+    unnamed = _field(8, covered=False)
+    named = ElementInfo(
+        index=21,
+        tag="input",
+        name="e.g. Design, Mumbai",
+        input_type="text",
+        bbox=BoundingBox(x=0, y=900, width=100, height=20),
+        in_viewport=False,
+    )
+
+    problem = _covered_input_problem(_type_decision(8), _state_with(unnamed, named))
+
+    assert problem is not None
+    assert "21" in problem
+    assert "scroll" in problem

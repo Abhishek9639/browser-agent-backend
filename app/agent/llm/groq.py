@@ -50,6 +50,16 @@ class GroqLLM:
         # Deliberately not LLM_MODEL: that names the primary provider's model,
         # and a Groq fallback must not be sent a Gemini model name.
         self._model = settings.GROQ_MODEL or DEFAULT_MODEL
+        # Groq's daily limits are per model, so when one is used up the next
+        # one still has headroom.
+        self._text_models = [
+            self._model,
+            *[
+                m.strip()
+                for m in settings.GROQ_FALLBACK_MODELS.split(",")
+                if m.strip() and m.strip() != self._model
+            ],
+        ]
         self._vision_model = settings.GROQ_VISION_MODEL or DEFAULT_VISION_MODEL
         self._max_tokens = settings.LLM_MAX_OUTPUT_TOKENS
         self._client: Any = client or openai.AsyncOpenAI(
@@ -91,7 +101,7 @@ class GroqLLM:
     ) -> LLMResponse:
         turns = merge_images(messages, images)
         has_images = any(turn.images for turn in turns)
-        model = self._vision_model if has_images else self._model
+        models = [self._vision_model] if has_images else self._text_models
 
         instructions = (
             f"{system}\n\nRespond with a single JSON object that matches this "
@@ -105,15 +115,28 @@ class GroqLLM:
         )
 
         started = time.perf_counter()
-        try:
-            response = await self._client.with_options(timeout=timeout_s).chat.completions.create(
-                model=model,
-                messages=payload,
-                response_format={"type": "json_object"},
-                max_tokens=self._max_tokens,
-            )
-        except Exception as exc:
-            raise _translate(exc) from exc
+        response: Any = None
+        model = models[0]
+        for position, model in enumerate(models):
+            try:
+                response = await self._client.with_options(
+                    timeout=timeout_s
+                ).chat.completions.create(
+                    model=model,
+                    messages=payload,
+                    response_format={"type": "json_object"},
+                    max_tokens=self._max_tokens,
+                )
+                break
+            except Exception as exc:
+                translated = _translate(exc)
+                has_next = position < len(models) - 1
+                if isinstance(translated, LLMRateLimited) and has_next:
+                    logger.warning(
+                        "groq_model_rate_limited", model=model, next=models[position + 1]
+                    )
+                    continue
+                raise translated from exc
 
         choices = getattr(response, "choices", None) or []
         text = (choices[0].message.content or "") if choices else ""

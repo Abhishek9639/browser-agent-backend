@@ -509,3 +509,49 @@ def test_the_verifier_never_reaches_for_a_model() -> None:
 
     assert "llm" not in text.lower().replace("llm_", "")
     assert "app.agent.llm" not in text
+
+
+# ------------------------------------------------------------------ loose names
+
+
+def _named(index: int, name: str, placeholder: str | None = None) -> ElementInfo:
+    return ElementInfo(
+        index=index,
+        tag="input",
+        name=name,
+        placeholder=placeholder,
+        bbox=BoundingBox(x=0, y=0, width=10, height=10),
+        in_viewport=True,
+    )
+
+
+def test_a_planner_description_finds_the_control_the_page_calls_something_else() -> None:
+    from app.agent.verification.verifier import _find
+
+    state = PageState(url="https://x.test/", elements=[_named(3, "Search here...")])
+
+    assert _find(state, "search input field") is not None
+
+
+def test_every_meaningful_word_must_match() -> None:
+    from app.agent.verification.verifier import _find
+
+    state = PageState(url="https://x.test/", elements=[_named(3, "Search")])
+
+    assert _find(state, "search results") is None
+    assert _find(state, "input field") is None
+
+
+def test_an_input_description_does_not_match_a_button() -> None:
+    from app.agent.verification.verifier import _find
+
+    button = ElementInfo(
+        index=5,
+        tag="button",
+        name="Search",
+        bbox=BoundingBox(x=0, y=0, width=10, height=10),
+        in_viewport=True,
+    )
+    state = PageState(url="https://x.test/", elements=[button])
+
+    assert _find(state, "search input field") is None

@@ -29,6 +29,7 @@ from typing import Any, Final, cast
 from urllib.parse import urlsplit
 
 from app.agent.browser.action_builder import build_action, selector_for
+from app.agent.browser.actions import ClickAction
 from app.agent.browser.driver import ActionResult
 from app.agent.browser.errors import ActionErrorCode, BrowserError
 from app.agent.browser.screenshots import Screenshot, to_base64
@@ -58,6 +59,7 @@ from app.agent.contracts import (
 )
 from app.agent.llm.base import LLMRateLimited, LLMTimeout, LLMUnavailable
 from app.agent.perception.dom_extractor import MASK, ElementInfo
+from app.agent.perception.overlays import safe_closers
 from app.agent.perception.state import PageState
 from app.agent.planner.planner import Planner, PlannerOutputError, PlannerResult, StepSummary
 from app.agent.planner.schema import Decision, ExpectedOutcome
@@ -394,6 +396,8 @@ class Orchestrator:
             if state is None:
                 state = await self._browser.perceive()
             self._stop_if_cancelled()
+
+            state = await self._clear_overlays(state)
 
             if _login_wall(state, instruction):
                 # The agent does not create accounts or guess credentials. It
@@ -776,6 +780,30 @@ class Orchestrator:
                 failure_reason="The planner chose an element that is not on the page.",
             )
         return element
+
+    async def _clear_overlays(self, state: PageState) -> PageState:
+        """Close a popup that is covering the page before planning against it.
+
+        A sign-up promo or cookie banner marks everything under it covered, so
+        the planner would be choosing among controls nobody can reach. Only
+        dismissals are clicked (never "Accept"), a couple of tries at most, and
+        a click that does not clear the popup stops the attempts rather than
+        looping.
+        """
+        for _ in range(MAX_OVERLAY_CLEARS):
+            closers = safe_closers(state)
+            selector = selector_for(closers[0]) if closers else None
+            if selector is None:
+                return state
+            result = await self._browser.execute(ClickAction(selector=selector))
+            logger.info("overlay_dismissed", ok=result.ok, label=closers[0].name[:40])
+            await self._browser.settle()
+            after = await self._browser.perceive()
+            cleared = len(safe_closers(after)) < len(closers) or not safe_closers(after)
+            state = after
+            if not result.ok or not cleared:
+                return state
+        return state
 
     async def _wait_for_login(self, task_id: uuid.UUID, step_number: int, state: PageState) -> None:
         """Hand the browser to the person to sign in or sign up, and wait.
@@ -1223,6 +1251,7 @@ def _assess(policy: RiskPolicy, decision: Decision, state: PageState) -> RiskAss
 
 
 MAX_LOGIN_PAUSES: Final = 3
+MAX_OVERLAY_CLEARS: Final = 2
 
 _LOGIN_PATH: Final = re.compile(r"/(log-?in|sign-?in|sign-?up|register|accounts?/login)(/|$)", re.I)
 # A goal that mentions credentials is a goal about signing in; do not second-guess it.

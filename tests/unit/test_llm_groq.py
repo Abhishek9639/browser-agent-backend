@@ -159,3 +159,83 @@ async def test_non_rate_limit_failures_still_retry_before_falling_back() -> None
         await primary.generate_json("s", [user("go")], SCHEMA)
 
     assert _Down.calls > 1
+
+
+async def test_a_rate_limited_primary_is_skipped_until_the_cooldown_ends() -> None:
+    now = [0.0]
+
+    class Primary:
+        provider = "gemini"
+        model_name = "m"
+        calls = 0
+
+        async def generate_json(self, *args: Any, **kwargs: Any) -> Any:
+            type(self).calls += 1
+            raise LLMRateLimited("quota")
+
+    Primary.calls = 0
+    groq = GroqLLM(Settings(), client=FakeGroq())
+    client = FallbackLLM(Primary(), groq, rate_limit_cooldown_s=60.0, clock=lambda: now[0])
+
+    await client.generate_json("s", [user("go")], SCHEMA)
+    await client.generate_json("s", [user("go")], SCHEMA)
+    assert Primary.calls == 1  # the second call went straight to Groq
+
+    now[0] = 61.0
+    await client.generate_json("s", [user("go")], SCHEMA)
+    assert Primary.calls == 2  # the cooldown ended, so the primary is tried again
+
+
+async def test_groq_moves_to_the_next_model_when_one_is_rate_limited() -> None:
+    import httpx
+    import openai
+
+    response = httpx.Response(429, request=httpx.Request("POST", "https://x"))
+    limited = openai.RateLimitError("daily limit", response=response, body=None)
+    seen: list[str] = []
+
+    class Picky(FakeGroq):
+        def __init__(self) -> None:
+            super().__init__()
+            outer = self
+            original = self.chat.completions.create
+
+            async def create(**kwargs: Any) -> Any:
+                seen.append(kwargs["model"])
+                if kwargs["model"] == DEFAULT_MODEL:
+                    raise limited
+                return await original(**kwargs)
+
+            outer.chat.completions.create = create  # type: ignore[method-assign]
+
+    client = GroqLLM(Settings(), client=Picky())
+
+    result = await client.generate_json("s", [user("go")], SCHEMA)
+
+    assert seen == [DEFAULT_MODEL, "openai/gpt-oss-20b"]
+    assert result.model_name == "openai/gpt-oss-20b"
+
+
+async def test_a_rate_limit_that_clears_in_minutes_is_not_slept_through() -> None:
+    slept: list[float] = []
+
+    async def no_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    class DailyLimit:
+        provider = "groq"
+        model_name = "m"
+        calls = 0
+
+        async def generate_json(self, *args: Any, **kwargs: Any) -> Any:
+            type(self).calls += 1
+            raise LLMRateLimited("daily", retry_after_s=756.0)
+
+    DailyLimit.calls = 0
+    client = RetryingLLM(DailyLimit(), sleep=no_sleep)
+
+    with pytest.raises(LLMRateLimited):
+        await client.generate_json("s", [user("go")], SCHEMA)
+
+    assert DailyLimit.calls == 1
+    assert slept == []

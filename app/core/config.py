@@ -164,6 +164,8 @@ class Settings(BaseSettings):
     # never sent the primary provider's model name.
     GROQ_MODEL: str | None = None
     GROQ_VISION_MODEL: str | None = None
+    # Tried in order when GROQ_MODEL is rate limited. Comma separated.
+    GROQ_FALLBACK_MODELS: str = "openai/gpt-oss-20b,qwen/qwen3.8-27b"
     LLM_TIMEOUT_SECONDS: int = 60
     LLM_MAX_OUTPUT_TOKENS: int = 2048
     PLANNER_PROMPT_VERSION: str = "v2"
