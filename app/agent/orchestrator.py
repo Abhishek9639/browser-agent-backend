@@ -649,11 +649,10 @@ class Orchestrator:
             of=len(plan.steps),
         )
 
-        if phase is not TaskStatus.PLANNING:
-            # A flow whose first step could not be resolved never left
-            # PLANNING, and the state machine refuses a transition to the state
-            # a task is already in.
-            await self._set_status(task_id, TaskStatus.PLANNING)
+        # Back to planning from wherever the last step left the task. Read from
+        # the record, not from `phase`: a failed verification moves the task to
+        # RECOVERING inside `_verify`, which this loop's own tracking never sees.
+        await self._return_to_planning(task_id)
         text = hint_for(remaining)
         hint = CachedHint(text=text, flow_id=plan.flow_id) if text else None
         return state, hint
@@ -833,6 +832,24 @@ class Orchestrator:
             if not result.ok or not cleared:
                 return state
         return state
+
+    async def _return_to_planning(self, task_id: uuid.UUID) -> None:
+        """Walk the task back to PLANNING along the edges the state machine allows.
+
+        ACTING and RECOVERING both lead to VERIFYING, which leads to PLANNING.
+        A task already in PLANNING (a flow whose first step could not be
+        resolved never left it) needs nothing: the machine refuses a move to
+        the state a task is already in.
+        """
+        onward = {
+            TaskStatus.ACTING: TaskStatus.VERIFYING,
+            TaskStatus.RECOVERING: TaskStatus.VERIFYING,
+            TaskStatus.VERIFYING: TaskStatus.PLANNING,
+        }
+        current = await self._current_status(task_id)
+        while current is not TaskStatus.PLANNING and current in onward:
+            current = onward[current]
+            await self._set_status(task_id, current)
 
     async def _wait_for_login(self, task_id: uuid.UUID, step_number: int, state: PageState) -> None:
         """Hand the browser to the person to sign in or sign up, and wait.

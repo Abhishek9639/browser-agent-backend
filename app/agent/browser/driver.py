@@ -83,6 +83,7 @@ class BrowserConfig:
 
     headless: bool = True
     slow_mo_ms: int = 0
+    fullscreen: bool = False
     channel: str = ""
     cdp_url: str = ""
     viewport_width: int = 1280
@@ -100,6 +101,7 @@ class BrowserConfig:
         return cls(
             headless=settings.AGENT_HEADLESS,
             slow_mo_ms=settings.AGENT_SLOW_MO_MS,
+            fullscreen=settings.AGENT_FULLSCREEN,
             channel=settings.AGENT_BROWSER_CHANNEL,
             cdp_url=settings.AGENT_CDP_URL,
             allowed_domains=tuple(settings.AGENT_ALLOWED_DOMAINS),
@@ -194,6 +196,8 @@ def host_is_allowed(url: str, allowed: tuple[str, ...]) -> bool:
 
 
 INDICATOR_ID = "__baa_indicator__"
+GLIDE_STEPS = 22
+SMOOTH_SCROLL_S = 0.7
 
 _INDICATOR_JS = """
 (function (mode) {
@@ -220,8 +224,43 @@ _INDICATOR_JS = """
       'padding:3px 14px;border-radius:0 0 10px 10px;font:600 12px/1.4 system-ui,sans-serif;' +
       'color:#fff;background:' + color + ';';
   }
+  function cursor() {
+    var root = document.documentElement;
+    if (!root || document.getElementById('__baa_cursor__')) return;
+    var c = document.createElement('div');
+    c.id = '__baa_cursor__';
+    c.setAttribute('aria-hidden', 'true');
+    c.style.cssText = 'position:fixed;left:0;top:0;width:0;height:0;pointer-events:none;' +
+      'z-index:2147483647;display:none;';
+    c.innerHTML =
+      '<svg width="26" height="26" viewBox="0 0 24 24" style="position:absolute;' +
+      'left:-2px;top:-2px;filter:drop-shadow(0 1px 2px rgba(0,0,0,.45))">' +
+      '<path d="M3 2l7.5 19 2.6-7.9L21 10.5z" fill="#1a73e8" stroke="#fff" ' +
+      'stroke-width="1.6" stroke-linejoin="round"/></svg>' +
+      '<span style="position:absolute;left:-14px;top:-14px;width:28px;height:28px;' +
+      'border-radius:50%;border:3px solid #1a73e8;opacity:0;"></span>';
+    root.appendChild(c);
+    var ring = c.lastChild;
+    function move(e) {
+      c.style.display = 'block';
+      c.style.transform = 'translate(' + e.clientX + 'px,' + e.clientY + 'px)';
+    }
+    addEventListener('mousemove', move, true);
+    addEventListener('mousedown', function (e) {
+      move(e);
+      ring.style.transition = 'none';
+      ring.style.opacity = '0.9';
+      ring.style.transform = 'scale(0.4)';
+      requestAnimationFrame(function () {
+        ring.style.transition = 'opacity .5s, transform .5s';
+        ring.style.opacity = '0';
+        ring.style.transform = 'scale(1.8)';
+      });
+    }, true);
+  }
   apply();
-  document.addEventListener('DOMContentLoaded', apply);
+  cursor();
+  document.addEventListener('DOMContentLoaded', function () { apply(); cursor(); });
 })(__MODE__);
 """
 
@@ -234,6 +273,11 @@ def indicator_script(mode: str) -> str:
     layer would list as something to act on.
     """
     return _INDICATOR_JS.replace("__MODE__", json.dumps(mode))
+
+
+def launch_args(fullscreen: bool, headless: bool) -> list[str]:
+    """Chromium flags for the launch: open maximised when a full screen was asked for."""
+    return ["--start-maximized"] if fullscreen and not headless else []
 
 
 class PlaywrightDriver:
@@ -286,7 +330,11 @@ class PlaywrightDriver:
         else:
             self._owns_context = True
             self._context = await self._browser.new_context(
-                viewport={
+                # A maximised window has no fixed size: let the page fill it.
+                no_viewport=self.fills_window,
+                viewport=None
+                if self.fills_window
+                else {
                     "width": self._config.viewport_width,
                     "height": self._config.viewport_height,
                 },
@@ -313,6 +361,28 @@ class PlaywrightDriver:
         )
 
     @property
+    def fills_window(self) -> bool:
+        """Does the page fill a maximised window rather than a fixed-size box?"""
+        return self._config.fullscreen and not self._config.headless and not self.attached
+
+    async def viewport_size(self) -> dict[str, int]:
+        """The size of the page area right now, measured rather than assumed.
+
+        A maximised window has no configured size and Playwright reports none,
+        so it is read from the page. Everything that maps a picture back onto
+        the page (screenshots, a click at a coordinate) needs the real one.
+        """
+        page = self.page
+        fixed = page.viewport_size
+        if fixed:
+            return {"width": fixed["width"], "height": fixed["height"]}
+        try:
+            size = await page.evaluate("() => [window.innerWidth, window.innerHeight]")
+            return {"width": int(size[0]), "height": int(size[1])}
+        except PlaywrightError:
+            return {"width": self._config.viewport_width, "height": self._config.viewport_height}
+
+    @property
     def attached(self) -> bool:
         """Is this driving the user's own browser over CDP (opt-in, see ADR)?"""
         return bool(self._config.cdp_url)
@@ -326,6 +396,7 @@ class PlaywrightDriver:
             headless=self._config.headless,
             slow_mo=self._config.slow_mo_ms,
             channel=self._config.channel or None,
+            args=launch_args(self._config.fullscreen, self._config.headless),
         )
 
     async def close(self) -> None:
@@ -416,10 +487,7 @@ class PlaywrightDriver:
             # failing a step over.
             title, scroll_y = "", 0
 
-        viewport = page.viewport_size or {
-            "width": self._config.viewport_width,
-            "height": self._config.viewport_height,
-        }
+        viewport = await self.viewport_size()
         return BrowserSnapshot(
             url=page.url,
             title=title,
@@ -482,7 +550,9 @@ class PlaywrightDriver:
             case NavigateAction():
                 await self._navigate(action)
             case ClickAction():
-                await (await self._locate(action.selector)).click()
+                locator = await self._locate(action.selector)
+                await self._glide_to(locator)
+                await locator.click()
             case TypeAction():
                 await self._type(action)
             case ScrollAction():
@@ -518,11 +588,32 @@ class PlaywrightDriver:
 
     async def _type(self, action: TypeAction) -> None:
         locator = await self._locate(action.selector)
+        await self._glide_to(locator)
         if action.clear_first:
             await locator.fill("")
         await locator.fill(action.value)
         if action.press_enter:
             await locator.press("Enter")
+
+    async def _glide_to(self, locator: Locator) -> None:
+        """Bring the target into view and move the pointer to it in a visible arc.
+
+        Only for a visible browser: nobody watches a headless one, and the extra
+        mouse events would only cost time. Best effort. The action that follows
+        does its own actionability checks, so a failure here changes nothing.
+        """
+        if not self._shows_indicator:
+            return
+        try:
+            await locator.scroll_into_view_if_needed(timeout=2_000)
+            box = await locator.bounding_box()
+            if box is None:
+                return
+            await self.page.mouse.move(
+                box["x"] + box["width"] / 2, box["y"] + box["height"] / 2, steps=GLIDE_STEPS
+            )
+        except PlaywrightError as exc:
+            logger.debug("glide_failed", error_type=type(exc).__name__)
 
     async def _scroll(self, action: ScrollAction) -> None:
         """Scroll the window.
@@ -533,9 +624,15 @@ class PlaywrightDriver:
         infinite-scroll pages behave the same.
         """
         delta = action.pixels if action.direction == "down" else -action.pixels
+        smooth = self._shows_indicator
         await self.page.evaluate(
-            "(dy) => window.scrollBy({ top: dy, left: 0, behavior: 'instant' })", delta
+            "([dy, how]) => window.scrollBy({ top: dy, left: 0, behavior: how })",
+            [delta, "smooth" if smooth else "instant"],
         )
+        if smooth:
+            # A smooth scroll takes a moment, and the check that follows reads
+            # the position straight away.
+            await asyncio.sleep(SMOOTH_SCROLL_S)
 
     async def _extract(self, action: ExtractAction) -> str:
         if action.selector:

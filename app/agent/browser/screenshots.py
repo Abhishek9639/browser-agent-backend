@@ -97,6 +97,7 @@ async def capture(
     *,
     max_width: int = MAX_WIDTH,
     quality: int = DEFAULT_JPEG_QUALITY,
+    viewport: dict[str, int] | None = None,
 ) -> Screenshot:
     """Grab the viewport and compress it.
 
@@ -105,7 +106,7 @@ async def capture(
     detail that is about to be thrown away, and compress the artefacts again.
     """
     raw = await page.screenshot(type="png")
-    viewport = page.viewport_size or {"width": 0, "height": 0}
+    viewport = viewport or page.viewport_size or {"width": 0, "height": 0}
 
     # Pillow is CPU-bound and would block the event loop for a few ms per
     # frame; at one frame per action across concurrent tasks that adds up.

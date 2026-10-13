@@ -448,3 +448,20 @@ def test_an_unnamed_input_is_refused_when_a_named_one_is_below_the_fold() -> Non
     assert problem is not None
     assert "21" in problem
     assert "scroll" in problem
+
+
+def test_a_filled_named_input_is_not_offered_as_the_better_choice() -> None:
+    from app.agent.planner.planner import input_target_problem
+
+    unnamed = _field(20, covered=False)  # the date box, with no label
+    filled = ElementInfo(
+        index=9,
+        tag="input",
+        name="Enter From station",
+        input_type="text",
+        value="MATHURA JN - MTJ",
+        bbox=BoundingBox(x=0, y=0, width=100, height=20),
+        in_viewport=True,
+    )
+
+    assert input_target_problem(_type_decision(20), _state_with(unnamed, filled)) is None

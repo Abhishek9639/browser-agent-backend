@@ -620,3 +620,67 @@ def test_a_real_expectation_is_left_alone() -> None:
     )
 
     assert expectation.type is VerificationMethod.URL_CONTAINS
+
+
+# ------------------------------------------------------------------ autocomplete choice
+
+
+def test_choosing_a_suggestion_is_verified_by_the_field_that_now_holds_it() -> None:
+    from app.agent.planner.schema import Decision
+    from app.agent.verification.verifier import _value_equals
+
+    suggestion = ElementInfo(
+        index=10,
+        tag="li",
+        name="NEW DELHI - NDLS",
+        bbox=BoundingBox(x=0, y=0, width=10, height=10),
+        in_viewport=True,
+    )
+    field = ElementInfo(
+        index=9,
+        tag="input",
+        name="To",
+        value="NEW DELHI - NDLS(NEW DELHI)",
+        bbox=BoundingBox(x=0, y=0, width=10, height=10),
+        in_viewport=True,
+    )
+    decision = Decision.model_validate(
+        {
+            "action": "click",
+            "targetIndex": 10,
+            "target": "NEW DELHI - NDLS",
+            "expectedOutcome": {"type": "value_equals", "value": "NEW DELHI - NDLS (NEW DELHI)"},
+        }
+    )
+    before = PageState(url="https://x.test/", elements=[field, suggestion])
+    after = PageState(url="https://x.test/", elements=[field])  # the list closed
+
+    outcome = _value_equals(decision, before, after, "NEW DELHI - NDLS (NEW DELHI)")
+
+    assert outcome.ok
+
+
+def test_a_field_with_the_wrong_value_still_fails() -> None:
+    from app.agent.planner.schema import Decision
+    from app.agent.verification.verifier import _value_equals
+
+    field = ElementInfo(
+        index=9,
+        tag="input",
+        name="To",
+        value="MATHURA JN - MTJ",
+        bbox=BoundingBox(x=0, y=0, width=10, height=10),
+        in_viewport=True,
+    )
+    decision = Decision.model_validate(
+        {
+            "action": "type",
+            "targetIndex": 9,
+            "target": "To",
+            "value": "DELHI",
+            "expectedOutcome": {"type": "value_equals", "value": "DELHI"},
+        }
+    )
+    state = PageState(url="https://x.test/", elements=[field])
+
+    assert not _value_equals(decision, state, state, "DELHI").ok

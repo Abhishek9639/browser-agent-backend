@@ -317,13 +317,26 @@ def _value_equals(decision: Decision, before: PageState, after: PageState, wante
     assigned fresh each time.
     """
     target = _same_element(decision, before, after)
-    if target is None:
-        return _Outcome(
-            False,
-            Check.VALUE_EQUALS,
-            {"check": Check.VALUE_EQUALS.value, "found": None},
-            "The field is no longer on the page.",
-        )
+    if target is None or target.tag not in _FIELD_TAGS:
+        # Choosing an autocomplete suggestion is a click on a list item that
+        # disappears the moment it works, and what changed is the field above
+        # it. So when the clicked thing is not a field, or is gone, look for
+        # the value in any field on the page.
+        holder = _field_holding(after, wanted)
+        if holder is not None:
+            return _Outcome(
+                True,
+                Check.VALUE_EQUALS,
+                {"check": Check.VALUE_EQUALS.value, "value": (holder.value or "").strip()},
+                "A field on the page holds the chosen value.",
+            )
+        if target is None:
+            return _Outcome(
+                False,
+                Check.VALUE_EQUALS,
+                {"check": Check.VALUE_EQUALS.value, "found": None},
+                "The field is no longer on the page.",
+            )
 
     if target.is_masked:
         # The collector masks secrets at source, so the real value is not here
@@ -343,6 +356,33 @@ def _value_equals(decision: Decision, before: PageState, after: PageState, wante
         {"check": Check.VALUE_EQUALS.value, "value": actual},
         f"The field holds {actual!r}." if not ok else "The field holds what was typed.",
     )
+
+
+_FIELD_TAGS: Final = frozenset({"input", "textarea", "select"})
+_NON_ALNUM: Final = re.compile(r"[^a-z0-9]+")
+
+
+def _squash(value: str) -> str:
+    """Case, spacing and punctuation removed, so "NEW DELHI - NDLS" and "new delhi ndls" agree."""
+    return _NON_ALNUM.sub("", value.casefold())
+
+
+def _field_holding(state: PageState, wanted: str) -> ElementInfo | None:
+    """A field whose value is the wanted text, ignoring case and punctuation.
+
+    One may contain the other: a suggestion list shows "NEW DELHI - NDLS" and
+    the field then holds "NEW DELHI - NDLS(NEW DELHI)", or the reverse.
+    """
+    target = _squash(wanted)
+    if len(target) < 3:
+        return None
+    for element in state.elements:
+        if element.tag not in _FIELD_TAGS or not element.value or element.is_masked:
+            continue
+        held = _squash(element.value)
+        if held and (held == target or target in held or held in target):
+            return element
+    return None
 
 
 def _dom_changed(before: PageState, after: PageState) -> _Outcome:

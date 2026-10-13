@@ -24,7 +24,7 @@ from typing import Final
 from playwright.async_api import Browser, Playwright, async_playwright
 
 from app.agent.browser.agent_browser import DriverBrowser
-from app.agent.browser.driver import PlaywrightDriver
+from app.agent.browser.driver import PlaywrightDriver, launch_args
 from app.agent.cache.store import DatabaseFlowCache
 from app.agent.llm.factory import build_llm
 from app.agent.orchestrator import Orchestrator, UnitOfWorkFactory, database_unit_of_work
@@ -156,6 +156,7 @@ class TaskRunner:
                 headless=self._settings.AGENT_HEADLESS,
                 slow_mo=self._settings.AGENT_SLOW_MO_MS,
                 channel=self._settings.AGENT_BROWSER_CHANNEL or None,
+                args=launch_args(self._settings.AGENT_FULLSCREEN, self._settings.AGENT_HEADLESS),
             )
         self._started = True
         logger.info("task_runner_started", max_concurrent=self._settings.AGENT_MAX_CONCURRENT_TASKS)

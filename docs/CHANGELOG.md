@@ -4,6 +4,19 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B41 - Full screen, a visible pointer, and autocomplete
+
+Added
+
+- `AGENT_FULLSCREEN` (default off): the visible browser opens maximised and the page fills the window instead of a fixed 1280x800 box. The real size is measured from the page (`PlaywrightDriver.viewport_size`), because a maximised window reports none, and screenshots, snapshots and coordinate clicks all use it.
+- A visible pointer in a visible browser: a blue arrow that follows every mouse event and rings on a click. Before each click or type the real pointer glides to the target in a short arc, and a scroll is smooth and has landed before the step is checked.
+
+Fixed
+
+- Choosing an autocomplete suggestion ("NEW DELHI - NDLS") was marked failed: the verifier looked for the value on the clicked list item, which disappears when it works. A `value_equals` check on something that is not a field now looks for a field holding the value, ignoring case and punctuation.
+- A replayed cached flow that failed a step ended the task with `IllegalTransition` (RECOVERING to PLANNING). The return to planning now walks the legal path from wherever the task is.
+- The "prefer a named input" planner check no longer offers a field that already holds a value (the From and To boxes are named and full, and the date box the model wanted is not), and is advisory: on the last attempt the model's choice stands.
+
 ### B40 - Language gates, popup verification
 
 Changed

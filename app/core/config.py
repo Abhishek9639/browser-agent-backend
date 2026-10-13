@@ -215,6 +215,10 @@ class Settings(BaseSettings):
         ]
     )
     AGENT_HEADLESS: bool = True
+    # Open the visible browser maximised and let the page fill the window,
+    # instead of a fixed 1280x800 box. Ignored when headless or attached to the
+    # user's own browser.
+    AGENT_FULLSCREEN: bool = False
     # One extra model call before the first action that outlines the expected
     # steps, so the person can see how long the task is. A forecast only: the
     # agent still chooses each real step from the page. Off here so a bare

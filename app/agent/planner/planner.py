@@ -112,6 +112,10 @@ def input_target_problem(decision: Decision, page_state: PageState) -> str | Non
         and not e.disabled
         and e.index != target.index
         and (e.name or e.placeholder or "").strip()
+        # A field that already holds something is not a candidate for the text
+        # about to be typed: the From and To boxes are named and full, and the
+        # date field the model really wants has no name at all.
+        and not (e.value or "").strip()
         and (not e.covered or target.covered is False)
     ]
     if not alternatives:
@@ -295,7 +299,7 @@ class Planner:
             # counted: it is a real request with real tokens behind it.
             record_response(response, purpose="planner")
 
-            problem = self._validate(response.parsed, page_state)
+            problem = self._validate(response.parsed, page_state, advisory=attempt < MAX_ATTEMPTS)
             if problem is None:
                 decision = Decision.model_validate(response.parsed)
                 logger.info(
@@ -328,7 +332,9 @@ class Planner:
 
         raise PlannerOutputError(f"The model could not produce a valid decision: {last_problem}")
 
-    def _validate(self, payload: dict[str, Any], page_state: PageState) -> str | None:
+    def _validate(
+        self, payload: dict[str, Any], page_state: PageState, *, advisory: bool = True
+    ) -> str | None:
         """Return a problem description, or ``None`` when the decision is good."""
         try:
             decision = Decision.model_validate(payload)
@@ -349,7 +355,10 @@ class Planner:
                 f"Available indices: {shown}. Choose one of those, or scroll first."
             )
 
-        return input_target_problem(decision, page_state)
+        # A suggestion about which input to use, not a hard rule: asked once, it
+        # steers the model, but on the last attempt the model's choice stands
+        # rather than failing a task over a field we only thought was unwise.
+        return input_target_problem(decision, page_state) if advisory else None
 
     @staticmethod
     def _repair_turn(problem: str) -> LLMMessage:

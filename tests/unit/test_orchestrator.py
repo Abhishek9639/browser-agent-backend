@@ -1365,3 +1365,36 @@ async def test_no_outline_call_is_made_when_the_preview_is_off(settings: Setting
 
     assert EventType.PLAN not in [event.type for event in rig.bus.published]
     assert rig.store.task.plan is None
+
+
+async def test_a_replayed_step_that_fails_verification_falls_back_to_the_planner(
+    settings: Settings,
+) -> None:
+    """The task is in RECOVERING when the replay gives up, and RECOVERING cannot
+    move straight to PLANNING. It must walk back through VERIFYING."""
+
+    class FailsOnce(PassingVerifier):
+        async def check(self, decision: Decision, *args: Any) -> Verdict:
+            self.calls += 1
+            ok = self.calls > 1
+            return Verdict(
+                ok=ok,
+                method=decision.expected_outcome.type,
+                expected={"type": decision.expected_outcome.type.value, "value": "x"},
+                actual={"check": "test"},
+                detail="Passed." if ok else "Failed once.",
+            )
+
+    llm = MockLLM(script=[done_payload("Answered by the planner")])
+    rig = build(
+        script=[],
+        settings=settings,
+        cache=RecordingCache(cached_type()),
+        verifier=FailsOnce(),
+    )
+    rig.orchestrator._planner = Planner(llm)  # type: ignore[attr-defined]
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.COMPLETED
+    assert outcome.final_answer == "Answered by the planner"

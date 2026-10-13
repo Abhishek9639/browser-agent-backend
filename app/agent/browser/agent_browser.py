@@ -52,7 +52,10 @@ class DriverBrowser:
         # The coloured frame is for the person watching, not for the model.
         await self._driver.hide_indicator(True)
         try:
-            return await capture(self._driver.page)  # type: ignore[arg-type]
+            return await capture(
+                self._driver.page,  # type: ignore[arg-type]
+                viewport=await self._driver.viewport_size(),
+            )
         finally:
             await self._driver.hide_indicator(False)
 
@@ -93,7 +96,7 @@ class DriverBrowser:
         be handed to the mouse without a look.
         """
         try:
-            viewport = self._driver.page.viewport_size or {"width": 0, "height": 0}
+            viewport = await self._driver.viewport_size()
             if not (0 <= x < viewport["width"] and 0 <= y < viewport["height"]):
                 return False
             await self._driver.page.mouse.click(x, y)

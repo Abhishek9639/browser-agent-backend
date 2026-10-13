@@ -621,3 +621,75 @@ async def test_headless_runs_draw_no_frame(driver: PlaywrightDriver, html_server
     await driver.set_indicator("working")
 
     assert not await driver.page.evaluate("!!document.getElementById('__baa_indicator__')")
+
+
+# ------------------------------------------------------------------ full screen
+
+
+def test_a_full_screen_visible_launch_asks_for_a_maximised_window() -> None:
+    from app.agent.browser.driver import launch_args
+
+    assert launch_args(True, False) == ["--start-maximized"]
+    assert launch_args(True, True) == []  # headless has no window to maximise
+    assert launch_args(False, False) == []
+
+
+async def test_the_viewport_is_measured_when_the_window_has_no_fixed_size(
+    browser_settings: Settings, html_server: str
+) -> None:
+    """A maximised window reports no viewport, so the driver reads it from the page."""
+    settings = browser_settings.model_copy(update={"AGENT_FULLSCREEN": True})
+    instance = PlaywrightDriver(settings)
+    await instance.launch()
+    try:
+        await goto(instance, html_server, "buttons.html")
+        size = await instance.viewport_size()
+        snapshot = await instance.capture_state()
+    finally:
+        await instance.close()
+
+    assert size["width"] > 0 and size["height"] > 0
+    assert snapshot.viewport_width == size["width"]
+
+
+# ------------------------------------------------------------------ pointer and scrolling
+
+
+async def test_a_visible_run_shows_a_pointer_that_glides_to_what_it_clicks(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    driver._config = replace(driver._config, headless=False)
+    await goto(driver, html_server, "buttons.html")
+    await driver.set_indicator("working")
+
+    result = await driver.execute(ClickAction(selector="#visible"))
+
+    assert result.ok
+    placed = await driver.page.evaluate(
+        "() => { const c = document.getElementById('__baa_cursor__');"
+        " return c ? c.style.transform : null; }"
+    )
+    box = await driver.page.locator("#visible").bounding_box()
+    assert placed is not None and placed.startswith("translate(")
+    assert box is not None
+    x = float(placed.removeprefix("translate(").split("px")[0])
+    assert abs(x - (box["x"] + box["width"] / 2)) < 2
+
+
+async def test_a_visible_scroll_is_smooth_and_has_landed_before_it_returns(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    driver._config = replace(driver._config, headless=False)
+    await goto(driver, html_server, "long_page.html")
+
+    result = await driver.execute(ScrollAction(direction="down", pixels=400))
+
+    assert result.ok
+    assert await driver.page.evaluate("window.scrollY") >= 380
+
+
+async def test_headless_runs_draw_no_pointer(driver: PlaywrightDriver, html_server: str) -> None:
+    await goto(driver, html_server, "buttons.html")
+    await driver.set_indicator("working")
+
+    assert not await driver.page.evaluate("!!document.getElementById('__baa_cursor__')")
