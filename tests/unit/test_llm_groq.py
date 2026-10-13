@@ -239,3 +239,41 @@ async def test_a_rate_limit_that_clears_in_minutes_is_not_slept_through() -> Non
 
     assert DailyLimit.calls == 1
     assert slept == []
+
+
+async def test_a_413_is_treated_as_a_limit_so_the_next_model_is_tried() -> None:
+    import httpx
+    import openai
+
+    response = httpx.Response(413, request=httpx.Request("POST", "https://x"))
+    too_big = openai.APIStatusError("too large", response=response, body=None)
+    seen: list[str] = []
+
+    class Picky(FakeGroq):
+        def __init__(self) -> None:
+            super().__init__()
+            original = self.chat.completions.create
+
+            async def create(**kwargs: Any) -> Any:
+                seen.append(kwargs["model"])
+                if kwargs["model"] != "qwen/qwen3.8-27b":
+                    raise too_big
+                return await original(**kwargs)
+
+            self.chat.completions.create = create  # type: ignore[method-assign]
+
+    client = GroqLLM(Settings(), client=Picky())
+
+    result = await client.generate_json("s", [user("go")], SCHEMA)
+
+    assert seen == [DEFAULT_MODEL, "openai/gpt-oss-20b", "qwen/qwen3.8-27b"]
+    assert result.model_name == "qwen/qwen3.8-27b"
+
+
+async def test_the_output_allowance_is_capped_for_groq() -> None:
+    fake = FakeGroq()
+    client = GroqLLM(Settings(LLM_MAX_OUTPUT_TOKENS=4096), client=fake)
+
+    await client.generate_json("s", [user("go")], SCHEMA)
+
+    assert fake.kwargs["max_tokens"] == 1024

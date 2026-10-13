@@ -16,7 +16,8 @@ Added
 Changed
 
 - A rate limit that asks for more than 90 seconds is no longer slept through. It fails at once, so the fallback or the person decides. A real run lost 12 minutes to a 756 second Groq daily limit.
-- `element_visible` accepts a planner's description that differs from the page's label ("search input field" for "Search here..."): words that only name the kind of control are dropped, every other word must match, and the element must be the right kind (an input, not the Search button beside it).
+- Groq: a 413 (request over the model's per-minute token limit) moves to the next model, and the output allowance is capped at 1024 tokens, because Groq counts the whole allowance against that limit.
+- `element_visible` accepts a planner's description that differs from the page's label ("search input field" for "Search here..."): words that only name the kind of control are dropped, every other word must match (or half of them when the description names a kind of control), and the element must be the right kind (an input, not the Search button beside it).
 
 ### B36 - Sign-in hand-off and a working indicator
 

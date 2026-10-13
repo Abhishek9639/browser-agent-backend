@@ -555,3 +555,12 @@ def test_an_input_description_does_not_match_a_button() -> None:
     state = PageState(url="https://x.test/", elements=[button])
 
     assert _find(state, "search input field") is None
+
+
+def test_a_described_input_matches_when_half_the_meaningful_words_do() -> None:
+    from app.agent.verification.verifier import _find
+
+    field = _named(88, "Search here...", "Search here...")
+    state = PageState(url="https://x.test/", elements=[field])
+
+    assert _find(state, "Search input field for internships") is field

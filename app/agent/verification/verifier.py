@@ -486,6 +486,7 @@ _KIND_WORDS: Final = frozenset(
 )
 
 
+_STOP_WORDS: Final = frozenset({"for", "to", "of", "in", "on", "and", "your", "with", "here"})
 # The element tags a kind word implies.
 _KIND_TAGS: Final = {
     "input": frozenset({"input", "textarea"}),
@@ -512,7 +513,7 @@ def _find(state: PageState, wanted: str) -> ElementInfo | None:
     # that only say what kind of control it is, and require every remaining
     # word. "search results" still does not match a lone "Search" button.
     all_words = _WORDS.findall(needle)
-    wanted_words = [w for w in all_words if w not in _KIND_WORDS]
+    wanted_words = [w for w in all_words if w not in _KIND_WORDS and w not in _STOP_WORDS]
     if not wanted_words:
         return None
     # "search input field" must be an input, not the "Search" button next to it.
@@ -523,7 +524,15 @@ def _find(state: PageState, wanted: str) -> ElementInfo | None:
         words = set(
             _WORDS.findall(f"{element.name} {element.text} {element.placeholder or ''}".casefold())
         )
-        if all(any(word == w or w.startswith(word) for w in words) for word in wanted_words):
+        hits = sum(
+            1 for word in wanted_words if any(w == word or w.startswith(word) for w in words)
+        )
+        # A description that names the kind of control ("search input field for
+        # internships") only has to share half its meaningful words with the
+        # label: the kind already narrows it to inputs. Without a kind, every
+        # word must match, so "search results" never matches a lone "Search".
+        needed = (len(wanted_words) + 1) // 2 if kinds else len(wanted_words)
+        if hits >= max(1, needed):
             return element
     return None
 

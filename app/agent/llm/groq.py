@@ -40,6 +40,7 @@ PROVIDER: Final = "groq"
 BASE_URL: Final = "https://api.groq.com/openai/v1"
 DEFAULT_MODEL: Final = "openai/gpt-oss-120b"
 DEFAULT_VISION_MODEL: Final = "qwen/qwen3.8-27b"
+MAX_OUTPUT_TOKENS: Final = 1024
 
 
 class GroqLLM:
@@ -61,7 +62,10 @@ class GroqLLM:
             ],
         ]
         self._vision_model = settings.GROQ_VISION_MODEL or DEFAULT_VISION_MODEL
-        self._max_tokens = settings.LLM_MAX_OUTPUT_TOKENS
+        # Groq counts the whole output allowance against its per-minute token
+        # limit, so an allowance far larger than a decision (about 400 tokens)
+        # can push a request over the limit before it has said a word.
+        self._max_tokens = min(settings.LLM_MAX_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS)
         self._client: Any = client or openai.AsyncOpenAI(
             api_key=key.get_secret_value() if key else None,
             base_url=BASE_URL,
@@ -172,6 +176,10 @@ def _translate(exc: Exception) -> Exception:
     if isinstance(exc, openai.APIConnectionError):
         return LLMUnavailable("Could not reach Groq.")
     if isinstance(exc, openai.APIStatusError):
+        if exc.status_code == 413:
+            # Too large for this model's per-minute token limit. It will not
+            # shrink by retrying, but another model may take it.
+            return LLMRateLimited("Groq request too large for this model.", retry_after_s=None)
         if exc.status_code >= 500:
             return LLMUnavailable(f"Groq returned {exc.status_code}.")
         return LLMError(f"Groq rejected the request ({exc.status_code}).")
