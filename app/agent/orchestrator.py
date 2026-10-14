@@ -31,7 +31,7 @@ from urllib.parse import urlsplit
 from app.agent.browser.action_builder import build_action, selector_for
 from app.agent.browser.actions import ClickAction
 from app.agent.browser.driver import ActionResult
-from app.agent.browser.errors import ActionErrorCode, BrowserError
+from app.agent.browser.errors import ActionErrorCode, BrowserClosedError, BrowserError
 from app.agent.browser.screenshots import Screenshot, to_base64
 from app.agent.budget import BudgetExceeded, BudgetReason, TaskBudget
 from app.agent.cache.flow import Locator, ReplayStep, hint_for
@@ -118,6 +118,11 @@ UnitOfWorkFactory = Callable[[], AbstractAsyncContextManager[UnitOfWork]]
 # leave the process.
 _SAFE_REASONS: Final[tuple[tuple[type[BaseException], str], ...]] = (
     (PlannerOutputError, "The planner could not produce a valid decision for this page."),
+    (
+        BrowserClosedError,
+        "The browser window was closed while the task was running. "
+        "Run it again and leave the window open.",
+    ),
     (BrowserError, "The browser could not carry out the planned action."),
     # These three are ordinary weather rather than a bug in the task, and a
     # user who is told "internal error" has no idea whether to try again.

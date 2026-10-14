@@ -820,3 +820,22 @@ async def test_a_new_tab_outside_the_allowed_domains_is_closed_and_refused(
         assert len(instance.sessions.tab_ids) == 1
     finally:
         await instance.close()
+
+
+async def test_a_window_closed_under_the_task_is_reported_as_closed_not_unlaunched(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    from app.agent.browser.errors import BrowserClosedError
+
+    await goto(driver, html_server, "buttons.html")
+    await driver.page.close()
+    import asyncio
+
+    await asyncio.sleep(0.2)
+
+    with pytest.raises(BrowserClosedError):
+        _ = driver.page
+
+    # An action on a closed window raises the same error rather than a vague one.
+    with pytest.raises(BrowserClosedError):
+        await driver.execute(ClickAction(selector="#visible"))

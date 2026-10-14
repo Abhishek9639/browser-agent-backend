@@ -54,6 +54,7 @@ from app.agent.browser.actions import (
 from app.agent.browser.errors import (
     ActionErrorCode,
     ActionNotAllowedError,
+    BrowserClosedError,
     DomainNotAllowedError,
 )
 from app.agent.browser.scroller import METRICS_JS, scroll_by_js
@@ -490,7 +491,9 @@ class PlaywrightDriver:
         try:
             return self._sessions.page
         except PlaywrightError as exc:
-            raise RuntimeError("The driver has not been launched.") from exc
+            if self._context is None:
+                raise RuntimeError("The driver has not been launched.") from exc
+            raise BrowserClosedError("The browser window or tab was closed.") from exc
 
     # ------------------------------------------------------------ state
 
@@ -940,7 +943,7 @@ class PlaywrightDriver:
     def _current_url(self) -> str:
         try:
             return self.page.url
-        except (RuntimeError, PlaywrightError):
+        except (RuntimeError, PlaywrightError, BrowserClosedError):
             return ""
 
     @staticmethod

@@ -1425,3 +1425,12 @@ async def test_the_login_wait_is_long_and_does_not_count_against_the_task_clock(
     await rig.orchestrator.run(TASK_ID)
 
     assert gate.requests[0]["timeout_seconds"] == 1234
+
+
+def test_a_closed_browser_gets_a_plain_reason_not_an_internal_error() -> None:
+    from app.agent.browser.errors import BrowserClosedError
+    from app.agent.orchestrator import _safe_reason
+
+    reason = _safe_reason(BrowserClosedError("closed"))
+
+    assert "closed" in reason and "internal error" not in reason
