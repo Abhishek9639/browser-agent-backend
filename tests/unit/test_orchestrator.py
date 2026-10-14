@@ -1579,3 +1579,13 @@ def test_a_blocked_site_is_not_reported_as_a_bad_address() -> None:
     assert "refused" in _why_not_run(blocked)
     assert "AGENT_CDP_URL" in _why_not_run(blocked)
     assert "check the address" in _why_not_run(missing)
+
+
+def test_a_timeout_is_reported_as_a_slow_page_not_an_internal_error() -> None:
+    from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+
+    from app.agent.orchestrator import _safe_reason
+
+    assert "too long" in _safe_reason(PlaywrightTimeoutError("Timeout 10000ms exceeded"))
+    assert "too long" in _safe_reason(TimeoutError())
+    assert "internal error" not in _safe_reason(TimeoutError())

@@ -16,7 +16,7 @@ import contextlib
 import json
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import TracebackType
 from typing import Protocol, Self, runtime_checkable
 from urllib.parse import urlsplit
@@ -89,6 +89,8 @@ class BrowserConfig:
     slow_mo_ms: int = 0
     fullscreen: bool = False
     channel: str = ""
+    engine: str = "chromium"
+    fallbacks: tuple[str, ...] = ()
     cdp_url: str = ""
     viewport_width: int = 1280
     viewport_height: int = 800
@@ -107,6 +109,7 @@ class BrowserConfig:
             slow_mo_ms=settings.AGENT_SLOW_MO_MS,
             fullscreen=settings.AGENT_FULLSCREEN,
             channel=settings.AGENT_BROWSER_CHANNEL,
+            fallbacks=tuple(settings.AGENT_BROWSER_FALLBACKS),
             cdp_url=settings.AGENT_CDP_URL,
             allowed_domains=tuple(settings.AGENT_ALLOWED_DOMAINS),
             action_timeout_ms=settings.BROWSER_ACTION_TIMEOUT_MS,
@@ -201,6 +204,17 @@ def host_is_allowed(url: str, allowed: tuple[str, ...]) -> bool:
 
 INDICATOR_ID = "__baa_indicator__"
 TYPE_DELAY_MS = 30
+# A site that says no to the browser rather than to the page. Another browser may
+# be let in.
+BLOCKED_STATUSES = frozenset({401, 403, 429})
+MIN_RENDERED_TEXT = 200
+RENDER_WAIT_S = 6.0
+# Titles of the pages that stand in for the real one when a site is checking
+# whether it is talking to a person.
+_CHALLENGE = re.compile(
+    r"just a moment|attention required|access denied|forbidden|blocked|captcha|are you a robot",
+    re.IGNORECASE,
+)
 NEW_TAB_WAIT_S = 3.0
 NEW_TAB_PEEK_S = 0.4
 NEW_TAB_LOAD_MS = 8_000
@@ -327,6 +341,7 @@ class PlaywrightDriver:
         self._indicator_mode = "working"
         self._indicated: set[int] = set()
         self._sessions = TabSessionManager(max_tabs=self._config.max_tabs)
+        self._fallbacks_left: list[str] | None = None
 
     # ------------------------------------------------------------ lifecycle
 
@@ -335,7 +350,8 @@ class PlaywrightDriver:
             self._config = config
 
         if self._browser is None:
-            self._playwright = await async_playwright().start()
+            if self._playwright is None:
+                self._playwright = await async_playwright().start()
             self._browser = await self._connect_or_launch(self._playwright)
 
         if self.attached:
@@ -409,6 +425,10 @@ class PlaywrightDriver:
         if self.attached:
             return await playwright.chromium.connect_over_cdp(
                 self._config.cdp_url, slow_mo=self._config.slow_mo_ms
+            )
+        if self._config.engine == "firefox":
+            return await playwright.firefox.launch(
+                headless=self._config.headless, slow_mo=self._config.slow_mo_ms
             )
         return await playwright.chromium.launch(
             headless=self._config.headless,
@@ -604,11 +624,94 @@ class PlaywrightDriver:
     async def _navigate(self, action: NavigateAction) -> None:
         self._require_allowed(action.url)
         response = await self.page.goto(action.url, wait_until="domcontentloaded")
+        # A site that turns this browser away may let another one in. Each is a
+        # separate browser of its own; the person's Chrome is never touched.
+        rendered: bool | None = None
+        while (
+            response is not None
+            and response.status in BLOCKED_STATUSES
+            and not self.attached
+            and not (rendered := await self._rendered_a_page())
+            and (name := self._next_fallback())
+        ):
+            rendered = None
+            if not await self._switch_browser(name):
+                continue
+            response = await self.page.goto(action.url, wait_until="domcontentloaded")
         # A redirect can land somewhere outside the sandbox, so the destination
         # is re-checked rather than trusted from the request.
         self._require_allowed(self.page.url)
         if response is not None and response.status >= 400:
+            if response.status in BLOCKED_STATUSES and (
+                rendered if rendered is not None else await self._rendered_a_page()
+            ):
+                # Plenty of sites answer a signed-out visitor with 401 or 403 and
+                # still draw the page (a sign-in prompt, a preview). The person
+                # is better served by the agent looking at it, and handing over
+                # to them if it asks for a sign-in, than by a task that dies on
+                # a status code.
+                logger.info("navigation_status_ignored", status=response.status)
+                return
             raise PlaywrightError(f"Navigation returned HTTP {response.status}")
+
+    async def _rendered_a_page(self) -> bool:
+        """Is this a real page, not a bare error or a bot-check screen?
+
+        An app that draws itself after the load event is given a few seconds to
+        do it before it is called empty.
+        """
+        for _ in range(int(RENDER_WAIT_S / 0.5)):
+            try:
+                title = (await self.page.title()).strip()
+                length = await self.page.evaluate(
+                    "() => (document.body?.innerText || '').trim().length"
+                )
+            except PlaywrightError:
+                return False
+            if _CHALLENGE.search(title):
+                return False
+            if title and int(length) >= MIN_RENDERED_TEXT:
+                return True
+            await asyncio.sleep(0.5)
+        return False
+
+    def _next_fallback(self) -> str | None:
+        """The next browser to try, or None when they have all had their turn."""
+        if self._fallbacks_left is None:
+            tried = {self._config.channel or "chromium"}
+            self._fallbacks_left = [n for n in self._config.fallbacks if n not in tried]
+        return self._fallbacks_left.pop(0) if self._fallbacks_left else None
+
+    async def _switch_browser(self, name: str) -> bool:
+        """Carry on in a different browser. False when it is not installed.
+
+        The old window is closed first, so two do not sit on the screen. If the
+        new one will not start, the old configuration is brought back rather
+        than leaving the task with no browser at all.
+        """
+        original = self._config
+        config = replace(
+            original,
+            channel="" if name == "firefox" else name,
+            engine="firefox" if name == "firefox" else "chromium",
+        )
+        await self._sessions.close_all()
+        await self._close_context()
+        await self._close_browser()
+        if not self._owns_browser:
+            # The shared browser belongs to the runner. Leave it, and run on one
+            # of this driver's own from here.
+            self._browser = None
+            self._owns_browser = True
+        try:
+            await self.launch(config)
+        except PlaywrightError as exc:
+            logger.warning("fallback_browser_unavailable", browser=name, error=type(exc).__name__)
+            self._browser = None
+            await self.launch(original)
+            return False
+        logger.info("switched_browser", browser=name)
+        return True
 
     async def _type(self, action: TypeAction) -> None:
         """Put text into whatever the selector found, however the page built it.

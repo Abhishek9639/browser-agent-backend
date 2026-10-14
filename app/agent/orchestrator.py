@@ -28,6 +28,8 @@ from datetime import UTC, datetime
 from typing import Any, Final, cast
 from urllib.parse import urlsplit
 
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+
 from app.agent.browser.action_builder import build_action, selector_for
 from app.agent.browser.actions import ClickAction
 from app.agent.browser.driver import ActionResult
@@ -124,6 +126,10 @@ _SAFE_REASONS: Final[tuple[tuple[type[BaseException], str], ...]] = (
         "Run it again and leave the window open.",
     ),
     (BrowserError, "The browser could not carry out the planned action."),
+    # A page, or a browser that was slow to start, did not answer in time. Both
+    # Playwright's own timeout and asyncio's land here, since neither is a bug.
+    (PlaywrightTimeoutError, "The page took too long to respond. Try the task again."),
+    (TimeoutError, "Something took too long to respond. Try the task again."),
     # These three are ordinary weather rather than a bug in the task, and a
     # user who is told "internal error" has no idea whether to try again.
     (LLMRateLimited, "The model provider is rate limiting this account. Try again shortly."),

@@ -6,8 +6,10 @@ vocabularies meet, which is what lets the orchestrator be tested with a fake
 that has no browser behind it at all.
 """
 
+import asyncio
 from contextlib import suppress
 
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from pydantic import BaseModel
 
 from app.agent.browser.driver import ActionResult, BrowserSnapshot, PlaywrightDriver
@@ -30,11 +32,21 @@ class DriverBrowser:
         self._settle_timeout_ms = settings.AGENT_SETTLE_TIMEOUT_MS
 
     async def perceive(self) -> PageState:
-        state = await perceive(
-            self._driver.page,
-            self._driver,
-            token_budget=self._token_budget,
-        )
+        try:
+            state = await perceive(
+                self._driver.page,
+                self._driver,
+                token_budget=self._token_budget,
+            )
+        except (PlaywrightTimeoutError, TimeoutError):
+            # A heavy page, or a browser that has only just started, can miss the
+            # first read. A second look is nearly always enough.
+            await asyncio.sleep(1.0)
+            state = await perceive(
+                self._driver.page,
+                self._driver,
+                token_budget=self._token_budget,
+            )
         # Perception is the only moment the session manager can learn what a
         # tab holds without doing browser work of its own, so this is where
         # the labels behind "Tabs: t1 SkyFare results" come from.
@@ -52,10 +64,17 @@ class DriverBrowser:
         # The coloured frame is for the person watching, not for the model.
         await self._driver.hide_indicator(True)
         try:
-            return await capture(
-                self._driver.page,  # type: ignore[arg-type]
-                viewport=await self._driver.viewport_size(),
-            )
+            try:
+                return await capture(
+                    self._driver.page,  # type: ignore[arg-type]
+                    viewport=await self._driver.viewport_size(),
+                )
+            except PlaywrightTimeoutError:
+                await asyncio.sleep(1.0)
+                return await capture(
+                    self._driver.page,  # type: ignore[arg-type]
+                    viewport=await self._driver.viewport_size(),
+                )
         finally:
             await self._driver.hide_indicator(False)
 

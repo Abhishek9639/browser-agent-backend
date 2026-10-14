@@ -839,3 +839,124 @@ async def test_a_window_closed_under_the_task_is_reported_as_closed_not_unlaunch
     # An action on a closed window raises the same error rather than a vague one.
     with pytest.raises(BrowserClosedError):
         await driver.execute(ClickAction(selector="#visible"))
+
+
+# ------------------------------------------------------- a site that says no
+
+
+async def test_a_site_that_refuses_this_browser_is_tried_in_another(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """403 for Chromium, 200 for Firefox: the driver moves to Firefox and carries on."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    monkeypatch.setattr("app.agent.browser.driver.RENDER_WAIT_S", 1.0)
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            firefox = "Firefox" in (self.headers.get("User-Agent") or "")
+            body = b"<title>in</title><h1>welcome</h1>" if firefox else b"denied"
+            self.send_response(200 if firefox else 403)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_port}/"
+    settings = Settings(
+        AGENT_HEADLESS=True,
+        AGENT_BROWSER_FALLBACKS=["firefox"],
+        AGENT_ALLOWED_DOMAINS=["127.0.0.1"],
+    )
+    driver = PlaywrightDriver(settings)
+    try:
+        await driver.launch()
+        result = await driver.execute(NavigateAction(url=url))
+
+        assert result.ok, result.error_message
+        assert "Firefox" in await driver.page.evaluate("navigator.userAgent")
+        assert "welcome" in await driver.page.inner_text("h1")
+    finally:
+        await driver.close()
+        server.shutdown()
+
+
+async def test_a_refusal_with_no_other_browser_to_try_still_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    monkeypatch.setattr("app.agent.browser.driver.RENDER_WAIT_S", 1.0)
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(403)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    settings = Settings(
+        AGENT_HEADLESS=True, AGENT_BROWSER_FALLBACKS=[], AGENT_ALLOWED_DOMAINS=["127.0.0.1"]
+    )
+    driver = PlaywrightDriver(settings)
+    try:
+        await driver.launch()
+        result = await driver.execute(NavigateAction(url=f"http://127.0.0.1:{server.server_port}/"))
+
+        assert not result.ok
+        assert "403" in (result.error_message or "")
+    finally:
+        await driver.close()
+        server.shutdown()
+
+
+async def test_a_403_that_still_draws_the_page_is_not_a_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Signed-out visitors often get a 403 and the page anyway; the agent should look at it."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    monkeypatch.setattr("app.agent.browser.driver.RENDER_WAIT_S", 1.0)
+    body = (
+        "<title>Practice problem</title><p>" + "Sign in to see the full problem. " * 20
+    ).encode()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(403)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    settings = Settings(
+        AGENT_HEADLESS=True, AGENT_BROWSER_FALLBACKS=[], AGENT_ALLOWED_DOMAINS=["127.0.0.1"]
+    )
+    driver = PlaywrightDriver(settings)
+    try:
+        await driver.launch()
+        result = await driver.execute(NavigateAction(url=f"http://127.0.0.1:{server.server_port}/"))
+
+        assert result.ok, result.error_message
+        assert await driver.page.title() == "Practice problem"
+    finally:
+        await driver.close()
+        server.shutdown()

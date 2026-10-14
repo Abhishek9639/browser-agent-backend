@@ -219,6 +219,10 @@ class Settings(BaseSettings):
     # for it. Longer than an ordinary approval, because signing up means email
     # codes and forms. The wait does not count against AGENT_MAX_TASK_SECONDS.
     AGENT_LOGIN_WAIT_SECONDS: int = 900
+    # Other browsers to try, in order, when a site answers the agent's browser
+    # with 401, 403 or 429. A separate browser, never the person's own. Names are
+    # `msedge`, `chrome` or `firefox`; empty turns it off.
+    AGENT_BROWSER_FALLBACKS: CsvList = Field(default_factory=lambda: ["msedge", "firefox"])
     # Open the visible browser maximised and let the page fill the window,
     # instead of a fixed 1280x800 box. Ignored when headless or attached to the
     # user's own browser.
@@ -298,7 +302,13 @@ class Settings(BaseSettings):
     STORAGE_S3_SECRET_KEY: SecretStr | None = None
 
     # ---------------------------------------------------------------- validators
-    @field_validator("CORS_ORIGINS", "AGENT_ALLOWED_DOMAINS", "RISK_HIGH_PHRASES", mode="before")
+    @field_validator(
+        "CORS_ORIGINS",
+        "AGENT_ALLOWED_DOMAINS",
+        "AGENT_BROWSER_FALLBACKS",
+        "RISK_HIGH_PHRASES",
+        mode="before",
+    )
     @classmethod
     def _split_csv(cls, value: object) -> object:
         """Accept ``a,b,c`` as well as a real list."""
