@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"><title>Inner scroll</title>
+  <style>
+    html, body { height: 100%; margin: 0; overflow: hidden; }
+    #pane { height: 100%; overflow-y: auto; }
+    .row { height: 80px; border-bottom: 1px solid #ccc; }
+  </style>
+</head>
+<body>
+  <div id="pane">
+    <script>
+      for (let i = 0; i < 60; i++) {
+        const row = document.createElement('div');
+        row.className = 'row';
+        row.textContent = 'Row ' + i;
+        document.getElementById('pane').appendChild(row);
+      }
+    </script>
+  </div>
+</body>
+</html>

@@ -2,6 +2,7 @@
 
 from typing import Protocol
 
+from app.agent.browser.scroller import METRICS_JS
 from app.agent.perception.dom_extractor import extract
 from app.agent.perception.state import PageState, ScrollState, compute_dom_hash
 from app.agent.perception.summarizer import SUMMARY_TOKEN_BUDGET, build_header, build_summary
@@ -13,21 +14,16 @@ logger = get_logger(__name__)
 
 # Page metrics in one round trip. Doing these as separate evaluate calls would
 # be three crossings of the process boundary per step.
-_METRICS = """() => ({
-  url: location.href,
-  title: document.title,
-  scrollY: Math.round(window.scrollY),
-  text: ((document.body && document.body.innerText) || "").slice(0, 4000),
-  maxScrollY: Math.max(
-    0,
-    Math.round(
-      Math.max(
-        document.documentElement.scrollHeight,
-        document.body ? document.body.scrollHeight : 0
-      ) - window.innerHeight
-    )
-  )
-})"""
+_METRICS = (
+    "() => { const m = ("
+    + METRICS_JS
+    + ")(); return {"
+    + " url: location.href,"
+    + " title: document.title,"
+    + " scrollY: m[0],"
+    + ' text: ((document.body && document.body.innerText) || "").slice(0, 4000),'
+    + " maxScrollY: m[1] }; }"
+)
 
 
 class TabSource(Protocol):

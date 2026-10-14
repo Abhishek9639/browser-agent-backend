@@ -215,6 +215,10 @@ class Settings(BaseSettings):
         ]
     )
     AGENT_HEADLESS: bool = True
+    # How long a task waits for a person to sign in or sign up when a site asks
+    # for it. Longer than an ordinary approval, because signing up means email
+    # codes and forms. The wait does not count against AGENT_MAX_TASK_SECONDS.
+    AGENT_LOGIN_WAIT_SECONDS: int = 900
     # Open the visible browser maximised and let the page fill the window,
     # instead of a fixed 1280x800 box. Ignored when headless or attached to the
     # user's own browser.

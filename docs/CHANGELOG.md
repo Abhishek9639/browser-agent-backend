@@ -4,6 +4,19 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B42 - Typing, scrolling and login waits on any site
+
+Added
+
+- Typing handles the widgets real sites use: a selector that lands on a wrapper finds the field inside it; a field that discards a programmatic fill (a mask, an autocomplete that watches key events) is retyped at the keyboard; something with nothing editable in it is focused and typed at. The planner is refused when it targets something that is not a field while fields exist (an icon button between two inputs was taken for a date box), and is told which fields there are.
+- Scrolling and scroll position use whatever actually scrolls: the window, or the largest inner panel of an app shell. A smooth scroll waits until the position stops changing.
+- Before a click or type, if something covers the target (an open calendar, an autocomplete list), Escape is pressed once to close it.
+- `AGENT_LOGIN_WAIT_SECONDS` (default 900): how long to wait for a person to sign in or sign up. The wait is taken out of the task's time limit (`TaskBudget.exclude`), so a slow login no longer leaves the task out of time. A page that says it needs a login ("please login to continue") now starts the wait too, not only a visible password field.
+
+Fixed
+
+- Playwright's "Element is not an <input>" was classed UNKNOWN, so recovery had nothing to try; it is now NOT_INTERACTABLE.
+
 ### B41 - Full screen, a visible pointer, and autocomplete
 
 Added

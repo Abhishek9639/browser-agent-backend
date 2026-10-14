@@ -335,6 +335,7 @@ class ApprovalGate(Protocol):
         bbox: dict[str, int] | None,
         reasons: list[str],
         site: str,
+        timeout_seconds: int | None = None,
     ) -> ApprovalOutcome: ...
 
 
@@ -456,6 +457,7 @@ class DenyApprovals:
         bbox: dict[str, int] | None,
         reasons: list[str],
         site: str,
+        timeout_seconds: int | None = None,
     ) -> ApprovalOutcome:
         return ApprovalOutcome(
             approved=False,

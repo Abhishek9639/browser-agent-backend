@@ -67,6 +67,7 @@ from app.agent.planner.planner import (
     PlannerResult,
     StepSummary,
     input_target_problem,
+    not_editable_problem,
 )
 from app.agent.planner.schema import Decision, ExpectedOutcome
 from app.agent.recovery.runner import RecoveryRunner, failure_sentence
@@ -262,6 +263,7 @@ class Orchestrator:
         self._unit_of_work = unit_of_work
         self._settings = settings
         self._budget = budget
+        self._running_budget: TaskBudget | None = None
 
         # Every one of these is a part that has not been built. The defaults
         # are named after what they do not do, so a stack trace or a log line
@@ -297,6 +299,7 @@ class Orchestrator:
         """The run itself, with the task id already bound for logging."""
         started = time.monotonic()
         budget = self._budget or TaskBudget.from_settings(self._settings)
+        self._running_budget = budget
 
         status = TaskStatus.EXECUTION_FAILED
         final_answer: str | None = None
@@ -428,8 +431,8 @@ class Orchestrator:
             decision = grounded.decision
             if grounded.used_vision:
                 tally.vision_steps += 1
-            if decision.target_index != planned.decision.target_index and input_target_problem(
-                decision, state
+            if decision.target_index != planned.decision.target_index and (
+                input_target_problem(decision, state) or not_editable_problem(decision, state)
             ):
                 # Grounding moved the target onto an unnamed or covered input
                 # that the planner was already refused for. Keep the planner's.
@@ -875,7 +878,16 @@ class Orchestrator:
         )
         await self._indicate("waiting")
         try:
-            await self._gate(task_id, step_number, decision, RiskLevel.HIGH, None, [prompt], state)
+            await self._gate(
+                task_id,
+                step_number,
+                decision,
+                RiskLevel.HIGH,
+                None,
+                [prompt],
+                state,
+                wait_seconds=self._settings.AGENT_LOGIN_WAIT_SECONDS,
+            )
         finally:
             await self._indicate("working")
         # Approve resumes into ACTING, and the machine only allows ACTING ->
@@ -900,6 +912,7 @@ class Orchestrator:
         element: ElementInfo | None,
         reasons: list[str],
         state: PageState,
+        wait_seconds: int | None = None,
     ) -> None:
         """Park on a human.
 
@@ -910,6 +923,7 @@ class Orchestrator:
         """
         await self._set_status(task_id, TaskStatus.AWAITING_APPROVAL)
         shot = await self._browser.screenshot()
+        waited_from = time.monotonic()
         answer = await self._approvals.request(
             task_id=task_id,
             step_number=step_number,
@@ -922,7 +936,11 @@ class Orchestrator:
             # answer; "approve step 6" is homework.
             reasons=reasons,
             site=_site_of(state),
+            timeout_seconds=wait_seconds,
         )
+        # The person's time is not the agent's: take it out of the task clock.
+        if self._running_budget is not None:
+            self._running_budget.exclude(time.monotonic() - waited_from)
         if answer.approved:
             return
 
@@ -1315,6 +1333,15 @@ MAX_LOGIN_PAUSES: Final = 3
 MAX_OVERLAY_CLEARS: Final = 2
 
 _LOGIN_PATH: Final = re.compile(r"/(log-?in|sign-?in|sign-?up|register|accounts?/login)(/|$)", re.I)
+# The page says outright that it wants a sign-in before it will go on. Phrases,
+# not the bare word "login": nearly every site has a Login button in its header.
+_LOGIN_WORDING: Final = re.compile(
+    r"(log ?in|sign ?in) (is )?(required|to continue|to proceed|to book|to view|first)"
+    r"|(please|you (must|need to|have to)) (log ?in|sign ?in)"
+    r"|(session|login) (has )?(expired|timed out)"
+    r"|(log ?in|sign ?in) to (your account|continue)",
+    re.IGNORECASE,
+)
 # A goal that mentions credentials is a goal about signing in; do not second-guess it.
 _GOAL_IS_LOGIN: Final = re.compile(r"password|credential|log ?in with|sign ?in with", re.I)
 
@@ -1330,6 +1357,8 @@ def _login_wall(state: PageState, instruction: str) -> bool:
         return False
     usable = [e for e in state.elements if not e.disabled and not e.covered]
     if any(e.input_type == "password" for e in usable):
+        return True
+    if _LOGIN_WORDING.search(state.text) and any(e.tag in {"input", "button", "a"} for e in usable):
         return True
     if _LOGIN_PATH.search(urlsplit(state.url).path):
         return any(e.input_type in {"email", "tel"} or "email" in e.name.lower() for e in usable)

@@ -1398,3 +1398,30 @@ async def test_a_replayed_step_that_fails_verification_falls_back_to_the_planner
 
     assert outcome.status is TaskStatus.COMPLETED
     assert outcome.final_answer == "Answered by the planner"
+
+
+def test_the_page_saying_it_needs_a_login_is_a_login_wall() -> None:
+    from app.agent.orchestrator import _login_wall
+
+    button = element(0, name="Login").model_copy(update={"tag": "button"})
+    needs = page(button).model_copy(update={"text": "Please login to continue booking."})
+    plain = page(button).model_copy(update={"text": "Welcome. Login | Register"})
+
+    assert _login_wall(needs, "book a ticket")
+    assert not _login_wall(plain, "book a ticket")
+
+
+async def test_the_login_wait_is_long_and_does_not_count_against_the_task_clock(
+    settings: Settings,
+) -> None:
+    gate = ApprovingGate()
+    rig = build(
+        script=[done_payload("Signed in and done")],
+        settings=settings.model_copy(update={"AGENT_LOGIN_WAIT_SECONDS": 1234}),
+        browser=LoginThenFormBrowser(),
+        approvals=gate,
+    )
+
+    await rig.orchestrator.run(TASK_ID)
+
+    assert gate.requests[0]["timeout_seconds"] == 1234

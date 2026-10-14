@@ -13,6 +13,7 @@ together:
 
 import asyncio
 import json
+import re
 import time
 from dataclasses import dataclass
 from types import TracebackType
@@ -54,6 +55,7 @@ from app.agent.browser.errors import (
     ActionNotAllowedError,
     DomainNotAllowedError,
 )
+from app.agent.browser.scroller import METRICS_JS, scroll_by_js
 from app.agent.browser.sessions import DEFAULT_MAX_TABS, TabLimitReached, TabSessionManager
 from app.agent.perception.dom_extractor import locator_in_any_frame
 from app.core.config import Settings
@@ -196,8 +198,19 @@ def host_is_allowed(url: str, allowed: tuple[str, ...]) -> bool:
 
 
 INDICATOR_ID = "__baa_indicator__"
+TYPE_DELAY_MS = 30
+OBSTRUCTION_SETTLE_S = 0.4
+# Things a person can type into. Checkboxes, radios and buttons are inputs too,
+# but typing into them is never what anybody meant.
+EDITABLE_SELECTOR = (
+    "input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=button])"
+    ":not([type=submit]):not([type=reset]):not([type=file]):not([type=image]), textarea, "
+    "[contenteditable=''], [contenteditable='true'], [role=textbox], [role=searchbox], "
+    "[role=combobox]"
+)
 GLIDE_STEPS = 22
-SMOOTH_SCROLL_S = 0.7
+SMOOTH_SCROLL_POLL_S = 0.1
+SMOOTH_SCROLL_MAX_S = 3.0
 
 _INDICATOR_JS = """
 (function (mode) {
@@ -481,7 +494,7 @@ class PlaywrightDriver:
         page = self.page
         try:
             title = await page.title()
-            scroll_y = int(await page.evaluate("() => Math.round(window.scrollY)"))
+            scroll_y = int((await page.evaluate(METRICS_JS))[0])
         except PlaywrightError:
             # A page mid-navigation can refuse both. A snapshot is never worth
             # failing a step over.
@@ -551,6 +564,7 @@ class PlaywrightDriver:
                 await self._navigate(action)
             case ClickAction():
                 locator = await self._locate(action.selector)
+                await self._clear_obstruction(locator)
                 await self._glide_to(locator)
                 await locator.click()
             case TypeAction():
@@ -587,13 +601,99 @@ class PlaywrightDriver:
             raise PlaywrightError(f"Navigation returned HTTP {response.status}")
 
     async def _type(self, action: TypeAction) -> None:
+        """Put text into whatever the selector found, however the page built it.
+
+        A plain field takes ``fill``. A custom widget (a date picker, an
+        autocomplete, a masked input) may ignore it, or the selector may land
+        on the wrapper around the real field, so each of those is handled
+        rather than failing the step.
+        """
         locator = await self._locate(action.selector)
+        await self._clear_obstruction(locator)
         await self._glide_to(locator)
+        field = await self._editable_in(locator)
+
+        if field is None:
+            # Nothing editable to fill: focus it and type at the keyboard, which
+            # is what a custom widget listens for.
+            await locator.click()
+            if action.clear_first:
+                await self.page.keyboard.press("Control+A")
+                await self.page.keyboard.press("Backspace")
+            await self.page.keyboard.type(action.value, delay=TYPE_DELAY_MS)
+            if action.press_enter:
+                await self.page.keyboard.press("Enter")
+            return
+
         if action.clear_first:
-            await locator.fill("")
-        await locator.fill(action.value)
+            await field.fill("")
+        await field.fill(action.value)
+        if not await self._holds(field, action.value):
+            # The widget threw the value away, which is what a mask or an
+            # autocomplete that watches key events does to a programmatic fill.
+            # Type it the way a person would.
+            await field.click()
+            await field.fill("")
+            await field.press_sequentially(action.value, delay=TYPE_DELAY_MS)
         if action.press_enter:
-            await locator.press("Enter")
+            await field.press("Enter")
+
+    async def _editable_in(self, locator: Locator) -> Locator | None:
+        """The locator itself if it is a field, else a field inside it, else None."""
+        if await locator.evaluate("(el, sel) => el.matches(sel)", EDITABLE_SELECTOR):
+            return locator
+        inner = locator.locator(EDITABLE_SELECTOR).first
+        return inner if await inner.count() else None
+
+    @staticmethod
+    async def _holds(field: Locator, wanted: str) -> bool:
+        """Does the field still hold what was put in it, give or take formatting?"""
+        try:
+            held = await field.input_value()
+        except PlaywrightError:
+            return True  # not a form control (contenteditable): nothing to compare
+        squash = re.compile(r"[^a-z0-9]+")
+        have, want = squash.sub("", held.casefold()), squash.sub("", wanted.casefold())
+        return bool(want) and bool(have) and (want in have or have in want)
+
+    async def _clear_obstruction(self, locator: Locator) -> None:
+        """Close whatever transient widget is sitting over the target, if anything.
+
+        A date picker stays open after the date is typed, an autocomplete list
+        stays open after a station is chosen, a dropdown stays open until
+        something else is clicked, and each of them covers the next control the
+        agent wants. Playwright then waits ten seconds for a click that can
+        never land. Escape closes a well-built widget and does nothing to a page
+        without one, so it is tried once, and only when the target really is
+        covered.
+        """
+        try:
+            await locator.scroll_into_view_if_needed(timeout=2_000)
+            if not await self._is_covered(locator):
+                return
+            await self.page.keyboard.press("Escape")
+            await asyncio.sleep(OBSTRUCTION_SETTLE_S)
+            if await self._is_covered(locator):
+                logger.info("target_still_covered")
+        except PlaywrightError as exc:
+            logger.debug("obstruction_check_failed", error_type=type(exc).__name__)
+
+    @staticmethod
+    async def _is_covered(locator: Locator) -> bool:
+        """Is something other than the target (or part of it) at the target's centre?"""
+        return bool(
+            await locator.evaluate(
+                """(el) => {
+                  const r = el.getBoundingClientRect();
+                  if (r.width === 0 || r.height === 0) return false;
+                  const x = r.left + r.width / 2;
+                  const y = r.top + r.height / 2;
+                  if (x < 0 || y < 0 || x > innerWidth || y > innerHeight) return false;
+                  const top = document.elementFromPoint(x, y);
+                  return !(top && (el === top || el.contains(top) || top.contains(el)));
+                }"""
+            )
+        )
 
     async def _glide_to(self, locator: Locator) -> None:
         """Bring the target into view and move the pointer to it in a visible arc.
@@ -625,14 +725,39 @@ class PlaywrightDriver:
         """
         delta = action.pixels if action.direction == "down" else -action.pixels
         smooth = self._shows_indicator
-        await self.page.evaluate(
-            "([dy, how]) => window.scrollBy({ top: dy, left: 0, behavior: how })",
-            [delta, "smooth" if smooth else "instant"],
-        )
+        start, room = (0, 0)
         if smooth:
-            # A smooth scroll takes a moment, and the check that follows reads
-            # the position straight away.
-            await asyncio.sleep(SMOOTH_SCROLL_S)
+            start, room = (int(v) for v in await self.page.evaluate(METRICS_JS))
+        # Nowhere to go (already at the end in that direction): nothing to wait for.
+        can_move = (start < room - 1) if delta > 0 else (start > 0)
+        # Whatever actually scrolls: the window, or the panel an app shell
+        # scrolls instead of it.
+        await self.page.evaluate(scroll_by_js("smooth" if smooth else "instant"), delta)
+        if smooth and can_move:
+            await self._wait_for_scroll(start)
+
+    async def _wait_for_scroll(self, start: int) -> None:
+        """Wait until a smooth scroll has stopped moving.
+
+        It can start late (a headless browser throttles the animation) and the
+        check that follows reads the position straight away, so a fixed sleep is
+        either too short or wasteful. Gives up after SMOOTH_SCROLL_MAX_S, which
+        is what happens when there was nowhere to scroll to.
+        """
+        last = start
+        still = 0
+        for _ in range(int(SMOOTH_SCROLL_MAX_S / SMOOTH_SCROLL_POLL_S)):
+            await asyncio.sleep(SMOOTH_SCROLL_POLL_S)
+            try:
+                now = int((await self.page.evaluate(METRICS_JS))[0])
+            except PlaywrightError:
+                return
+            if now != last:
+                last, still = now, 0
+            elif last != start:
+                still += 1
+                if still >= 2:
+                    return
 
     async def _extract(self, action: ExtractAction) -> str:
         if action.selector:
@@ -789,6 +914,8 @@ class PlaywrightDriver:
                 "not editable",
                 "intercepts pointer events",
                 "element is not attached",
+                "not an <input>",
+                "not a form control",
                 "outside of the viewport",
             )
         ):

@@ -693,3 +693,72 @@ async def test_headless_runs_draw_no_pointer(driver: PlaywrightDriver, html_serv
     await driver.set_indicator("working")
 
     assert not await driver.page.evaluate("!!document.getElementById('__baa_cursor__')")
+
+
+# ------------------------------------------------------------------ typing and scrolling anywhere
+
+
+async def test_typing_into_a_wrapper_finds_the_field_inside_it(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    await goto(driver, html_server, "widget_input.html")
+
+    result = await driver.execute(TypeAction(selector="#wrapper", value="02/11/2026"))
+
+    assert result.ok, result.error_message
+    assert await driver.page.input_value("#masked") == "02/11/2026"
+
+
+async def test_a_widget_that_discards_a_fill_still_gets_the_text(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    """The field empties anything that did not come from the keyboard."""
+    await goto(driver, html_server, "widget_input.html")
+
+    result = await driver.execute(TypeAction(selector="#masked", value="02112026"))
+
+    assert result.ok, result.error_message
+    assert await driver.page.input_value("#masked") == "02112026"
+
+
+async def test_typing_into_a_button_is_a_clear_failure_not_unknown(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    await goto(driver, html_server, "widget_input.html")
+
+    result = await driver.execute(TypeAction(selector="#swap", value="hello"))
+
+    # Nothing to fill, so the keyboard path runs; the button simply holds no text.
+    assert result.error_code is not ActionErrorCode.UNKNOWN
+
+
+async def test_a_page_that_scrolls_an_inner_panel_can_be_scrolled_and_measured(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    await goto(driver, html_server, "inner_scroll.html")
+    before = await driver.capture_state()
+
+    result = await driver.execute(ScrollAction(direction="down", pixels=500))
+    after = await driver.capture_state()
+
+    assert result.ok
+    assert await driver.page.evaluate("document.getElementById('pane').scrollTop") >= 400
+    assert before.scroll_y == 0
+    assert after.scroll_y >= 400
+
+
+async def test_a_picker_left_open_over_the_next_control_is_closed_before_clicking(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    """The calendar stays open after the date is typed and covers the Search button."""
+    await goto(driver, html_server, "open_picker.html")
+    await driver.execute(TypeAction(selector="#date", value="02/11/2026"))
+    assert (
+        await driver.page.evaluate("getComputedStyle(document.getElementById('picker')).display")
+        == "block"
+    )
+
+    result = await driver.execute(ClickAction(selector="#go"))
+
+    assert result.ok, result.error_message
+    assert await driver.page.text_content("#log") == "searched"

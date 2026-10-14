@@ -73,6 +73,7 @@ class DatabaseApprovalGate:
         bbox: dict[str, int] | None,
         reasons: list[str],
         site: str,
+        timeout_seconds: int | None = None,
     ) -> ApprovalOutcome:
         description = describe_action(decision, site, reasons)
         approval_id = await self._open(task_id, decision, risk, description)
@@ -100,7 +101,7 @@ class DatabaseApprovalGate:
         )
 
         try:
-            async with asyncio.timeout(self._timeout):
+            async with asyncio.timeout(timeout_seconds or self._timeout):
                 await waiter.wait()
         except TimeoutError:
             return await self._expire(task_id, approval_id)

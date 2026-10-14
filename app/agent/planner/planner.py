@@ -86,6 +86,48 @@ MAX_ATTEMPTS: Final = 2
 _TEXT_INPUT_TYPES = {None, "text", "search", "email", "tel", "url"}
 
 
+_NOT_TEXT_INPUTS = {"checkbox", "radio", "button", "submit", "reset", "file", "image", "hidden"}
+_EDITABLE_ROLES = {"textbox", "searchbox", "combobox", "spinbutton"}
+
+
+def is_editable(element: Any) -> bool:
+    """Can a person type into this element?"""
+    if element.tag in {"textarea", "select"}:
+        return True
+    if element.tag == "input":
+        return (element.input_type or "text") not in _NOT_TEXT_INPUTS
+    return (element.role or "") in _EDITABLE_ROLES
+
+
+def not_editable_problem(decision: Decision, page_state: PageState) -> str | None:
+    """Refuse typing into something that is not a field, when there are fields.
+
+    A small icon button between two inputs, a label, a heading: Playwright
+    answers "element is not an <input>", the step fails, and the recovery
+    ladder has nothing to try. Naming the real fields in the repair turn is
+    cheaper and works on any site.
+    """
+    if decision.action is not ActionType.TYPE or decision.target_index is None:
+        return None
+    target = page_state.element_at(decision.target_index)
+    if target is None or is_editable(target):
+        return None
+
+    fields = [e for e in page_state.elements if is_editable(e) and not e.disabled]
+    if not fields:
+        return None
+    fields.sort(key=lambda e: (bool(e.value), not e.in_viewport, e.index))
+    shown = ", ".join(
+        f"[{e.index}] {((e.name or e.placeholder or '').strip() or 'unnamed')[:28]!r}"
+        + (f" (holds {e.value[:16]!r})" if e.value else "")
+        for e in fields[:8]
+    )
+    return (
+        f"targetIndex {target.index} is a <{target.tag}>, not something you can type into. "
+        f"Fields on this page: {shown}. Choose the field the text belongs in."
+    )
+
+
 def input_target_problem(decision: Decision, page_state: PageState) -> str | None:
     """Refuse typing into a hidden or unnamed field when a proper one exists.
 
@@ -354,6 +396,10 @@ class Planner:
                 f"targetIndex {decision.target_index} is not in the page state. "
                 f"Available indices: {shown}. Choose one of those, or scroll first."
             )
+
+        hard = not_editable_problem(decision, page_state)
+        if hard:
+            return hard
 
         # A suggestion about which input to use, not a hard rule: asked once, it
         # steers the model, but on the last attempt the model's choice stands

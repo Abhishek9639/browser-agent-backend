@@ -465,3 +465,39 @@ def test_a_filled_named_input_is_not_offered_as_the_better_choice() -> None:
     )
 
     assert input_target_problem(_type_decision(20), _state_with(unnamed, filled)) is None
+
+
+def _button(index: int) -> ElementInfo:
+    return ElementInfo(
+        index=index,
+        tag="button",
+        name="",
+        bbox=BoundingBox(x=405, y=369, width=26, height=26),
+        in_viewport=True,
+    )
+
+
+def test_typing_into_a_button_names_the_real_fields() -> None:
+    from app.agent.planner.planner import not_editable_problem
+
+    state = _state_with(_button(18), _field(17, covered=False, name="From"))
+
+    problem = not_editable_problem(_type_decision(18), state)
+
+    assert problem is not None
+    assert "17" in problem
+    assert "<button>" in problem
+
+
+def test_typing_into_a_field_is_never_refused_as_not_editable() -> None:
+    from app.agent.planner.planner import not_editable_problem
+
+    state = _state_with(_button(18), _field(17, covered=False, name="From"))
+
+    assert not_editable_problem(_type_decision(17), state) is None
+
+
+def test_a_page_with_no_fields_is_left_to_the_driver() -> None:
+    from app.agent.planner.planner import not_editable_problem
+
+    assert not_editable_problem(_type_decision(18), _state_with(_button(18))) is None

@@ -177,3 +177,14 @@ def test_the_clock_is_monotonic_by_default() -> None:
     budget = TaskBudget(max_steps=1, max_seconds=1)
 
     assert budget._clock is time.monotonic
+
+
+def test_time_spent_waiting_on_a_person_does_not_count() -> None:
+    now = [0.0]
+    budget = TaskBudget(max_steps=10, max_seconds=100.0, clock=lambda: now[0])
+
+    now[0] = 90.0
+    budget.exclude(80.0)  # eighty seconds were spent waiting for a login
+
+    assert budget.elapsed_seconds == 10.0
+    budget.check()  # still inside the limit
