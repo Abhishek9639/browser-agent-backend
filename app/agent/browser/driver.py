@@ -12,6 +12,7 @@ together:
 """
 
 import asyncio
+import contextlib
 import json
 import re
 import time
@@ -199,6 +200,9 @@ def host_is_allowed(url: str, allowed: tuple[str, ...]) -> bool:
 
 INDICATOR_ID = "__baa_indicator__"
 TYPE_DELAY_MS = 30
+NEW_TAB_WAIT_S = 3.0
+NEW_TAB_PEEK_S = 0.4
+NEW_TAB_LOAD_MS = 8_000
 OBSTRUCTION_SETTLE_S = 0.4
 # Things a person can type into. Checkboxes, radios and buttons are inputs too,
 # but typing into them is never what anybody meant.
@@ -566,7 +570,10 @@ class PlaywrightDriver:
                 locator = await self._locate(action.selector)
                 await self._clear_obstruction(locator)
                 await self._glide_to(locator)
+                tabs_before = set(self._sessions.tab_ids)
+                opens_tab = await self._opens_new_tab(locator)
                 await locator.click()
+                await self._follow_new_tab(tabs_before, opens_tab)
             case TypeAction():
                 await self._type(action)
             case ScrollAction():
@@ -655,6 +662,58 @@ class PlaywrightDriver:
         squash = re.compile(r"[^a-z0-9]+")
         have, want = squash.sub("", held.casefold()), squash.sub("", wanted.casefold())
         return bool(want) and bool(have) and (want in have or have in want)
+
+    @staticmethod
+    async def _opens_new_tab(locator: Locator) -> bool:
+        """Is the target a link that asks for a new tab?"""
+        try:
+            return bool(
+                await locator.evaluate(
+                    "(el) => { const a = el.closest('a'); return !!(a && a.target === '_blank'); }"
+                )
+            )
+        except PlaywrightError:
+            return False
+
+    async def _follow_new_tab(self, before: set[str], expected: bool) -> None:
+        """Move to a tab the click opened, as a person looking at the screen would.
+
+        Listings, "open in new tab" links and sign-in popups all land in a tab
+        of their own. The click succeeded, but the agent kept looking at the
+        page it started on, saw nothing change, and called a working step
+        failed. A link that asked for a new tab is waited for; anything else
+        only gets a short look, for a script that opens one itself.
+        """
+        limit = NEW_TAB_WAIT_S if expected else NEW_TAB_PEEK_S
+        waited = 0.0
+        opened: list[str] = []
+        while waited <= limit:
+            opened = [tab for tab in self._sessions.tab_ids if tab not in before]
+            if opened:
+                break
+            await asyncio.sleep(0.1)
+            waited += 0.1
+        if not opened:
+            return
+
+        newest = max(opened, key=lambda tab: int(tab.removeprefix("t")))
+        previous = self._sessions.active_tab_id
+        self._sessions.switch(newest)
+        page = self.page
+        with contextlib.suppress(PlaywrightError):
+            await page.wait_for_load_state("domcontentloaded", timeout=NEW_TAB_LOAD_MS)
+        if page.url not in {"", "about:blank"}:
+            try:
+                self._require_allowed(page.url)
+            except DomainNotAllowedError:
+                # A page outside the sandbox does not get to be the one the agent
+                # works on. Close it, go back, and report the breach.
+                await self._sessions.close(newest)
+                if previous in self._sessions.tab_ids:
+                    self._sessions.switch(previous)
+                raise
+        await self._focus()
+        logger.info("followed_new_tab", tab_id=newest)
 
     async def _clear_obstruction(self, locator: Locator) -> None:
         """Close whatever transient widget is sitting over the target, if anything.

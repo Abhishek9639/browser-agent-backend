@@ -4,6 +4,13 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B43 - Follow a click into the tab it opens
+
+Changed
+
+- A click that opens a new tab (a `target="_blank"` link, a script's `window.open`, a sign-in popup) now takes the agent into that tab, as a person looking at the screen would. Before, the agent kept looking at the page it started on, so a listing that opened correctly was verified against the old page's unchanged URL and reported as a failed click. A link that asks for a new tab is waited for (up to 3 seconds); any other click only gets a short look (0.4 seconds). A new tab outside the allowed domains is closed, the agent returns to where it was, and the breach is reported.
+- This reverses an earlier rule, that opening a tab does not move the agent and switching is always the planner's decision. The planner can still `switch_tab` back to the page it came from, and its prompt now says so.
+
 ### B42 - Typing, scrolling and login waits on any site
 
 Added

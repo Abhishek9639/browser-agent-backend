@@ -762,3 +762,61 @@ async def test_a_picker_left_open_over_the_next_control_is_closed_before_clickin
 
     assert result.ok, result.error_message
     assert await driver.page.text_content("#log") == "searched"
+
+
+# ------------------------------------------------------------------ links that open a new tab
+
+
+async def test_a_link_that_opens_a_new_tab_is_followed(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    """The listing opens beside the results; the agent must look at the listing."""
+    await goto(driver, html_server, "popup_link.html")
+
+    result = await driver.execute(ClickAction(selector="#blank"))
+
+    assert result.ok, result.error_message
+    assert len(driver.sessions.tab_ids) == 2
+    assert driver.page.url.endswith("detail.html")
+    assert result.url_after.endswith("detail.html")
+
+
+async def test_a_script_that_opens_a_window_is_followed_too(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    await goto(driver, html_server, "popup_link.html")
+
+    result = await driver.execute(ClickAction(selector="#script"))
+
+    assert result.ok, result.error_message
+    assert driver.page.url.endswith("detail.html")
+
+
+async def test_an_ordinary_click_stays_on_the_page(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    await goto(driver, html_server, "popup_link.html")
+
+    result = await driver.execute(ClickAction(selector="#same"))
+
+    assert result.ok
+    assert len(driver.sessions.tab_ids) == 1
+    assert driver.page.url.endswith("popup_link.html")
+
+
+async def test_a_new_tab_outside_the_allowed_domains_is_closed_and_refused(
+    browser_settings: Settings, html_server: str
+) -> None:
+    import contextlib
+
+    locked = browser_settings.model_copy(update={"AGENT_ALLOWED_DOMAINS": ["127.0.0.1:1"]})
+    instance = PlaywrightDriver(locked)
+    await instance.launch()
+    try:
+        # The first page is outside the list as well, so open it without the guard.
+        await instance.page.goto(f"{html_server}/popup_link.html")
+        with contextlib.suppress(Exception):
+            await instance.execute(ClickAction(selector="#blank"))
+        assert len(instance.sessions.tab_ids) == 1
+    finally:
+        await instance.close()
