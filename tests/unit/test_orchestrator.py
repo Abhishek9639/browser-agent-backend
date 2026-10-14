@@ -8,7 +8,7 @@ exception, and a slow client still being told the task finished.
 
 import uuid
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import pytest
@@ -1308,7 +1308,7 @@ async def test_a_sign_in_wall_met_after_a_failed_step_still_hands_over(
     class FailingVerifier(PassingVerifier):
         async def check(self, decision: Decision, *args: Any) -> Verdict:
             verdict = await super().check(decision, *args)
-            return verdict.model_copy(update={"ok": browser.signed_in})
+            return replace(verdict, ok=browser.signed_in)
 
     rig = build(
         script=[decision_payload(), done_payload()],
@@ -1323,6 +1323,32 @@ async def test_a_sign_in_wall_met_after_a_failed_step_still_hands_over(
     assert outcome.failure_reason is None or "internal error" not in outcome.failure_reason
     assert len(gate.requests) == 1
     assert "sign in or sign up" in gate.requests[0]["reasons"][0]
+
+
+async def test_a_scroll_with_nowhere_to_go_does_not_fail_the_task(settings: Settings) -> None:
+    class NothingMoves(PassingVerifier):
+        async def check(self, decision: Decision, *args: Any) -> Verdict:
+            verdict = await super().check(decision, *args)
+            return replace(verdict, ok=decision.action.value != "scroll")
+
+    scroll = decision_payload(
+        action="scroll",
+        targetIndex=None,
+        target="page",
+        value="down",
+        expectedOutcome={"type": "dom_changed", "value": ""},
+    )
+    rig = build(
+        script=[scroll, done_payload("Read it all")],
+        settings=settings,
+        verifier=NothingMoves(),
+    )
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.COMPLETED
+    # The step is still on record as not having done anything.
+    assert rig.store.steps[0].status is StepStatus.FAILED
 
 
 async def test_declining_to_sign_in_stops_the_task(settings: Settings) -> None:

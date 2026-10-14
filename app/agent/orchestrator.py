@@ -388,6 +388,7 @@ class Orchestrator:
         """The loop proper. Only ever leaves by raising ``_Stop``."""
         history: list[StepSummary] = []
         login_pauses = 0
+        idle_scrolls = 0
         # Carried between iterations: the state read after one action is the
         # state the next one plans against, so a step costs one perception
         # rather than two.
@@ -523,11 +524,26 @@ class Orchestrator:
                 state = None
                 continue
 
+            if (
+                not verdict.ok
+                and decision.action is ActionType.SCROLL
+                and _scroll_is_at_its_end(decision, after)
+                and idle_scrolls < MAX_IDLE_SCROLLS
+            ):
+                # Nowhere left to scroll is an answer, not a broken step. The
+                # step stays recorded as unverified, so the planner is told it
+                # moved nothing, and it picks something else to do.
+                idle_scrolls += 1
+                state = after
+                await self._return_to_planning(task_id)
+                continue
+
             if not verdict.ok:
                 raise _Stop(
                     TaskStatus.EXECUTION_FAILED,
                     failure_reason=_failure_reason(step_number, decision, element, verdict, tried),
                 )
+            idle_scrolls = 0
             if decision.action is ActionType.DONE:
                 raise _Stop(TaskStatus.COMPLETED, final_answer=decision.final_answer)
 
@@ -1339,6 +1355,18 @@ def _assess(policy: RiskPolicy, decision: Decision, state: PageState) -> RiskAss
 
 
 MAX_LOGIN_PAUSES: Final = 3
+# Scrolls in a row that may find the page already at its end before the task is
+# failed for it. A planner that keeps scrolling a page with nothing left is stuck.
+MAX_IDLE_SCROLLS: Final = 2
+
+
+def _scroll_is_at_its_end(decision: Decision, state: PageState) -> bool:
+    """Was the scroll asked to go where the page has no more room?"""
+    if (decision.value or "").strip().lower() == "up":
+        return state.scroll.y <= 0
+    return state.scroll.y >= state.scroll.max_y - 1
+
+
 MAX_OVERLAY_CLEARS: Final = 2
 
 _LOGIN_PATH: Final = re.compile(r"/(log-?in|sign-?in|sign-?up|register|accounts?/login)(/|$)", re.I)
