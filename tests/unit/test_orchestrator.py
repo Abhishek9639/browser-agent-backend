@@ -1351,6 +1351,50 @@ async def test_a_scroll_with_nowhere_to_go_does_not_fail_the_task(settings: Sett
     assert rig.store.steps[0].status is StepStatus.FAILED
 
 
+async def test_a_site_the_agent_chose_that_refuses_it_is_not_the_end(settings: Settings) -> None:
+    class RefusesTheFirstSite(FakeBrowser):
+        async def execute(self, action: Any) -> ActionResult:
+            self.executed.append(action)
+            blocked = getattr(action, "url", "") == "https://blocked.test/"
+            return ActionResult(
+                ok=not blocked,
+                duration_ms=5,
+                url_before="about:blank",
+                url_after="about:blank",
+                error_code=ActionErrorCode.NAVIGATION_FAILED if blocked else None,
+                error_message="Navigation returned HTTP 403" if blocked else None,
+            )
+
+    class FailsOnlyBlocked(PassingVerifier):
+        async def check(self, decision: Decision, before: Any, after: Any, result: Any) -> Verdict:
+            verdict = await super().check(decision, before, after, result)
+            return replace(verdict, ok=result.ok)
+
+    def go(url: str) -> dict[str, Any]:
+        return decision_payload(
+            action="navigate",
+            targetIndex=None,
+            target="the site",
+            value=url,
+            expectedOutcome={"type": "url_contains", "value": "test"},
+        )
+
+    rig = build(
+        script=[go("https://blocked.test/"), go("https://open.test/"), done_payload("Found it")],
+        settings=settings,
+        browser=RefusesTheFirstSite(),
+        verifier=FailsOnlyBlocked(),
+    )
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.COMPLETED
+    assert [getattr(a, "url", None) for a in rig.browser.executed][:2] == [
+        "https://blocked.test/",
+        "https://open.test/",
+    ]
+
+
 async def test_declining_to_sign_in_stops_the_task(settings: Settings) -> None:
     class Decline:
         async def request(self, **kwargs: Any) -> ApprovalOutcome:

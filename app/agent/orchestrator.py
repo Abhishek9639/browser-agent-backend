@@ -389,6 +389,7 @@ class Orchestrator:
         history: list[StepSummary] = []
         login_pauses = 0
         idle_scrolls = 0
+        refused_sites = 0
         # Carried between iterations: the state read after one action is the
         # state the next one plans against, so a step costs one perception
         # rather than two.
@@ -502,7 +503,7 @@ class Orchestrator:
                 StepSummary(
                     step_number=step_number,
                     action=decision.action.value,
-                    target=decision.target,
+                    target=_history_target(decision, result, verdict),
                     verified=verdict.ok,
                     # An extract whose result never reaches the planner is an
                     # action the agent cannot act on. It reads the page and
@@ -535,6 +536,21 @@ class Orchestrator:
                 # moved nothing, and it picks something else to do.
                 idle_scrolls += 1
                 state = after
+                await self._return_to_planning(task_id)
+                continue
+
+            if (
+                not verdict.ok
+                and decision.action is ActionType.NAVIGATE
+                and refused_sites < MAX_REFUSED_SITES
+                and not _address_in_goal(decision.value, instruction)
+            ):
+                # The agent chose this site itself, and the site would not open
+                # for it (a 403 from bot protection, a 404, a timeout). That is
+                # a reason to pick another site, not to give up the task. The
+                # history line names the address, so it does not pick it again.
+                refused_sites += 1
+                state = None
                 await self._return_to_planning(task_id)
                 continue
 
@@ -1358,6 +1374,22 @@ MAX_LOGIN_PAUSES: Final = 3
 # Scrolls in a row that may find the page already at its end before the task is
 # failed for it. A planner that keeps scrolling a page with nothing left is stuck.
 MAX_IDLE_SCROLLS: Final = 2
+# Sites the agent chose that would not open, before the task is failed for it.
+MAX_REFUSED_SITES: Final = 3
+
+
+def _address_in_goal(url: str | None, instruction: str) -> bool:
+    """Did the person name this site? Then there is nothing else to try."""
+    host = (urlsplit(url or "").hostname or "").removeprefix("www.")
+    return bool(host) and host in instruction.lower()
+
+
+def _history_target(decision: Decision, result: ActionResult, verdict: Verdict) -> str | None:
+    """The step's target as the planner reads it back, with why a site was refused."""
+    if decision.action is ActionType.NAVIGATE and not verdict.ok:
+        why = (result.error_message or "it would not open")[:80]
+        return f"{decision.value} ({why}; choose a different site)"
+    return decision.target
 
 
 def _scroll_is_at_its_end(decision: Decision, state: PageState) -> bool:
