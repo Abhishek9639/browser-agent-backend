@@ -1561,3 +1561,21 @@ def test_a_closed_browser_gets_a_plain_reason_not_an_internal_error() -> None:
     reason = _safe_reason(BrowserClosedError("closed"))
 
     assert "closed" in reason and "internal error" not in reason
+
+
+def test_a_blocked_site_is_not_reported_as_a_bad_address() -> None:
+    from app.agent.orchestrator import _why_not_run
+
+    blocked = ActionResult(
+        ok=False,
+        duration_ms=1,
+        url_before="",
+        url_after="",
+        error_code=ActionErrorCode.NAVIGATION_FAILED,
+        error_message="Navigation returned HTTP 403",
+    )
+    missing = replace(blocked, error_message="Navigation returned HTTP 404")
+
+    assert "refused" in _why_not_run(blocked)
+    assert "AGENT_CDP_URL" in _why_not_run(blocked)
+    assert "check the address" in _why_not_run(missing)

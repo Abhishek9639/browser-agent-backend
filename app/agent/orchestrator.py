@@ -130,6 +130,7 @@ _SAFE_REASONS: Final[tuple[tuple[type[BaseException], str], ...]] = (
     (LLMTimeout, "The model did not answer in time."),
     (LLMUnavailable, "The model provider is unavailable."),
 )
+_BLOCKED_STATUS: Final = re.compile(r"HTTP (401|403|429)")
 _NOT_RUN_HINTS: Final[dict[ActionErrorCode, str]] = {
     ActionErrorCode.NAVIGATION_FAILED: "the page could not be loaded; check the address",
     ActionErrorCode.TIMEOUT: "the page or element did not respond in time",
@@ -147,6 +148,17 @@ def _why_not_run(result: ActionResult) -> str:
     content, so it is safe to show. Without it every failure read the same.
     """
     hint = _NOT_RUN_HINTS.get(result.error_code) if result.error_code else None
+    if result.error_code is ActionErrorCode.NAVIGATION_FAILED and _BLOCKED_STATUS.search(
+        result.error_message or ""
+    ):
+        # Not a typo in the address: the site turned the automated browser away.
+        # Checking the address, as the generic hint says, sends the person the
+        # wrong way.
+        return (
+            f"The site refused to open for the agent's browser ({result.error_message}). "
+            "Sites with bot protection do this. Run the agent in your own Chrome "
+            "(set AGENT_CDP_URL and start scripts/chrome_debug.ps1) and try again."
+        )
     base = "The action did not run"
     if hint:
         base = f"{base}: {hint}"
