@@ -867,6 +867,10 @@ class Orchestrator:
         Rejecting stops the task, and an unanswered prompt times it out, exactly
         as for any other approval.
         """
+        # A step that failed on the sign-in prompt leaves the task in RECOVERING
+        # (or VERIFYING), and neither has an edge to AWAITING_APPROVAL. Only
+        # PLANNING does.
+        await self._return_to_planning(task_id)
         site = _site_of(state)
         prompt = (
             f"{site or 'This site'} needs you to sign in or sign up. Do it in the "

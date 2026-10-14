@@ -1268,6 +1268,63 @@ async def test_a_sign_in_page_hands_the_browser_to_the_person(settings: Settings
     assert browser.indicators == ["waiting", "working"]
 
 
+async def test_a_sign_in_wall_met_after_a_failed_step_still_hands_over(
+    settings: Settings,
+) -> None:
+    """A click that a sign-in prompt swallowed fails, and recovery runs before the
+    hand-off. The task is then in RECOVERING, which has no edge to
+    AWAITING_APPROVAL, so the hand-off used to die with IllegalTransition."""
+
+    class FailsThenSignsIn(FakeBrowser):
+        def __init__(self) -> None:
+            super().__init__(page(element(0)), ok=False)
+            self.signed_in = False
+
+        async def perceive(self) -> PageState:
+            self.perceive_calls += 1
+            if self.perceive_calls == 1 or self.signed_in:
+                return self._state
+            return page(
+                element(0, name="Email", input_type="email"),
+                element(1, name="Password", input_type="password"),
+                url="https://example.test/login",
+            )
+
+        async def execute(self, action: Any) -> ActionResult:
+            result = await super().execute(action)
+            if self.signed_in:
+                self._ok = True
+            return result
+
+    browser = FailsThenSignsIn()
+
+    class SignsInThenApproves(ApprovingGate):
+        async def request(self, **kwargs: Any) -> ApprovalOutcome:
+            browser.signed_in = True
+            return await super().request(**kwargs)
+
+    gate = SignsInThenApproves()
+
+    class FailingVerifier(PassingVerifier):
+        async def check(self, decision: Decision, *args: Any) -> Verdict:
+            verdict = await super().check(decision, *args)
+            return verdict.model_copy(update={"ok": browser.signed_in})
+
+    rig = build(
+        script=[decision_payload(), done_payload()],
+        settings=settings,
+        browser=browser,
+        approvals=gate,
+        verifier=FailingVerifier(),
+    )
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.failure_reason is None or "internal error" not in outcome.failure_reason
+    assert len(gate.requests) == 1
+    assert "sign in or sign up" in gate.requests[0]["reasons"][0]
+
+
 async def test_declining_to_sign_in_stops_the_task(settings: Settings) -> None:
     class Decline:
         async def request(self, **kwargs: Any) -> ApprovalOutcome:
