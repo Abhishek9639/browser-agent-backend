@@ -4,6 +4,13 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B44 - Questions before the task starts
+
+Added
+
+- With `AGENT_CLARIFY=true` the agent asks the person a few short questions before it starts, when the task leaves out something that changes the result (for a train: the day, the time of day, the class, the budget). One extra model call decides what to ask, at most `AGENT_CLARIFY_MAX_QUESTIONS` (3), each with two to six likely answers; the person can also type their own. It never asks for a password, a card or a one-time code.
+- A question rides the existing approval channel, so no new endpoint or event type: `approval_required` arrives with `proposedAction.action == "wait"`, `proposedAction.target == "question"`, the options in `proposedAction.value` separated by `|`, and the question in `reason`. The answer is the `reason` sent to `POST /tasks/{id}/approve`; `POST /tasks/{id}/reject` skips the question (no preference) and does not stop the task. Answers are added to the task text the planner reads. Nobody answering within `AGENT_CLARIFY_WAIT_SECONDS` times the task out, and the wait does not count against the task time limit.
+
 ### B43 - Follow a click into the tab it opens
 
 Changed

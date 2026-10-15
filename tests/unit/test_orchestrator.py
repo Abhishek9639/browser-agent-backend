@@ -1589,3 +1589,90 @@ def test_a_timeout_is_reported_as_a_slow_page_not_an_internal_error() -> None:
     assert "too long" in _safe_reason(PlaywrightTimeoutError("Timeout 10000ms exceeded"))
     assert "too long" in _safe_reason(TimeoutError())
     assert "internal error" not in _safe_reason(TimeoutError())
+
+
+# ------------------------------------------------------------ questions first
+
+
+class Answering:
+    """Answers each question in turn: a string approves with it, None rejects."""
+
+    def __init__(self, *answers: str | None) -> None:
+        self.answers = list(answers)
+        self.requests: list[dict[str, Any]] = []
+
+    async def request(self, **kwargs: Any) -> ApprovalOutcome:
+        self.requests.append(kwargs)
+        answer = self.answers.pop(0)
+        return ApprovalOutcome(approved=answer is not None, approval_id=uuid.uuid4(), reason=answer)
+
+
+def _ask_two() -> dict[str, Any]:
+    return {
+        "questions": [
+            {"question": "Which class?", "options": ["3AC", "Sleeper"]},
+            {"question": "What time?", "options": ["Morning", "Evening"]},
+        ]
+    }
+
+
+async def test_questions_are_asked_first_and_the_answers_reach_the_planner(
+    settings: Settings,
+) -> None:
+    gate = Answering("3AC", "Evening")
+    rig = build(
+        script=[_ask_two(), decision_payload(), done_payload()],
+        settings=settings.model_copy(update={"AGENT_CLARIFY": True}),
+        approvals=gate,
+    )
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.COMPLETED
+    assert [r["reasons"][0] for r in gate.requests] == ["Which class?", "What time?"]
+    first = gate.requests[0]["decision"]
+    assert first.target == "question"
+    assert first.value == "3AC|Sleeper"
+    # The second planner call saw the answers, because they are part of the task.
+    calls = rig.orchestrator._planner._llm.calls  # type: ignore[attr-defined]
+    assert any("3AC" in c.last_user_text and "Evening" in c.last_user_text for c in calls[1:])
+
+
+async def test_skipping_a_question_does_not_stop_the_task(settings: Settings) -> None:
+    gate = Answering(None, "Evening")
+    rig = build(
+        script=[_ask_two(), decision_payload(), done_payload()],
+        settings=settings.model_copy(update={"AGENT_CLARIFY": True}),
+        approvals=gate,
+    )
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.COMPLETED
+
+
+async def test_an_unanswered_question_times_the_task_out(settings: Settings) -> None:
+    class Nobody:
+        async def request(self, **kwargs: Any) -> ApprovalOutcome:
+            return ApprovalOutcome(
+                approved=False, approval_id=uuid.uuid4(), reason="approval timed out", expired=True
+            )
+
+    rig = build(
+        script=[_ask_two()],
+        settings=settings.model_copy(update={"AGENT_CLARIFY": True}),
+        approvals=Nobody(),
+    )
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.TIMED_OUT
+
+
+async def test_no_question_call_is_made_when_clarifying_is_off(settings: Settings) -> None:
+    gate = Answering()
+    rig = build(script=[decision_payload(), done_payload()], settings=settings, approvals=gate)
+
+    await rig.orchestrator.run(TASK_ID)
+
+    assert gate.requests == []

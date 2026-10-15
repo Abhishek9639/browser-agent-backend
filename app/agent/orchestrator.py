@@ -63,6 +63,7 @@ from app.agent.llm.base import LLMRateLimited, LLMTimeout, LLMUnavailable
 from app.agent.perception.dom_extractor import MASK, ElementInfo
 from app.agent.perception.overlays import is_blocked, safe_closers
 from app.agent.perception.state import PageState
+from app.agent.planner.clarify import with_answers
 from app.agent.planner.planner import (
     Planner,
     PlannerOutputError,
@@ -334,6 +335,8 @@ class Orchestrator:
         try:
             instruction = await self._instruction(task_id)
             await self._set_status(task_id, TaskStatus.PLANNING)
+            if self._settings.AGENT_CLARIFY:
+                instruction = await self._clarify(task_id, instruction)
             plan = await self._cache.plan(task_id, instruction)
             if plan is None and self._settings.AGENT_PLAN_PREVIEW:
                 await self._publish_outline(task_id, instruction)
@@ -1220,6 +1223,65 @@ class Orchestrator:
                 replayed=replayed,
             ),
         )
+
+    async def _clarify(self, task_id: uuid.UUID, instruction: str) -> str:
+        """Ask the person what the task leaves out, then fold the answers in.
+
+        Rides the approval channel: the question is a WAIT decision whose
+        options travel in ``value``, and the answer comes back as the reason on
+        the approve call. Rejecting a question means "no preference", not "stop
+        the task", so it is skipped rather than failing anything. Never fatal.
+        """
+        questions = await self._planner.questions(
+            instruction, self._settings.AGENT_CLARIFY_MAX_QUESTIONS
+        )
+        answers: list[tuple[str, str]] = []
+        for question in questions:
+            answer = await self._ask(task_id, question.text, question.options)
+            if answer:
+                answers.append((question.text, answer))
+        return with_answers(instruction, answers)
+
+    async def _ask(self, task_id: uuid.UUID, question: str, options: tuple[str, ...]) -> str | None:
+        """One question to the person. The answer, or None if they skipped it."""
+        decision = Decision(
+            action=ActionType.WAIT,
+            target="question",
+            value="|".join(options),
+            reasoning="The task leaves this out and it changes the result.",
+            expected_outcome=ExpectedOutcome(type=VerificationMethod.DOM_CHANGED),
+            risk_level=RiskLevel.LOW,
+            requires_approval=True,
+            confidence=1.0,
+        )
+        await self._set_status(task_id, TaskStatus.AWAITING_APPROVAL)
+        await self._indicate("waiting")
+        waited_from = time.monotonic()
+        try:
+            answer = await self._approvals.request(
+                task_id=task_id,
+                step_number=0,
+                decision=decision,
+                risk=RiskLevel.LOW,
+                screenshot=None,
+                bbox=None,
+                reasons=[question],
+                site="",
+                timeout_seconds=self._settings.AGENT_CLARIFY_WAIT_SECONDS,
+            )
+        finally:
+            await self._indicate("working")
+        if self._running_budget is not None:
+            self._running_budget.exclude(time.monotonic() - waited_from)
+        if answer.expired:
+            raise _Stop(TaskStatus.TIMED_OUT, failure_reason="approval timed out")
+        # Walk back to planning the way a sign-in hand-off does: the machine only
+        # leaves AWAITING_APPROVAL for ACTING or REJECTED.
+        await self._set_status(task_id, TaskStatus.ACTING)
+        await self._set_status(task_id, TaskStatus.VERIFYING)
+        await self._set_status(task_id, TaskStatus.PLANNING)
+        text = (answer.reason or "").strip() if answer.approved else ""
+        return text[:200] or None
 
     async def _publish_outline(self, task_id: uuid.UUID, instruction: str) -> None:
         """Say how many steps to expect, before the first one.

@@ -232,6 +232,12 @@ class Settings(BaseSettings):
     # agent still chooses each real step from the page. Off here so a bare
     # checkout and the scripted tests spend no extra request.
     AGENT_PLAN_PREVIEW: bool = False
+    # Ask the person a few questions before starting (the day, the time, the
+    # class, the budget) when the task leaves out something that changes the
+    # result. One extra model call; off here for the same reason as the preview.
+    AGENT_CLARIFY: bool = False
+    AGENT_CLARIFY_MAX_QUESTIONS: int = 3
+    AGENT_CLARIFY_WAIT_SECONDS: int = 600
     # Which browser Playwright launches. Empty = its bundled Chromium. "chrome"
     # or "msedge" = the copy installed on this machine, which looks like a
     # normal browser to sites and is the one the user sees.
