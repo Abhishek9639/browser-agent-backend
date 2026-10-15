@@ -1,0 +1,29 @@
+<!doctype html>
+<title>Code editor</title>
+<h1>Two Sum</h1>
+<p>Print the sum of two integers read from input.</p>
+<!-- Behaves like a code editor: Enter keeps the indentation of the line above,
+     and an opening bracket brings its closing one. Typed key by key, a program
+     comes out mangled; inserted in one piece, it arrives intact. -->
+<textarea id="editor" aria-label="Code editor" rows="12" cols="60"></textarea>
+<button id="run">Run</button>
+<pre id="result"></pre>
+<script>
+  const ed = document.getElementById('editor');
+  ed.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const start = ed.selectionStart;
+      const before = ed.value.slice(0, start);
+      const indent = (before.split('\n').pop().match(/^\s*/) || [''])[0];
+      ed.setRangeText('\n' + indent, start, ed.selectionEnd, 'end');
+    } else if (e.key === '(') {
+      e.preventDefault();
+      ed.setRangeText('()', ed.selectionStart, ed.selectionEnd, 'end');
+      ed.selectionStart = ed.selectionEnd = ed.selectionStart - 1;
+    }
+  });
+  document.getElementById('run').addEventListener('click', () => {
+    document.getElementById('result').textContent = 'ran ' + ed.value.split('\n').length + ' lines';
+  });
+</script>

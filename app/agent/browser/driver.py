@@ -726,6 +726,9 @@ class PlaywrightDriver:
         await self._glide_to(locator)
         field = await self._editable_in(locator)
 
+        if "\n" in action.value:
+            await self._insert_block(locator, action)
+            return
         if field is None:
             # Nothing editable to fill: focus it and type at the keyboard, which
             # is what a custom widget listens for.
@@ -753,6 +756,23 @@ class PlaywrightDriver:
 
     async def _editable_in(self, locator: Locator) -> Locator | None:
         """The locator itself if it is a field, else a field inside it, else None."""
+    async def _insert_block(self, locator: Locator, action: TypeAction) -> None:
+        """Put a multi-line text (a program) into an editor in one piece.
+
+        Typing code key by key goes wrong in every code editor: Enter
+        auto-indents, an opening bracket brings its closing one with it, and the
+        result is a program that no longer parses. Inserting the text at once
+        sends it to the editor as a paste would, with none of that. The editor's
+        contents are replaced, because a half-edited program is never the goal.
+        """
+        await locator.click()
+        if action.clear_first:
+            await self.page.keyboard.press("Control+A")
+            await self.page.keyboard.press("Delete")
+        await self.page.keyboard.insert_text(action.value)
+        if action.press_enter:
+            await self.page.keyboard.press("Enter")
+
         if await locator.evaluate("(el, sel) => el.matches(sel)", EDITABLE_SELECTOR):
             return locator
         inner = locator.locator(EDITABLE_SELECTOR).first

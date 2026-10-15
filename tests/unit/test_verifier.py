@@ -684,3 +684,27 @@ def test_a_field_with_the_wrong_value_still_fails() -> None:
     state = PageState(url="https://x.test/", elements=[field])
 
     assert not _value_equals(decision, state, state, "DELHI").ok
+
+
+CODE = "def solve(a, b):\n    return a + b\n\nprint(solve(1, 2))"
+
+
+async def test_code_typed_into_an_editor_is_verified_by_seeing_it_on_the_page() -> None:
+    editor = element(0, tag="div", name="Code editor", value="")
+    shown = page(editor).model_copy(
+        update={"text": "Two Sum  def solve(a, b):  return a + b  print(solve(1, 2))"}
+    )
+
+    seen = await verify(
+        decision(action="type", outcome="value_equals", value=CODE, decision_value=CODE),
+        page(editor),
+        shown,
+    )
+    missing = await verify(
+        decision(action="type", outcome="value_equals", value=CODE, decision_value=CODE),
+        page(editor),
+        page(editor),
+    )
+
+    assert seen.ok is True
+    assert missing.ok is False

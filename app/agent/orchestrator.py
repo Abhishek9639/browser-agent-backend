@@ -21,7 +21,7 @@ cannot be told again.
 import re
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -338,9 +338,10 @@ class Orchestrator:
             if self._settings.AGENT_CLARIFY:
                 instruction = await self._clarify(task_id, instruction)
             plan = await self._cache.plan(task_id, instruction)
+            outline: list[str] = []
             if plan is None and self._settings.AGENT_PLAN_PREVIEW:
-                await self._publish_outline(task_id, instruction)
-            await self._iterate(task_id, instruction, plan, budget, tally)
+                outline = await self._publish_outline(task_id, instruction)
+            await self._iterate(task_id, instruction, plan, budget, tally, outline)
         except _Stop as stop:
             status = stop.status
             final_answer = stop.final_answer
@@ -405,6 +406,7 @@ class Orchestrator:
         plan: ReplayPlan | None,
         budget: TaskBudget,
         tally: _Tally,
+        outline: Sequence[str] = (),
     ) -> None:
         """The loop proper. Only ever leaves by raising ``_Stop``."""
         history: list[StepSummary] = []
@@ -452,7 +454,9 @@ class Orchestrator:
                 state = None
                 continue
 
-            planned = await self._planner.decide(instruction, state, history, _hint_text(hint))
+            planned = await self._planner.decide(
+                instruction, state, history, _hint_text(hint), outline
+            )
             self._stop_if_cancelled()
 
             grounded = await self._ground(planned.decision, state, tally)
@@ -526,6 +530,7 @@ class Orchestrator:
                     action=decision.action.value,
                     target=_history_target(decision, result, verdict),
                     verified=verdict.ok,
+                    note=None if verdict.ok else (verdict.detail or "")[:100] or None,
                     # An extract whose result never reaches the planner is an
                     # action the agent cannot act on. It reads the page and
                     # then has no idea what it read.
@@ -1283,7 +1288,7 @@ class Orchestrator:
         text = (answer.reason or "").strip() if answer.approved else ""
         return text[:200] or None
 
-    async def _publish_outline(self, task_id: uuid.UUID, instruction: str) -> None:
+    async def _publish_outline(self, task_id: uuid.UUID, instruction: str) -> list[str]:
         """Say how many steps to expect, before the first one.
 
         Stored on the task (so a reconnecting client still gets it) and then
@@ -1292,11 +1297,12 @@ class Orchestrator:
         """
         steps = await self._planner.outline(instruction)
         if not steps:
-            return
+            return []
         async with self._unit_of_work() as uow:
             task = await uow.tasks.get_or_404(task_id)
             task.plan = steps
         await self._events.publish(task_id, PlanEvent(task_id=task_id, steps=steps))
+        return steps
 
     async def _instruction(self, task_id: uuid.UUID) -> str:
         async with self._unit_of_work() as uow:

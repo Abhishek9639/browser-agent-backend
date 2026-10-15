@@ -501,3 +501,54 @@ def test_a_page_with_no_fields_is_left_to_the_driver() -> None:
     from app.agent.planner.planner import not_editable_problem
 
     assert not_editable_problem(_type_decision(18), _state_with(_button(18))) is None
+
+
+# ------------------------------------------------------ following the plan
+
+
+def _turn(goal: str = GOAL, history: Any = (), plan: Any = ()) -> str:
+    planner = Planner(MockLLM(script=[valid()]))
+    return planner._build_turn(goal, page(0), history, None, plan)[0].text
+
+
+def test_the_expected_plan_is_put_in_front_of_the_planner() -> None:
+    text = _turn(plan=["Open the site", "Search", "Open a result"])
+
+    assert "PLAN" in text
+    assert "2. Search" in text
+
+
+def test_no_plan_section_without_a_plan() -> None:
+    assert "PLAN (" not in _turn()
+
+
+def test_a_failed_step_says_why() -> None:
+    from app.agent.planner.planner import StepSummary
+
+    step = StepSummary(
+        step_number=1, action="click", target="Apply", verified=False, note="The URL did not change"
+    )
+
+    assert "The URL did not change" in step.render()
+    ok = StepSummary(step_number=2, action="click", target="Apply", verified=True, note="ignored")
+    assert "ignored" not in ok.render()
+
+
+def test_a_repeated_action_is_called_out() -> None:
+    from app.agent.planner.planner import StepSummary
+
+    same = [
+        StepSummary(step_number=i, action="scroll", target="page", verified=True) for i in (1, 2, 3)
+    ]
+
+    assert "WARNING" in _turn(history=same)
+    varied = [*same[:2], StepSummary(step_number=3, action="click", target="Next", verified=True)]
+    assert "WARNING" not in _turn(history=varied)
+
+
+def test_a_coding_goal_gets_the_coding_guide() -> None:
+    text = _turn(goal="solve the two sum problem on leetcode")
+
+    assert "CODING TASK GUIDE" in text
+    assert "COMPLETE solution" in text
+    assert "CODING TASK GUIDE" not in _turn(goal="find internships in Delhi")

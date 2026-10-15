@@ -960,3 +960,36 @@ async def test_a_403_that_still_draws_the_page_is_not_a_failure(
     finally:
         await driver.close()
         server.shutdown()
+
+
+# --------------------------------------------------------------- code editors
+
+
+async def test_a_program_is_inserted_whole_not_typed_into_an_auto_indenting_editor(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    program = (
+        "def solve(a, b):\n"
+        "    if a > b:\n"
+        "        return a - b\n"
+        "    return a + b\n"
+        "\n"
+        "print(solve(*map(int, input().split())))"
+    )
+    await goto(driver, html_server, "code_editor.html")
+
+    result = await driver.execute(TypeAction(selector="#editor", value=program, clear_first=True))
+
+    assert result.ok, result.error_message
+    assert await driver.page.input_value("#editor") == program
+
+
+async def test_inserting_a_program_replaces_what_the_editor_held(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    await goto(driver, html_server, "code_editor.html")
+    await driver.page.fill("#editor", "old = 1\nold = 2")
+
+    await driver.execute(TypeAction(selector="#editor", value="x = 1\ny = 2", clear_first=True))
+
+    assert await driver.page.input_value("#editor") == "x = 1\ny = 2"

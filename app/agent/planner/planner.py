@@ -17,6 +17,7 @@ step. Two chances is a judgement: one is harsh on a model that made a
 recoverable slip, and three is an expensive way to discover the prompt is wrong.
 """
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Final
@@ -56,6 +57,32 @@ logger = get_logger(__name__)
 # its tokens: what matters is the last few actions and their outcomes, plus the
 # fact that earlier ones happened.
 HISTORY_WINDOW: Final = 8
+# The same action on the same target this many times in a row is a loop.
+REPEAT_LIMIT: Final = 3
+
+# A goal about solving a problem on a judge site: the platforms by name, and the
+# way people phrase it.
+_CODING_GOAL: Final = re.compile(
+    r"codechef|leetcode|hackerrank|codeforces|geeksforgeeks|hackerearth|atcoder|"
+    r"(solve|answer|submit).{0,30}(problem|question)|coding (problem|question)",
+    re.IGNORECASE,
+)
+CODING_GUIDE: Final = (
+    "CODING TASK GUIDE (this goal is about solving a programming problem)\n"
+    "1. Read the whole statement first with `extract` (constraints, input and output "
+    "format, examples). Do not write code from the title alone.\n"
+    "2. Use the language the editor already has selected, or Python 3 if there is "
+    "no preference. Change it only if the goal names another.\n"
+    "3. Click inside the code editor, then `type` the COMPLETE solution in one action: "
+    "put the whole program in `value` with real line breaks and correct indentation. "
+    "The system replaces the editor's contents, so do not type it line by line. Read "
+    "input exactly as the statement describes it, and print only the required output.\n"
+    "4. Press the site's Run or Test button (not Submit), then `extract` the result.\n"
+    "5. If a sample fails, read the error or the difference, fix the code and type the "
+    "whole corrected program again. Stop after three attempts and report honestly.\n"
+    "6. Submit only when the goal asks you to. Finish with `done`: say whether it passed "
+    "and include the code you used."
+)
 
 # Enough for a list of results, not enough to bury the current page state.
 MAX_EXTRACT_CHARS: Final = 600
@@ -200,6 +227,9 @@ class StepSummary:
     action: str
     target: str | None = None
     verified: bool | None = None
+    # Why a step failed, in a few words. Without it the planner sees only
+    # "failed" and tries the same thing again.
+    note: str | None = None
     # What an `extract` action read. Without this the planner can see that it
     # read the page and not what it read, so a task that has to answer a
     # question about the content can never finish.
@@ -209,6 +239,8 @@ class StepSummary:
         outcome = {True: "verified", False: "failed", None: "pending"}[self.verified]
         target = f" {self.target}" if self.target else ""
         line = f"{self.step_number}. {self.action}{target} -> {outcome}"
+        if self.note and self.verified is False:
+            line += f" ({self.note})"
 
         if self.extracted:
             line += f"\n   extracted: {_clip(self.extracted)}"
@@ -229,6 +261,17 @@ class PlannerResult:
     @property
     def needed_repair(self) -> bool:
         return self.attempts > 1
+
+
+def repeated_action(steps: Sequence[StepSummary], limit: int = REPEAT_LIMIT) -> str | None:
+    """The action the agent keeps doing to no effect, if it is stuck in one."""
+    if len(steps) < limit:
+        return None
+    tail = steps[-limit:]
+    first = tail[0]
+    if all((s.action, s.target) == (first.action, first.target) for s in tail):
+        return f"{first.action}{' ' + first.target if first.target else ''}"
+    return None
 
 
 def compress_history(steps: Sequence[StepSummary], *, window: int = HISTORY_WINDOW) -> str:
@@ -277,6 +320,7 @@ class Planner:
         page_state: PageState,
         history: Sequence[StepSummary],
         cached_hint: str | None,
+        plan: Sequence[str] = (),
     ) -> list[LLMMessage]:
         """Assemble the conversation.
 
@@ -285,7 +329,24 @@ class Planner:
         only part that changes every turn, and putting the stable parts first is
         what will let prompt caching work when it is added.
         """
-        parts = [f"GOAL\n{goal.strip()}", f"HISTORY\n{compress_history(history)}"]
+        parts = [f"GOAL\n{goal.strip()}"]
+        if _CODING_GOAL.search(goal):
+            parts.append(CODING_GUIDE)
+        if plan:
+            numbered = "\n".join(f"{i}. {step}" for i, step in enumerate(plan, 1))
+            parts.append(
+                "PLAN (the steps you intended; follow them in order, working out from "
+                "HISTORY which one you are on, and depart only when the page forces you "
+                f"to)\n{numbered}"
+            )
+        parts.append(f"HISTORY\n{compress_history(history)}")
+        stuck = repeated_action(history)
+        if stuck:
+            parts.append(
+                f"WARNING: you have done '{stuck}' {REPEAT_LIMIT} times in a row and it is "
+                "not working. Do something different: another element, another approach, "
+                "or scroll to find what you need."
+            )
 
         if cached_hint:
             parts.append(
@@ -314,13 +375,14 @@ class Planner:
         page_state: PageState,
         history: Sequence[StepSummary] = (),
         cached_hint: str | None = None,
+        plan: Sequence[str] = (),
     ) -> PlannerResult:
         """Choose the next action.
 
         Raises :class:`PlannerOutputError` if the model cannot produce a valid,
         grounded decision within its repair budget.
         """
-        messages = self._build_turn(goal, page_state, history, cached_hint)
+        messages = self._build_turn(goal, page_state, history, cached_hint, plan)
         last_problem = ""
 
         for attempt in range(1, MAX_ATTEMPTS + 1):

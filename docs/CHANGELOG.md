@@ -4,6 +4,18 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### B45 - A planner that keeps to its plan, and code problems
+
+Changed
+
+- The planner is now shown the outline it made at the start (`AGENT_PLAN_PREVIEW`) on every turn, so it works through those steps instead of improvising each turn from the page alone.
+- A failed step in the history now says why ("The URL did not change"), and three identical actions in a row add a warning to do something different. Before, the planner saw only "failed" and tried the same thing again.
+
+Added
+
+- Programming problems (CodeChef, LeetCode, HackerRank, Codeforces and similar): a goal that mentions them gets a short guide in the planner's turn: read the statement with `extract`, write the whole program in one `type`, press Run rather than Submit, read the result, fix and retry up to three times, and submit only if asked.
+- A `type` whose value has line breaks is inserted into the editor in one piece, replacing its contents. Typed key by key, a program is mangled by auto-indent and auto-closed brackets. The verifier checks that the first lines of the code are visible on the page, since a code editor does not expose its text as a field value.
+
 ### B44 - Questions before the task starts
 
 Added

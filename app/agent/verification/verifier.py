@@ -316,6 +316,8 @@ def _value_equals(decision: Decision, before: PageState, after: PageState, wante
     page was perceived a second time after the action and the indices are
     assigned fresh each time.
     """
+    if "\n" in wanted.strip():
+        return _code_entered(after, wanted)
     target = _same_element(decision, before, after)
     if target is None or target.tag not in _FIELD_TAGS:
         # Choosing an autocomplete suggestion is a click on a list item that
@@ -359,6 +361,28 @@ def _value_equals(decision: Decision, before: PageState, after: PageState, wante
 
 
 _FIELD_TAGS: Final = frozenset({"input", "textarea", "select"})
+
+
+def _code_entered(after: PageState, wanted: str) -> _Outcome:
+    """Is a multi-line text, typed into an editor, now on the page?
+
+    A code editor is not a form field: its text lives in styled lines the
+    collector never reports as a value. So the check is the one a person would
+    make, looking at the screen for the first lines of the program, and a field
+    that holds them counts too.
+    """
+    lines = [_squash(line) for line in wanted.splitlines()]
+    probes = [line for line in lines if len(line) >= 6][:2]
+    seen = _squash(after.text)
+    on_page = bool(probes) and all(probe in seen for probe in probes)
+    in_field = _field_holding(after, wanted) is not None
+    ok = on_page or in_field
+    return _Outcome(
+        ok,
+        Check.VALUE_EQUALS,
+        {"check": Check.VALUE_EQUALS.value, "lines": len(lines)},
+        "The editor shows the code." if ok else "The code is not visible in the editor.",
+    )
 _NON_ALNUM: Final = re.compile(r"[^a-z0-9]+")
 
 
