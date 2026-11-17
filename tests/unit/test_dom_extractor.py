@@ -247,6 +247,39 @@ async def test_the_modal_itself_is_reachable(driver: PlaywrightDriver, html_serv
     assert {"Accept all", "Reject non-essential"} <= {element.name for element in elements}
 
 
+async def test_a_field_under_a_popup_is_kept_with_its_value(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    """The date picker opens over the destination just chosen. Dropping the
+    field made the agent think the choice was lost, and it typed it again."""
+    elements = await open_page(driver, html_server, "date_picker.html")
+    destination = next(e for e in elements if e.value == "Agra Airport")
+
+    assert destination.tag == "input"
+    assert destination.covered is True
+
+
+async def test_a_form_s_submit_button_under_a_popup_is_kept(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    """IRCTC's Search sat under the open calendar, so the agent scrolled away
+    looking for it. Clicking a covered target closes the popup first."""
+    elements = await open_page(driver, html_server, "date_picker.html")
+
+    search = named(elements, "Search trains")
+    assert search.tag == "button"
+    assert search.covered is True
+
+
+async def test_a_control_under_a_popup_is_still_dropped(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    """Only fields are kept: a button nobody can reach is not a target."""
+    elements = await open_page(driver, html_server, "date_picker.html")
+
+    assert all("Search under the picker" not in e.name for e in elements)
+
+
 # ------------------------------------------------------------------ frames
 
 
@@ -289,6 +322,39 @@ async def test_a_pointer_wrapper_around_a_real_button_is_not_duplicated(
 
     assert len(matching) == 1
     assert matching[0].tag == "button"
+
+
+async def test_every_day_in_a_date_picker_is_listed(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    """Pickers make one day reachable by Tab and the rest -1, and hold the
+    focus on the month grid. The agent used to see a month with one date in it."""
+    elements = await open_page(driver, html_server, "date_picker.html")
+    days = {e.name: e for e in elements if e.role == "gridcell"}
+
+    assert set(days) == {"Sat Nov 14 2026", "Sun Nov 15 2026", "Mon Nov 16 2026", "Tue Nov 17 2026"}
+    assert days["Sat Nov 14 2026"].disabled is True
+    assert days["Mon Nov 16 2026"].disabled is False
+    # The number inside a day is part of the day, not a second target.
+    assert not [e for e in elements if e.tag == "p"]
+
+
+async def test_pointer_days_in_a_focusable_grid_are_listed(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    """A picker with no roles at all: the days are pointer-styled spans."""
+    elements = await open_page(driver, html_server, "date_picker.html")
+
+    assert {"Day 20", "Day 21", "Day 22"} <= {e.name for e in elements}
+
+
+async def test_a_focusable_custom_button_is_not_listed_twice(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    """Its label inherits the pointer cursor; that does not make it a second control."""
+    elements = await open_page(driver, html_server, "date_picker.html")
+
+    assert len([e for e in elements if "Chip label" in e.name]) == 1
 
 
 # ------------------------------------------------------------------ stamping

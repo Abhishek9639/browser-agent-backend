@@ -522,6 +522,54 @@ def test_no_plan_section_without_a_plan() -> None:
     assert "PLAN (" not in _turn()
 
 
+def test_the_planner_is_shown_which_plan_item_it_is_on() -> None:
+    planner = Planner(MockLLM(script=[valid()]))
+    plan = ["Open the site", "Search", "Open a result"]
+
+    text = planner._build_turn(GOAL, page(0), (), None, plan, 2)[0].text
+
+    assert "2. Search  <- last step was on this item" in text
+    assert "1. Open the site\n" in text
+    assert "planStep" in text and "addPlanSteps" in text
+
+
+def test_a_decision_can_name_its_plan_item_and_add_work() -> None:
+    decision = Decision.model_validate(valid(planStep=2, addPlanSteps=["Close the cookie popup"]))
+
+    assert decision.plan_step == 2
+    assert decision.add_plan_steps == ("Close the cookie popup",)
+    # Both are optional: a provider that leaves them out still decides.
+    assert Decision.model_validate(valid()).add_plan_steps == ()
+
+
+@pytest.mark.parametrize(
+    ("plan_step", "add", "read_step", "read_add"),
+    [
+        # What a model with no plan in front of it tends to send.
+        (None, None, None, ()),
+        ("2", "Close the popup", 2, ("Close the popup",)),
+        ("step 3", ["Pick a class", 7, ""], 3, ("Pick a class",)),
+        (2.0, [], 2, ()),
+        ("next", {"oops": 1}, None, ()),
+    ],
+)
+def test_plan_bookkeeping_never_sinks_a_decision(
+    plan_step: Any, add: Any, read_step: int | None, read_add: tuple[str, ...]
+) -> None:
+    """A strict schema here failed a whole task with "could not produce a valid decision"."""
+    decision = Decision.model_validate(valid(planStep=plan_step, addPlanSteps=add))
+
+    assert decision.plan_step == read_step
+    assert decision.add_plan_steps == read_add
+
+
+def test_the_planner_is_told_today_s_date() -> None:
+    """Otherwise "this weekend" is a guess and its idea of the year is stale."""
+    from datetime import date
+
+    assert f"TODAY\n{date.today():%A %d %B %Y}" in _turn()
+
+
 def test_a_failed_step_says_why() -> None:
     from app.agent.planner.planner import StepSummary
 

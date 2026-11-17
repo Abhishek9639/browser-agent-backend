@@ -709,6 +709,29 @@ async def test_typing_into_a_wrapper_finds_the_field_inside_it(
     assert await driver.page.input_value("#masked") == "02/11/2026"
 
 
+async def test_typing_into_a_combobox_wrapper_fills_the_input_inside_it(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    """The wrapper carries role=combobox; fill() on it would throw."""
+    await goto(driver, html_server, "combobox.html")
+
+    result = await driver.execute(TypeAction(selector="#where-to", value="Delhi"))
+
+    assert result.ok, result.error_message
+    assert await driver.page.input_value("#where-to-input") == "Delhi"
+
+
+async def test_typing_into_a_combobox_lands_in_the_popup_it_opens(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    await goto(driver, html_server, "combobox.html")
+
+    result = await driver.execute(TypeAction(selector="#from", value="Bangalore"))
+
+    assert result.ok, result.error_message
+    assert await driver.page.input_value("#popup-input") == "Bangalore"
+
+
 async def test_a_widget_that_discards_a_fill_still_gets_the_text(
     driver: PlaywrightDriver, html_server: str
 ) -> None:

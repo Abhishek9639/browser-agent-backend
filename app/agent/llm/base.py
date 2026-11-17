@@ -426,6 +426,7 @@ class FallbackLLM:
                 system, messages, json_schema, images=images, timeout_s=timeout_s
             )
         except LLMError as error:
+            primary_wait = error.retry_after_s if isinstance(error, LLMRateLimited) else None
             if isinstance(error, LLMRateLimited):
                 wait = error.retry_after_s if error.retry_after_s else self._cooldown_s
                 self._primary_blocked_until = self._clock() + min(wait, MAX_RATE_LIMIT_COOLDOWN_S)
@@ -443,14 +444,13 @@ class FallbackLLM:
                 return await self._fallback.generate_json(
                     system, messages, json_schema, images=images, timeout_s=timeout_s
                 )
-            except LLMRateLimited:
-                # Both are limited. If the primary only needs a few seconds,
-                # waiting for it beats failing the task.
-                hint = error.retry_after_s if isinstance(error, LLMRateLimited) else None
-                if not hint or hint > SHORT_WAIT_S:
+            except LLMRateLimited as fb_err:
+                # Both are limited. If either only needs a short wait, sleep and retry the primary.
+                wait_time = primary_wait or fb_err.retry_after_s or 5.0
+                if wait_time > SHORT_WAIT_S:
                     raise
-                logger.warning("llm_waiting_for_primary", seconds=hint)
-                await self._sleep(hint + 0.5)
+                logger.warning("llm_waiting_for_primary", seconds=wait_time)
+                await self._sleep(wait_time + 0.5)
                 self._primary_blocked_until = 0.0
                 return await self._primary.generate_json(
                     system, messages, json_schema, images=images, timeout_s=timeout_s

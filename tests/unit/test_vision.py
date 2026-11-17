@@ -144,9 +144,32 @@ def test_identical_names_are_a_reason() -> None:
         *[element(i, name=f"Other {i}") for i in range(2, 9)],
     )
 
-    reason = ground_reason(False, 0.9, state, threshold=THRESHOLD, min_elements=MIN_ELEMENTS)
+    reason = ground_reason(
+        False, 0.9, state, threshold=THRESHOLD, min_elements=MIN_ELEMENTS, target_index=1
+    )
 
     assert reason is GroundReason.DUPLICATE_NAMES
+
+
+def test_duplicates_elsewhere_on_the_page_are_not_a_reason() -> None:
+    """A header and a footer "Flights" link say nothing about the field being typed into."""
+    state = page(
+        element(0, name="Flights"),
+        element(1, name="Flights"),
+        *[element(i, name=f"Other {i}") for i in range(2, 9)],
+    )
+
+    reason = ground_reason(
+        False, 0.9, state, threshold=THRESHOLD, min_elements=MIN_ELEMENTS, target_index=4
+    )
+
+    assert reason is None
+
+
+def test_identical_names_need_a_target_to_be_a_reason() -> None:
+    state = page(element(0, name="Select"), element(1, name="Select"))
+
+    assert ground_reason(False, 0.9, state, threshold=THRESHOLD, min_elements=2) is None
 
 
 def test_a_page_with_almost_no_markup_is_a_reason() -> None:
@@ -397,7 +420,15 @@ async def test_two_identical_buttons_trigger_grounding(driver: Any, html_server:
     names = [item.name for item in state.elements if item.tag == "button"]
     assert names.count("Select") == 2
 
-    reason = ground_reason(False, 0.95, state, threshold=THRESHOLD, min_elements=MIN_ELEMENTS)
+    chosen = next(item.index for item in state.elements if item.name == "Select")
+    reason = ground_reason(
+        False,
+        0.95,
+        state,
+        threshold=THRESHOLD,
+        min_elements=MIN_ELEMENTS,
+        target_index=chosen,
+    )
     assert reason is GroundReason.DUPLICATE_NAMES
 
 

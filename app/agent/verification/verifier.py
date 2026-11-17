@@ -30,7 +30,7 @@ from app.agent.planner.schema import Decision, ExpectedOutcome
 from app.core.logging import get_logger
 from app.domain.enums import ActionType, VerificationMethod
 
-__all__ = ["STORED_AS", "Check", "DeterministicVerifier"]
+__all__ = ["STORED_AS", "Check", "DeterministicVerifier", "page_changed"]
 
 logger = get_logger(__name__)
 
@@ -216,21 +216,60 @@ class DeterministicVerifier:
         if check is Check.URL_CONTAINS and not expectation.value.strip():
             check = Check.URL_CHANGED
 
-        match check:
-            case Check.URL_CONTAINS:
-                return _url_contains(after, expectation.value)
-            case Check.URL_CHANGED:
-                return _url_changed(before, after)
-            case Check.ELEMENT_VISIBLE:
-                return _element_visible(after, expectation.value)
-            case Check.TEXT_PRESENT:
-                return _text_present(after, expectation.value)
-            case Check.VALUE_EQUALS:
-                return _value_equals(decision, before, after, expectation.value)
-            case Check.NEW_TAB_OPENED:
-                return _new_tab_opened(before, after)
-            case _:
-                return _dom_changed(before, after)
+        outcome = _by_check(check, expectation.value, decision, before, after)
+        if decision.action is ActionType.TYPE and check in _FORECASTS and not outcome.ok:
+            return _typed(decision, before, after, forecast=outcome)
+        return outcome
+
+
+def _by_check(
+    check: Check, wanted: str, decision: Decision, before: PageState, after: PageState
+) -> _Outcome:
+    match check:
+        case Check.URL_CONTAINS:
+            return _url_contains(after, wanted)
+        case Check.URL_CHANGED:
+            return _url_changed(before, after)
+        case Check.ELEMENT_VISIBLE:
+            return _element_visible(after, wanted)
+        case Check.TEXT_PRESENT:
+            return _text_present(after, wanted)
+        case Check.VALUE_EQUALS:
+            return _value_equals(decision, before, after, wanted)
+        case Check.NEW_TAB_OPENED:
+            return _new_tab_opened(before, after)
+        case _:
+            return _dom_changed(before, after)
+
+
+# Expectations about where the page goes next rather than about the field. For
+# a `type` step they are the planner forecasting a later step: "to=Delhi" in
+# the URL is what a search does once a destination is chosen and submitted,
+# not what typing "Delhi" does.
+_FORECASTS: Final = frozenset(
+    {Check.URL_CONTAINS, Check.URL_CHANGED, Check.NEW_TAB_OPENED, Check.DOM_CHANGED}
+)
+
+
+def _typed(decision: Decision, before: PageState, after: PageState, forecast: _Outcome) -> _Outcome:
+    """Judge a `type` step by what typing does, when the planner's forecast missed.
+
+    The forecast is tried first, so a search whose results URL was predicted
+    is still verified exactly. When it misses, the step is still good if the
+    text is in the field, or, with Enter pressed, if the page moved on: on a
+    results page the search box may be gone, and the move is the evidence.
+    Without this every recovery rung retypes, gets graded against the same
+    forecast, and fails a step that worked.
+    """
+    wanted = (decision.value or "").strip()
+    if not wanted:
+        return forecast
+    typed = _value_equals(decision, before, after, wanted)
+    if typed.ok:
+        return typed
+    if decision.press_enter and _urls(before) != _urls(after):
+        return _url_changed(before, after)
+    return typed
 
 
 # ----------------------------------------------------------------- checks
@@ -352,6 +391,20 @@ def _value_equals(decision: Decision, before: PageState, after: PageState, wante
 
     actual = (target.value or "").strip()
     ok = actual.casefold() == wanted.strip().casefold()
+    if not ok:
+        # A combobox hands focus to an input of its own when clicked (a flight
+        # search's "Where to?" opens a popup with its own box), so the text
+        # lands there and the field that was targeted stays empty until a
+        # suggestion is chosen. A field the action itself brought onto the
+        # page is where it went.
+        moved = _opened_holding(before, after, wanted)
+        if moved is not None:
+            return _Outcome(
+                True,
+                Check.VALUE_EQUALS,
+                {"check": Check.VALUE_EQUALS.value, "value": (moved.value or "").strip()},
+                "The text went into the field the widget opened.",
+            )
     return _Outcome(
         ok,
         Check.VALUE_EQUALS,
@@ -383,6 +436,8 @@ def _code_entered(after: PageState, wanted: str) -> _Outcome:
         {"check": Check.VALUE_EQUALS.value, "lines": len(lines)},
         "The editor shows the code." if ok else "The code is not visible in the editor.",
     )
+
+
 _NON_ALNUM: Final = re.compile(r"[^a-z0-9]+")
 
 
@@ -397,16 +452,29 @@ def _field_holding(state: PageState, wanted: str) -> ElementInfo | None:
     One may contain the other: a suggestion list shows "NEW DELHI - NDLS" and
     the field then holds "NEW DELHI - NDLS(NEW DELHI)", or the reverse.
     """
+    return next((element for element in state.elements if _holds(element, wanted)), None)
+
+
+def _opened_holding(before: PageState, after: PageState, wanted: str) -> ElementInfo | None:
+    """A field that was not on the page before the action and now holds the text.
+
+    Only a new field counts. Text in a field that was already there is the
+    agent typing into the wrong one, which is a failure, not a popup.
+    """
+    existing = {element.css_path for element in before.elements}
+    return next(
+        (e for e in after.elements if e.css_path not in existing and _holds(e, wanted)), None
+    )
+
+
+def _holds(element: ElementInfo, wanted: str) -> bool:
     target = _squash(wanted)
     if len(target) < 3:
-        return None
-    for element in state.elements:
-        if element.tag not in _FIELD_TAGS or not element.value or element.is_masked:
-            continue
-        held = _squash(element.value)
-        if held and (held == target or target in held or held in target):
-            return element
-    return None
+        return False
+    if element.tag not in _FIELD_TAGS or not element.value or element.is_masked:
+        return False
+    held = _squash(element.value)
+    return bool(held) and (held == target or target in held or held in target)
 
 
 def _dom_changed(before: PageState, after: PageState) -> _Outcome:
@@ -417,10 +485,9 @@ def _dom_changed(before: PageState, after: PageState) -> _Outcome:
     The visible text is compared too, because that is the change a person
     would see and most results are rendered as text rather than as controls.
     """
-    hash_changed = before.dom_hash != after.dom_hash
     url_changed = _urls(before) != _urls(after)
     text_changed = before.text != after.text
-    changed = hash_changed or url_changed or text_changed
+    changed = page_changed(before, after)
 
     return _Outcome(
         changed,
@@ -433,6 +500,15 @@ def _dom_changed(before: PageState, after: PageState) -> _Outcome:
             "textChanged": text_changed,
         },
         "The page changed." if changed else "The page is unchanged.",
+    )
+
+
+def page_changed(before: PageState, after: PageState) -> bool:
+    """Did anything a person could see move: the controls, the URL or the text?"""
+    return (
+        before.dom_hash != after.dom_hash
+        or _urls(before) != _urls(after)
+        or before.text != after.text
     )
 
 

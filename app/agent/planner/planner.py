@@ -20,6 +20,7 @@ recoverable slip, and three is an expensive way to discover the prompt is wrong.
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import date
 from typing import Any, Final
 
 from pydantic import ValidationError
@@ -34,7 +35,12 @@ from app.agent.llm.base import (
 )
 from app.agent.perception.state import PageState
 from app.agent.perception.untrusted import wrap_page_state
-from app.agent.planner.clarify import Question, make_questions
+from app.agent.planner.clarify import (
+    PageQuestions,
+    Question,
+    make_page_questions,
+    make_questions,
+)
 from app.agent.planner.outline import make_outline
 from app.agent.planner.registry import PromptRegistry
 from app.agent.planner.schema import DECISION_JSON_SCHEMA, Decision
@@ -84,8 +90,8 @@ CODING_GUIDE: Final = (
     "and include the code you used."
 )
 
-# Enough for a list of results, not enough to bury the current page state.
-MAX_EXTRACT_CHARS: Final = 600
+# Enough for problem statements or a list of results, without burying the page state.
+MAX_EXTRACT_CHARS: Final = 4000
 
 
 def _clip(text: str) -> str:
@@ -321,6 +327,7 @@ class Planner:
         history: Sequence[StepSummary],
         cached_hint: str | None,
         plan: Sequence[str] = (),
+        plan_at: int | None = None,
     ) -> list[LLMMessage]:
         """Assemble the conversation.
 
@@ -329,15 +336,23 @@ class Planner:
         only part that changes every turn, and putting the stable parts first is
         what will let prompt caching work when it is added.
         """
-        parts = [f"GOAL\n{goal.strip()}"]
+        # The model's sense of "now" is its training cutoff. Without the date it
+        # cannot work out "this weekend", and it expects a calendar to show a
+        # year that has already gone, which fails a click that worked.
+        parts = [f"GOAL\n{goal.strip()}", f"TODAY\n{date.today():%A %d %B %Y}"]
         if _CODING_GOAL.search(goal):
             parts.append(CODING_GUIDE)
         if plan:
-            numbered = "\n".join(f"{i}. {step}" for i, step in enumerate(plan, 1))
+            numbered = "\n".join(
+                f"{i}. {step}{'  <- last step was on this item' if i == plan_at else ''}"
+                for i, step in enumerate(plan, 1)
+            )
             parts.append(
                 "PLAN (the steps you intended; follow them in order, working out from "
                 "HISTORY which one you are on, and depart only when the page forces you "
-                f"to)\n{numbered}"
+                "to. Put the number of the item this action works on in planStep. When "
+                "the page needs work the plan does not list, name it in addPlanSteps "
+                f"so the person's plan keeps up)\n{numbered}"
             )
         parts.append(f"HISTORY\n{compress_history(history)}")
         stuck = repeated_action(history)
@@ -365,9 +380,18 @@ class Planner:
         """What to ask the person before starting, if anything."""
         return await make_questions(self._llm, instruction, limit)
 
-    async def outline(self, instruction: str) -> list[str]:
-        """The steps the task will probably take, for the person to see up front."""
-        return await make_outline(self._llm, instruction)
+    async def page_questions(
+        self, instruction: str, page_state: PageState, limit: int, skipped: Sequence[str] = ()
+    ) -> PageQuestions:
+        """What the form on this page needs that the task and answers do not say."""
+        return await make_page_questions(
+            self._llm, instruction, page_state.summary_text, limit, skipped
+        )
+
+    async def outline(self, instruction: str, page_state: PageState | None = None) -> list[str]:
+        """The steps the task will probably take, planned from the page when there is one."""
+        page = page_state.summary_text if page_state is not None else None
+        return await make_outline(self._llm, instruction, page)
 
     async def decide(
         self,
@@ -376,13 +400,14 @@ class Planner:
         history: Sequence[StepSummary] = (),
         cached_hint: str | None = None,
         plan: Sequence[str] = (),
+        plan_at: int | None = None,
     ) -> PlannerResult:
         """Choose the next action.
 
         Raises :class:`PlannerOutputError` if the model cannot produce a valid,
         grounded decision within its repair budget.
         """
-        messages = self._build_turn(goal, page_state, history, cached_hint, plan)
+        messages = self._build_turn(goal, page_state, history, cached_hint, plan, plan_at)
         last_problem = ""
 
         for attempt in range(1, MAX_ATTEMPTS + 1):

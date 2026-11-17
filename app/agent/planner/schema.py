@@ -11,9 +11,10 @@ The cross-field rules matter as much as the field types. A ``click`` with no
 ends the task having answered nothing.
 """
 
+import re
 from typing import Any, Final, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic.alias_generators import to_camel
 
 from app.agent.browser.actions import ALLOWED_URL_SCHEMES
@@ -72,6 +73,9 @@ class Decision(BaseModel):
     # A human-readable description of what was targeted, for the activity log.
     target: str | None = None
     value: str | None = None
+    # Press Enter in the field after typing, which is how a search or form is
+    # submitted without clicking a suggestion or button that may not survive.
+    press_enter: bool = False
     tab_id: str | None = None
     reasoning: str = Field(default="", max_length=MAX_REASONING_CHARS)
     expected_outcome: ExpectedOutcome
@@ -80,6 +84,40 @@ class Decision(BaseModel):
     requires_approval: bool = False
     needs_vision: bool = False
     final_answer: str | None = None
+    # Which item of the plan, numbered as the planner was shown it, this action
+    # works on. Unchecked here: a number off the end is clamped by the loop,
+    # because a slip in bookkeeping is no reason to refuse a sound action.
+    plan_step: int | None = None
+    # Work the plan does not list that has to happen now (a popup to close, a
+    # class to choose), so the plan the person sees keeps up with the agent.
+    add_plan_steps: tuple[str, ...] = ()
+
+    # Bookkeeping is read, never refused. A model with no plan in front of it
+    # answers `"addPlanSteps": null`, and strict validation turned that into
+    # "could not produce a valid decision" and ended a task over a field that
+    # changes nothing about the action itself.
+    @field_validator("plan_step", mode="before")
+    @classmethod
+    def _read_plan_step(cls, value: Any) -> int | None:
+        """2, 2.0, "2" or "step 2" all mean item 2. Anything else means none."""
+        if value is None or isinstance(value, bool):
+            return None
+        if isinstance(value, int | float):
+            return int(value)
+        found = re.search(r"\d+", str(value))
+        return int(found.group(0)) if found else None
+
+    @field_validator("add_plan_steps", mode="before")
+    @classmethod
+    def _read_plan_additions(cls, value: Any) -> tuple[str, ...]:
+        """Null is none, one bare string is one item, and non-strings are dropped."""
+        if value is None:
+            return ()
+        if isinstance(value, str):
+            return (value,) if value.strip() else ()
+        if isinstance(value, (list, tuple)):
+            return tuple(item for item in value if isinstance(item, str) and item.strip())
+        return ()
 
     @model_validator(mode="after")
     def _check_cross_field_rules(self) -> Self:
@@ -135,6 +173,7 @@ def decision_json_schema() -> dict[str, Any]:
             "targetIndex",
             "target",
             "value",
+            "pressEnter",
             "tabId",
             "reasoning",
             "expectedOutcome",
@@ -143,6 +182,8 @@ def decision_json_schema() -> dict[str, Any]:
             "requiresApproval",
             "needsVision",
             "finalAnswer",
+            "planStep",
+            "addPlanSteps",
         ],
         "properties": {
             "action": {
@@ -165,6 +206,13 @@ def decision_json_schema() -> dict[str, Any]:
                 "type": ["string", "null"],
                 "description": (
                     "Text to type, option to select, or the http/https URL to navigate to."
+                ),
+            },
+            "pressEnter": {
+                "type": "boolean",
+                "description": (
+                    "For type only: press Enter after typing. Use it to submit a search box "
+                    "or form instead of clicking a suggestion or button. False otherwise."
                 ),
             },
             "tabId": {
@@ -213,6 +261,21 @@ def decision_json_schema() -> dict[str, Any]:
             "finalAnswer": {
                 "type": ["string", "null"],
                 "description": "The answer to the goal. Required for done, null otherwise.",
+            },
+            "planStep": {
+                "type": ["integer", "null"],
+                "description": (
+                    "The number of the PLAN item this action works on. Null when there is no plan."
+                ),
+            },
+            "addPlanSteps": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Work the PLAN does not list that you must do now, before carrying on "
+                    "with the item you are on, one short sentence each (this action is the "
+                    "first of it). Empty when the plan already covers this action."
+                ),
             },
         },
     }

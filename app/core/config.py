@@ -219,6 +219,10 @@ class Settings(BaseSettings):
     # for it. Longer than an ordinary approval, because signing up means email
     # codes and forms. The wait does not count against AGENT_MAX_TASK_SECONDS.
     AGENT_LOGIN_WAIT_SECONDS: int = 900
+    # How long a task waits for a person to pay once the agent has taken a
+    # booking or an order to the payment page. The agent never pays itself.
+    # Long enough for a bank's OTP page; not counted against the time limit.
+    AGENT_PAYMENT_WAIT_SECONDS: int = 900
     # Other browsers to try, in order, when a site answers the agent's browser
     # with 401, 403 or 429. A separate browser, never the person's own. Names are
     # `msedge`, `chrome` or `firefox`; empty turns it off.
@@ -227,14 +231,17 @@ class Settings(BaseSettings):
     # instead of a fixed 1280x800 box. Ignored when headless or attached to the
     # user's own browser.
     AGENT_FULLSCREEN: bool = False
-    # One extra model call before the first action that outlines the expected
-    # steps, so the person can see how long the task is. A forecast only: the
-    # agent still chooses each real step from the page. Off here so a bare
+    # One extra model call that outlines the expected steps, so the person can
+    # see how long the task is. Made once the agent has opened the site, read
+    # its form and had its questions answered (spec section 6). A forecast only:
+    # the agent still chooses each real step from the page. Off here so a bare
     # checkout and the scripted tests spend no extra request.
     AGENT_PLAN_PREVIEW: bool = False
     # Ask the person a few questions before starting (the day, the time, the
     # class, the budget) when the task leaves out something that changes the
-    # result. One extra model call; off here for the same reason as the preview.
+    # result, and again on each page the agent opens with a form, about what
+    # that form needs and nobody has said (one way or round trip). One model
+    # call each time; off here for the same reason as the preview.
     AGENT_CLARIFY: bool = False
     AGENT_CLARIFY_MAX_QUESTIONS: int = 3
     AGENT_CLARIFY_WAIT_SECONDS: int = 600

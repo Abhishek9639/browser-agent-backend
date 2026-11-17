@@ -686,6 +686,83 @@ def test_a_field_with_the_wrong_value_still_fails() -> None:
     assert not _value_equals(decision, state, state, "DELHI").ok
 
 
+# ------------------------------------------------------- a type step's forecast
+
+
+def _typing(outcome: str, value: str, *, press_enter: bool = False) -> Decision:
+    typed = decision(action="type", outcome=outcome, value=value, decision_value="Delhi")
+    return typed.model_copy(update={"press_enter": press_enter})
+
+
+async def test_a_url_forecast_on_a_type_step_does_not_fail_text_that_went_in() -> None:
+    """The planner forecast the search URL; typing only puts Delhi in the field."""
+    verdict = await verify(
+        _typing("url_contains", "to=Delhi"),
+        page(element(0, name="Where to?", value="")),
+        page(element(0, name="Where to?", value="Delhi")),
+    )
+
+    assert verdict.ok is True
+    assert verdict.actual["check"] == Check.VALUE_EQUALS.value
+
+
+async def test_a_url_forecast_that_comes_true_is_still_what_is_recorded() -> None:
+    verdict = await verify(
+        _typing("url_contains", "q=Delhi", press_enter=True),
+        page(element(0, name="Search", value="")),
+        page(element(0, name="Search", value="Delhi"), url="https://skyfare.test/?q=Delhi"),
+    )
+
+    assert verdict.ok is True
+    assert verdict.actual["check"] == Check.URL_CONTAINS.value
+
+
+async def test_a_missed_forecast_with_nothing_typed_still_fails() -> None:
+    verdict = await verify(
+        _typing("url_contains", "to=Delhi"),
+        page(element(0, name="Where to?", value="")),
+        page(element(0, name="Where to?", value="")),
+    )
+
+    assert verdict.ok is False
+    assert verdict.actual["check"] == Check.VALUE_EQUALS.value
+
+
+async def test_enter_that_moved_the_page_counts_when_the_search_box_is_gone() -> None:
+    verdict = await verify(
+        _typing("url_contains", "to=Delhi", press_enter=True),
+        page(element(0, name="Where to?", value="")),
+        page(url="https://skyfare.test/explore"),
+    )
+
+    assert verdict.ok is True
+    assert verdict.actual["check"] == Check.URL_CHANGED.value
+
+
+async def test_text_typed_into_the_popup_a_combobox_opened_counts() -> None:
+    """The targeted field stays empty; the popup's own input holds the text."""
+    before = page(element(0, name="Where to?", value="", css_path="#to"))
+    after = page(
+        element(0, name="Where to?", value="", css_path="#to"),
+        element(1, name="Where else?", value="Delhi", css_path="#popup"),
+    )
+
+    verdict = await verify(_typing("value_equals", "Delhi"), before, after)
+
+    assert verdict.ok is True
+
+
+async def test_a_field_that_already_held_the_text_is_no_evidence() -> None:
+    before = page(
+        element(0, name="Where to?", value="", css_path="#to"),
+        element(1, name="Recent", value="Delhi", css_path="#recent"),
+    )
+
+    verdict = await verify(_typing("value_equals", "Delhi"), before, before)
+
+    assert verdict.ok is False
+
+
 CODE = "def solve(a, b):\n    return a + b\n\nprint(solve(1, 2))"
 
 

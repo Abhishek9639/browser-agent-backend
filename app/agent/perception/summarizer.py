@@ -33,7 +33,11 @@ CHARS_PER_TOKEN: Final = 4
 
 _FORM_TAGS: Final = frozenset({"input", "select", "textarea"})
 _BUTTON_TAGS: Final = frozenset({"button", "summary"})
-_BUTTON_ROLES: Final = frozenset({"button", "tab", "menuitem", "switch", "checkbox", "radio"})
+# A gridcell is a day in a date picker: something to press, and a month of
+# them must not be the first thing a tight budget cuts.
+_BUTTON_ROLES: Final = frozenset(
+    {"button", "tab", "menuitem", "switch", "checkbox", "radio", "gridcell"}
+)
 _LINK_ROLES: Final = frozenset({"link"})
 
 _MORE_BELOW_FOLD: Final = "... {count} more elements below the fold (scroll to see)"
@@ -80,6 +84,12 @@ def format_element(element: ElementInfo) -> str:
         parts.append("(disabled)")
     if element.covered:
         parts.append("(covered)")
+    # Which choice a form starts on: "One Way (checked)" beside an unmarked
+    # "Round Trip" is how the planner knows the trip type needs changing.
+    if element.checked:
+        parts.append("(checked)")
+    if element.selected:
+        parts.append("(selected)")
 
     return " ".join(parts)
 

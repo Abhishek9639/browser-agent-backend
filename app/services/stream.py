@@ -155,6 +155,7 @@ class StreamService:
             bbox=BoundingBox(**step.bbox) if step.bbox else None,
             url=None,
             tab_id=step.tab_id,
+            plan_step=step.plan_step,
         )
 
     async def _screenshot(self, step: TaskStep) -> str | None:

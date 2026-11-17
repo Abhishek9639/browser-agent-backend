@@ -149,10 +149,13 @@ def build_llm(settings: Settings, *, provider: str | None = None) -> LLMClient:
     name = (provider or settings.LLM_PROVIDER).strip().lower()
     fallback = (settings.LLM_FALLBACK_PROVIDER or "").strip().lower()
     has_fallback = bool(fallback) and fallback != name
-    # With a fallback configured, a rate limit moves on at once instead of
-    # sleeping out the primary's retry-after: waiting on a quota that will not
-    # clear for a minute is exactly what the fallback is for.
-    client: LLMClient = RetryingLLM(_build_bare(name, settings), retry_rate_limits=not has_fallback)
+    # Allow short rate limit retries (e.g. 2-15s momentary spikes) on primary
+    # before falling back. If the quota block is longer, it moves to fallback immediately.
+    client: LLMClient = RetryingLLM(
+        _build_bare(name, settings),
+        retry_rate_limits=True,
+        max_retry_wait_s=15.0 if has_fallback else 90.0,
+    )
 
     if settings.is_prod and name == "mock":
         # Fatal, not a warning. An agent running on the mock accepts tasks,

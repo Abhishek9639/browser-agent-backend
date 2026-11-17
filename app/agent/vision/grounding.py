@@ -29,7 +29,6 @@ from app.agent.llm.base import (
     record_failure,
     record_response,
 )
-from app.agent.perception.dom_extractor import ElementInfo
 from app.agent.perception.state import PageState
 from app.agent.planner.registry import PromptRegistry
 from app.agent.vision.marks import MarkedImage, annotate
@@ -156,34 +155,42 @@ def ground_reason(
     *,
     threshold: float,
     min_elements: int,
+    target_index: int | None = None,
 ) -> GroundReason | None:
     """Why this step should be grounded, or None (spec section 4.9)."""
     if decision_needs_vision:
         return GroundReason.PLANNER_ASKED
     if confidence < threshold:
         return GroundReason.LOW_CONFIDENCE
-    if _has_duplicate_names(state.elements):
+    if _target_is_ambiguous(state, target_index):
         return GroundReason.DUPLICATE_NAMES
     if len(state.elements) < min_elements and _looks_non_blank(state):
         return GroundReason.NO_MARKUP
     return None
 
 
-def _has_duplicate_names(elements: list[ElementInfo]) -> bool:
-    """Two controls a screen reader cannot tell apart.
+def _target_is_ambiguous(state: PageState, target_index: int | None) -> bool:
+    """Is the chosen control one of several a screen reader cannot tell apart?
 
     Exactly the SkyFare results page: eight "Select" buttons, identical in the
     accessibility tree and obviously different on screen.
+
+    The target's name, not the page's. Nearly every real page has two links
+    called the same thing somewhere (a "Flights" tab in the header and another
+    in the footer), and grounding every step on that costs a screenshot and a
+    vision call each time, on rate-limited providers ten or more seconds, to
+    settle a question nobody asked.
     """
-    seen: set[str] = set()
-    for element in elements:
-        name = element.name.strip().casefold()
-        if not name:
-            continue
-        if name in seen:
-            return True
-        seen.add(name)
-    return False
+    if target_index is None:
+        return False
+    target = state.element_at(target_index)
+    name = target.name.strip().casefold() if target is not None else ""
+    if not name:
+        return False
+    return any(
+        element.index != target_index and element.name.strip().casefold() == name
+        for element in state.elements
+    )
 
 
 def _looks_non_blank(state: PageState) -> bool:

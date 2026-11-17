@@ -355,6 +355,11 @@ class StepResponse(CamelModel):
             "GET /tasks/{id}/steps/{stepId}/screenshot."
         ),
     )
+    plan_step: int | None = Field(
+        default=None,
+        description="The item of the task's plan this step worked on, numbered from 1.",
+        examples=[2],
+    )
     status: StepStatus = Field(examples=[StepStatus.VERIFIED])
     created_at: datetime
 

@@ -137,7 +137,12 @@ class StatusEvent(BaseEvent):
 
 
 class PlanEvent(BaseEvent):
-    """The expected steps, sent once before the first action."""
+    """The plan as it now stands, in full.
+
+    Sent when the plan is made, once the site is open and its questions are
+    answered, and again whenever the agent adds an item it found the plan
+    missing. Each one replaces the last.
+    """
 
     type: Literal[EventType.PLAN] = EventType.PLAN
     steps: list[str]
@@ -165,6 +170,9 @@ class StepEvent(BaseEvent):
     # because a step nobody chose is a different thing to watch: there is no
     # reasoning behind it and no model call to account for.
     replayed: bool = False
+    # The plan item this step worked on, numbered from 1, so the client ticks
+    # off the item the agent is really on instead of guessing from a count.
+    plan_step: int | None = None
 
     def without_screenshot(self) -> "StepEvent":
         """The same step, minus the expensive part.

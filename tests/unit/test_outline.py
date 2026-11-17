@@ -40,3 +40,22 @@ async def test_an_answer_without_a_list_gives_an_empty_outline() -> None:
     llm = MockLLM(script=[{"steps": "just one string"}])
 
     assert await make_outline(llm, "goal") == []
+
+
+async def test_the_outline_is_planned_from_the_open_page() -> None:
+    """The page's own choices reach the outline, fenced as untrusted data."""
+    llm = MockLLM(script=[{"steps": ["Choose Round Trip", "Fill the form"]}])
+
+    await make_outline(llm, "book a cab", '[0] input[type=radio] "Round Trip"')
+
+    sent = llm.calls[0].last_user_text
+    assert "<page_state>" in sent
+    assert "Round Trip" in sent
+
+
+async def test_without_a_page_only_the_task_is_sent() -> None:
+    llm = MockLLM(script=[{"steps": ["Open the site"]}])
+
+    await make_outline(llm, "book a cab")
+
+    assert "<page_state>" not in llm.calls[0].last_user_text

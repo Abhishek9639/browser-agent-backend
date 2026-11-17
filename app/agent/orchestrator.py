@@ -21,7 +21,7 @@ cannot be told again.
 import re
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -60,10 +60,11 @@ from app.agent.contracts import (
     Verifier,
 )
 from app.agent.llm.base import LLMRateLimited, LLMTimeout, LLMUnavailable
-from app.agent.perception.dom_extractor import MASK, ElementInfo
+from app.agent.perception.dom_extractor import MASK, ElementInfo, PageNotReadyError
 from app.agent.perception.overlays import is_blocked, safe_closers
 from app.agent.perception.state import PageState
 from app.agent.planner.clarify import with_answers
+from app.agent.planner.outline import MAX_STEP_CHARS
 from app.agent.planner.planner import (
     Planner,
     PlannerOutputError,
@@ -74,8 +75,9 @@ from app.agent.planner.planner import (
 )
 from app.agent.planner.schema import Decision, ExpectedOutcome
 from app.agent.recovery.runner import RecoveryRunner, failure_sentence
+from app.agent.safety.payment import is_payment_page, pays, wants_a_purchase
 from app.agent.safety.risk import DeterministicRiskPolicy, RiskAssessment
-from app.agent.verification.verifier import DeterministicVerifier
+from app.agent.verification.verifier import DeterministicVerifier, page_changed
 from app.agent.vision.grounding import ground_reason
 from app.core import metrics
 from app.core.config import Settings
@@ -131,6 +133,11 @@ _SAFE_REASONS: Final[tuple[tuple[type[BaseException], str], ...]] = (
     # Playwright's own timeout and asyncio's land here, since neither is a bug.
     (PlaywrightTimeoutError, "The page took too long to respond. Try the task again."),
     (TimeoutError, "Something took too long to respond. Try the task again."),
+    # The page was still changing after every read perception made of it.
+    (
+        PageNotReadyError,
+        "The page kept changing and could not be read. Try the task again.",
+    ),
     # These three are ordinary weather rather than a bug in the task, and a
     # user who is told "internal error" has no idea whether to try again.
     (LLMRateLimited, "The model provider is rate limiting this account. Try again shortly."),
@@ -215,6 +222,20 @@ class _Tally:
     # as the loop goes because a completed task is the only thing worth
     # caching, and by then the states it was built from are gone.
     cacheable: list[ReplayStep] = field(default_factory=list)
+    # The person answered questions about a page mid-run. The flow then holds
+    # their answers (a date, a trip type), and the cache is looked up before
+    # any page is read, so it would replay those answers for somebody else.
+    asked_on_page: bool = False
+
+
+@dataclass(slots=True)
+class _PageSurvey:
+    """Which pages have been read for questions, and which questions were skipped."""
+
+    seen: set[str] = field(default_factory=set)
+    # Asked and left unanswered. Not asked again on the next page: the person
+    # already said they have no preference.
+    skipped: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -335,13 +356,16 @@ class Orchestrator:
         try:
             instruction = await self._instruction(task_id)
             await self._set_status(task_id, TaskStatus.PLANNING)
+            pages = _PageSurvey()
             if self._settings.AGENT_CLARIFY:
-                instruction = await self._clarify(task_id, instruction)
+                instruction = await self._clarify(task_id, instruction, pages)
             plan = await self._cache.plan(task_id, instruction)
-            outline: list[str] = []
-            if plan is None and self._settings.AGENT_PLAN_PREVIEW:
-                outline = await self._publish_outline(task_id, instruction)
-            await self._iterate(task_id, instruction, plan, budget, tally, outline)
+            # Spec section 6: the outline is made in the loop, once the agent
+            # has opened the site, read its form and had its questions answered.
+            preview = plan is None and self._settings.AGENT_PLAN_PREVIEW
+            await self._iterate(
+                task_id, instruction, plan, budget, tally, preview=preview, pages=pages
+            )
         except _Stop as stop:
             status = stop.status
             final_answer = stop.final_answer
@@ -406,13 +430,26 @@ class Orchestrator:
         plan: ReplayPlan | None,
         budget: TaskBudget,
         tally: _Tally,
-        outline: Sequence[str] = (),
+        *,
+        preview: bool = False,
+        pages: _PageSurvey | None = None,
     ) -> None:
         """The loop proper. Only ever leaves by raising ``_Stop``."""
+        pages = pages or _PageSurvey()
+        outline: list[str] = []
+        # The plan item the last step worked on, numbered from 1.
+        plan_at: int | None = None
         history: list[StepSummary] = []
         login_pauses = 0
+        payment_pauses = 0
+        detail_pauses = 0
         idle_scrolls = 0
+        idle_waits = 0
+        idle_extracts = 0
         refused_sites = 0
+        missed_forecasts = 0
+        planner_retries = 0
+        purchase = wants_a_purchase(instruction)
         # Carried between iterations: the state read after one action is the
         # state the next one plans against, so a step costs one perception
         # rather than two.
@@ -454,9 +491,48 @@ class Orchestrator:
                 state = None
                 continue
 
-            planned = await self._planner.decide(
-                instruction, state, history, _hint_text(hint), outline
-            )
+            if purchase and payment_pauses == 0 and is_payment_page(state):
+                # The booking has reached the till, and paying is the person's
+                # to do. Only before the first hand-off: the confirmation the
+                # person comes back to can still sit under /payment and name
+                # the card they paid with, and that is a page to read, not a
+                # second till. From then on the action check below is the guard.
+                payment_pauses += 1
+                await self._wait_for_payment(task_id, len(history) + 1, state)
+                state = None
+                continue
+
+            if _on_a_site(state):
+                # Read the page's form, ask about what nobody has said, then
+                # plan, in that order: questions and a plan made from the task
+                # text alone never knew the site also offers a round trip.
+                for_task, instruction = await self._ask_about_page(
+                    task_id, instruction, state, pages, tally
+                )
+                if preview and (
+                    for_task
+                    or not self._settings.AGENT_CLARIFY
+                    or budget.steps_used >= PLAN_BY_STEP
+                ):
+                    preview = False
+                    outline = await self._publish_outline(task_id, instruction, state)
+
+            try:
+                planned = await self._planner.decide(
+                    instruction, state, history, _hint_text(hint), outline, plan_at
+                )
+            except PlannerOutputError:
+                if planner_retries >= MAX_PLANNER_RETRIES:
+                    raise
+                # Two rejected answers against one reading of the page. The page
+                # may still have been building itself (IRCTC lays out its form
+                # after it loads), and the model's next answer is not its last
+                # one: look again once before giving the task up.
+                planner_retries += 1
+                logger.info("planner_retry_on_a_fresh_page", retry=planner_retries)
+                await self._browser.settle()
+                state = None
+                continue
             self._stop_if_cancelled()
 
             grounded = await self._ground(planned.decision, state, tally)
@@ -476,6 +552,47 @@ class Orchestrator:
                 decision = planned.decision
 
             element = self._resolve_target(decision, state)
+
+            if pays(decision, element):
+                # Whatever the page looked like, the agent does not press Pay
+                # or type a card. An approval would not do here: approving
+                # lets the agent press it, and paying is never the agent's.
+                if payment_pauses >= MAX_PAYMENT_PAUSES:
+                    raise _Stop(
+                        TaskStatus.EXECUTION_FAILED,
+                        failure_reason=(
+                            f"The booking on {_site_of(state) or 'the site'} was left at the "
+                            "payment step: it was handed to you to pay twice, and the page "
+                            "still asked for payment afterwards. The agent never pays itself. "
+                            "Next time, pay in the browser window first, then continue."
+                        ),
+                    )
+                payment_pauses += 1
+                await self._wait_for_payment(task_id, len(history) + 1, state)
+                state = None
+                continue
+
+            if decision.action is ActionType.WAIT and decision.requires_approval:
+                # The planner needs something only the person has: a traveller's
+                # name, a phone number, an address the goal never gave. It may
+                # not invent one, so the person types it in the browser.
+                if detail_pauses >= MAX_DETAIL_PAUSES:
+                    raise _Stop(
+                        TaskStatus.EXECUTION_FAILED,
+                        failure_reason=(
+                            "The site still needs details the agent was not given. "
+                            "Add them to the task and run it again."
+                        ),
+                    )
+                detail_pauses += 1
+                await self._wait_for_details(task_id, len(history) + 1, state, decision.target)
+                state = None
+                continue
+
+            # Before the step runs, so a newly added item is on the person's
+            # list by the time the step that starts it appears.
+            outline, plan_at = await self._follow_plan(task_id, outline, planned.decision, plan_at)
+
             assessment = _assess(self._risk, decision, state)
             risk = RiskLevel.highest(assessment.level, decision.risk_level)
             step_number = budget.consume_step()
@@ -498,9 +615,37 @@ class Orchestrator:
                 # steps that worked, and the agent then recovers from a success.
                 await self._browser.settle()
                 after = await self._browser.perceive()
-                verdict, after, attempts, tried = await self._verify(
-                    task_id, step_number, decision, element, state, after, result
+                # An action that ran and moved the page hit its target, so if
+                # the check still fails it is the planner's forecast that was
+                # wrong. The recovery ladder fixes locators, not forecasts: it
+                # would only re-click the same element three ways, at a settle
+                # and often a ten-second timeout each, and a second click can
+                # close the dropdown the first one opened. The planner, which
+                # will see the page as it now is, gets the step back instead.
+                forecast_only = (
+                    result.ok
+                    and decision.action in _FORECAST_ACTIONS
+                    and missed_forecasts < MAX_MISSED_FORECASTS
+                    and (
+                        page_changed(state, after)
+                        or decision.expected_outcome.type
+                        in (
+                            VerificationMethod.TEXT_PRESENT,
+                            VerificationMethod.URL_CONTAINS,
+                        )
+                    )
                 )
+                verdict, after, attempts, tried = await self._verify(
+                    task_id,
+                    step_number,
+                    decision,
+                    element,
+                    state,
+                    after,
+                    result,
+                    rescue=not forecast_only,
+                )
+                missed = forecast_only and not verdict.ok
 
                 shot = await self._browser.screenshot()
                 await self._record(
@@ -516,6 +661,7 @@ class Orchestrator:
                     risk=risk,
                     shot=shot,
                     after=after,
+                    plan_step=plan_at,
                 )
 
             if verdict.ok and decision.action is not ActionType.DONE:
@@ -530,7 +676,7 @@ class Orchestrator:
                     action=decision.action.value,
                     target=_history_target(decision, result, verdict),
                     verified=verdict.ok,
-                    note=None if verdict.ok else (verdict.detail or "")[:100] or None,
+                    note=_history_note(verdict, missed=missed, action=decision.action),
                     # An extract whose result never reaches the planner is an
                     # action the agent cannot act on. It reads the page and
                     # then has no idea what it read.
@@ -554,13 +700,41 @@ class Orchestrator:
             if (
                 not verdict.ok
                 and decision.action is ActionType.SCROLL
-                and _scroll_is_at_its_end(decision, after)
                 and idle_scrolls < MAX_IDLE_SCROLLS
             ):
-                # Nowhere left to scroll is an answer, not a broken step. The
-                # step stays recorded as unverified, so the planner is told it
-                # moved nothing, and it picks something else to do.
+                # A scroll that moved nothing is an answer, not a broken step:
+                # there is no more page that way. Not judged by the page's
+                # measured bottom: IRCTC's results page sat at its footer while
+                # its height said otherwise, and the task was failed for it.
+                # The step stays recorded as unverified, so the planner is told
+                # it moved nothing, and it picks something else to do.
                 idle_scrolls += 1
+                state = after
+                await self._return_to_planning(task_id)
+                continue
+
+            if (
+                not verdict.ok
+                and decision.action is ActionType.WAIT
+                and idle_waits < MAX_IDLE_WAITS
+            ):
+                # The page had already finished loading, so the wait changed
+                # nothing. That is news for the planner, not a broken step, and
+                # it used to end the task: a planner that could not find a date
+                # in a calendar waited "to see the page" and the run was over.
+                idle_waits += 1
+                state = after
+                await self._return_to_planning(task_id)
+                continue
+
+            if (
+                not verdict.ok
+                and decision.action is ActionType.EXTRACT
+                and idle_extracts < MAX_IDLE_EXTRACTS
+            ):
+                # The extracted element had no text. Tell the planner rather than
+                # failing the task, so it can try another element or the whole page.
+                idle_extracts += 1
                 state = after
                 await self._return_to_planning(task_id)
                 continue
@@ -580,12 +754,29 @@ class Orchestrator:
                 await self._return_to_planning(task_id)
                 continue
 
+            if missed:
+                # The action ran and the page moved, so the target was right;
+                # what did not come true is the planner's guess at what would
+                # appear next ("2024" in a calendar it had not yet seen). The
+                # ladder cannot fix a wrong guess, only re-click. The step
+                # stays recorded as unverified and the planner, which now sees
+                # the page as it really is, decides what to do from there.
+                missed_forecasts += 1
+                logger.info("forecast_missed", step=step_number, action=decision.action.value)
+                state = after
+                await self._return_to_planning(task_id)
+                continue
+
             if not verdict.ok:
                 raise _Stop(
                     TaskStatus.EXECUTION_FAILED,
                     failure_reason=_failure_reason(step_number, decision, element, verdict, tried),
                 )
             idle_scrolls = 0
+            idle_waits = 0
+            idle_extracts = 0
+            missed_forecasts = 0
+            planner_retries = 0
             if decision.action is ActionType.DONE:
                 raise _Stop(TaskStatus.COMPLETED, final_answer=decision.final_answer)
 
@@ -646,6 +837,12 @@ class Orchestrator:
                 break
 
             decision = step.as_decision(element)
+            if pays(decision, element):
+                # A flow cached before the agent stopped at payment can still
+                # hold the click that paid. The planner takes over from here,
+                # and the loop hands the payment to the person.
+                logger.info("replay_reached_payment", step=step.action.value)
+                break
             assessment = _assess(self._risk, decision, state)
             risk = RiskLevel.highest(assessment.level, decision.risk_level)
             step_number = budget.consume_step()
@@ -791,7 +988,7 @@ class Orchestrator:
         failed one.
         """
         try:
-            if settled is TaskStatus.COMPLETED:
+            if settled is TaskStatus.COMPLETED and not tally.asked_on_page:
                 await self._cache.save(task_id, instruction, tuple(tally.cacheable))
             if plan is not None:
                 await self._cache.settle(plan, replayed_all=tally.replayed_all)
@@ -809,12 +1006,18 @@ class Orchestrator:
         the expensive half: grounding costs a frame, a vision call and a
         second or two, and the ordinary step needs none of them.
         """
+        if decision.action not in _GROUNDED_ACTIONS:
+            # Grounding finds the element to act on. A navigation, a scroll or
+            # a `done` has none, and photographing the page for one is a vision
+            # call spent on nothing.
+            return GroundingOutcome(decision=decision)
         reason = ground_reason(
             decision.needs_vision,
             decision.confidence,
             state,
             threshold=self._settings.VISION_CONFIDENCE_THRESHOLD,
             min_elements=self._settings.VISION_MIN_ELEMENTS,
+            target_index=decision.target_index,
         )
         if reason is None:
             return GroundingOutcome(decision=decision)
@@ -918,26 +1121,101 @@ class Orchestrator:
             await self._set_status(task_id, current)
 
     async def _wait_for_login(self, task_id: uuid.UUID, step_number: int, state: PageState) -> None:
-        """Hand the browser to the person to sign in or sign up, and wait.
+        """Hand the browser to the person to sign in or sign up, and wait."""
+        prompt = (
+            f"{_site_of(state) or 'This site'} needs you to sign in or sign up. Do it "
+            "in the browser window, then continue here and the agent will carry on."
+        )
+        if not self._settings.AGENT_CDP_URL:
+            # Google and others refuse sign-in to a browser under automation,
+            # whoever is typing. Saying why, and what works, beats a person
+            # retrying a password that was never the problem.
+            prompt += (
+                " If the site says this browser is not secure, it is refusing the agent's "
+                "own browser: run the agent in your Chrome instead (scripts/chrome_debug.ps1 "
+                "and AGENT_CDP_URL) and sign in there once."
+            )
+        await self._hand_over(
+            task_id,
+            step_number,
+            state,
+            prompt=prompt,
+            target=HANDOFF_SIGN_IN,
+            reasoning="A sign-in page or form is blocking the task.",
+            wait_seconds=self._settings.AGENT_LOGIN_WAIT_SECONDS,
+        )
 
-        Rides the approval gate: the person is shown a prompt, signs in in the
+    async def _wait_for_payment(
+        self, task_id: uuid.UUID, step_number: int, state: PageState
+    ) -> None:
+        """Hand the browser to the person to pay, and wait.
+
+        The task stays open while they do: when it ends the driver closes every
+        tab it opened, and a booking left on the payment page would go with it.
+        Rejecting is the person deciding not to pay, and stops the task.
+        """
+        await self._hand_over(
+            task_id,
+            step_number,
+            state,
+            prompt=(
+                f"Your booking on {_site_of(state) or 'this site'} is ready for payment, "
+                "and the agent never pays. Choose how to pay and finish the payment in "
+                "the browser window, then continue here and the agent will read the "
+                "confirmation. Stop here if you do not want to pay."
+            ),
+            target=HANDOFF_PAY,
+            reasoning="The next step is a payment, which only the person makes.",
+            wait_seconds=self._settings.AGENT_PAYMENT_WAIT_SECONDS,
+        )
+
+    async def _wait_for_details(
+        self, task_id: uuid.UUID, step_number: int, state: PageState, wanted: str | None
+    ) -> None:
+        """Hand the browser to the person to fill in what the goal left out."""
+        # Clipped: the planner wrote it, from a page somebody else wrote, and
+        # it is shown to a person as the agent's own request.
+        what = (wanted or "").strip()[:80] or "some details"
+        await self._hand_over(
+            task_id,
+            step_number,
+            state,
+            prompt=(
+                f"The form on {_site_of(state) or 'this site'} needs details the agent "
+                f"was not given ({what}). Enter them in the browser window, then "
+                "continue here and the agent will carry on."
+            ),
+            target=HANDOFF_DETAILS,
+            reasoning="The form needs details the goal does not give.",
+            wait_seconds=self._settings.AGENT_LOGIN_WAIT_SECONDS,
+        )
+
+    async def _hand_over(
+        self,
+        task_id: uuid.UUID,
+        step_number: int,
+        state: PageState,
+        *,
+        prompt: str,
+        target: str,
+        reasoning: str,
+        wait_seconds: int,
+    ) -> None:
+        """Give the browser to the person for something only they can do, and wait.
+
+        Rides the approval gate: the person is shown a prompt, does it in the
         visible browser window, and presses Approve to let the agent continue.
         Rejecting stops the task, and an unanswered prompt times it out, exactly
-        as for any other approval.
+        as for any other approval. The wait is not charged to the task clock.
         """
         # A step that failed on the sign-in prompt leaves the task in RECOVERING
         # (or VERIFYING), and neither has an edge to AWAITING_APPROVAL. Only
         # PLANNING does.
         await self._return_to_planning(task_id)
-        site = _site_of(state)
-        prompt = (
-            f"{site or 'This site'} needs you to sign in or sign up. Do it in the "
-            "browser window, then press Approve and the agent will carry on."
-        )
         decision = Decision(
             action=ActionType.WAIT,
-            target="for you to sign in or sign up",
-            reasoning="A sign-in page or form is blocking the task.",
+            target=target,
+            reasoning=reasoning,
             expected_outcome=ExpectedOutcome(type=VerificationMethod.DOM_CHANGED),
             risk_level=RiskLevel.HIGH,
             requires_approval=True,
@@ -953,7 +1231,7 @@ class Orchestrator:
                 None,
                 [prompt],
                 state,
-                wait_seconds=self._settings.AGENT_LOGIN_WAIT_SECONDS,
+                wait_seconds=wait_seconds,
             )
         finally:
             await self._indicate("working")
@@ -1028,12 +1306,17 @@ class Orchestrator:
         before: PageState,
         after: PageState,
         result: ActionResult,
+        *,
+        rescue: bool = True,
     ) -> tuple[Verdict, PageState, list[Attempt], list[str]]:
         """Check the step, and try to rescue it if the check failed.
 
         Returns the page as it ended up, which is not always the page that
         failed: a strategy that works has navigated, dismissed something or
         otherwise moved on, and the next step has to plan against that.
+
+        ``rescue=False`` skips the ladder, for a step whose action is known to
+        have landed and so has no locator to fix.
         """
         if not result.ok:
             why = _why_not_run(result)
@@ -1058,7 +1341,7 @@ class Orchestrator:
         else:
             verdict = await self._verifier.check(decision, before, after, result)
 
-        if verdict.ok:
+        if verdict.ok or not rescue:
             return verdict, after, [], []
 
         await self._set_status(task_id, TaskStatus.RECOVERING)
@@ -1130,6 +1413,7 @@ class Orchestrator:
         shot: Screenshot,
         after: PageState,
         replayed: bool = False,
+        plan_step: int | None = None,
     ) -> None:
         """Write the step, then tell anyone watching.
 
@@ -1161,6 +1445,7 @@ class Orchestrator:
                     selector_used=selector_for(element),
                     bbox=bbox,
                     screenshot_ref=reference,
+                    plan_step=plan_step,
                     status=StepStatus.VERIFIED if verdict.ok else StepStatus.FAILED,
                 )
             )
@@ -1226,10 +1511,13 @@ class Orchestrator:
                 confidence=decision.confidence,
                 used_vision=grounded.used_vision,
                 replayed=replayed,
+                plan_step=plan_step,
             ),
         )
 
-    async def _clarify(self, task_id: uuid.UUID, instruction: str) -> str:
+    async def _clarify(
+        self, task_id: uuid.UUID, instruction: str, pages: _PageSurvey | None = None
+    ) -> str:
         """Ask the person what the task leaves out, then fold the answers in.
 
         Rides the approval channel: the question is a WAIT decision whose
@@ -1245,9 +1533,60 @@ class Orchestrator:
             answer = await self._ask(task_id, question.text, question.options)
             if answer:
                 answers.append((question.text, answer))
+            elif pages is not None:
+                pages.skipped.append(question.text)
         return with_answers(instruction, answers)
 
-    async def _ask(self, task_id: uuid.UUID, question: str, options: tuple[str, ...]) -> str | None:
+    async def _ask_about_page(
+        self,
+        task_id: uuid.UUID,
+        instruction: str,
+        state: PageState,
+        pages: _PageSurvey,
+        tally: _Tally,
+    ) -> tuple[bool, str]:
+        """Ask about what this page's form needs and the task and answers do not say.
+
+        Once per page (host and path), only on a page with something to fill
+        in, and on at most MAX_PAGE_SURVEYS pages a task. Returns whether this
+        page is where the task's form is, and the task with any answers added.
+        """
+        if not self._settings.AGENT_CLARIFY:
+            return False, instruction
+        key = _page_key(state)
+        if key in pages.seen or len(pages.seen) >= MAX_PAGE_SURVEYS or not _has_fields(state):
+            return False, instruction
+        pages.seen.add(key)
+
+        found = await self._planner.page_questions(
+            instruction, state, self._settings.AGENT_CLARIFY_MAX_QUESTIONS, pages.skipped
+        )
+        if not found.questions:
+            return found.for_task, instruction
+
+        # The step before left the task in VERIFYING or later; a question rides
+        # the approval gate, which is only reachable from PLANNING.
+        await self._return_to_planning(task_id)
+        answers: list[tuple[str, str]] = []
+        for question in found.questions:
+            answer = await self._ask(task_id, question.text, question.options, site=_site_of(state))
+            if answer:
+                answers.append((question.text, answer))
+            else:
+                pages.skipped.append(question.text)
+        if answers:
+            tally.asked_on_page = True
+        logger.info("page_questions", asked=len(found.questions), answered=len(answers))
+        return found.for_task, with_answers(instruction, answers)
+
+    async def _ask(
+        self,
+        task_id: uuid.UUID,
+        question: str,
+        options: tuple[str, ...],
+        *,
+        site: str = "",
+    ) -> str | None:
         """One question to the person. The answer, or None if they skipped it."""
         decision = Decision(
             action=ActionType.WAIT,
@@ -1271,7 +1610,7 @@ class Orchestrator:
                 screenshot=None,
                 bbox=None,
                 reasons=[question],
-                site="",
+                site=site,
                 timeout_seconds=self._settings.AGENT_CLARIFY_WAIT_SECONDS,
             )
         finally:
@@ -1288,21 +1627,60 @@ class Orchestrator:
         text = (answer.reason or "").strip() if answer.approved else ""
         return text[:200] or None
 
-    async def _publish_outline(self, task_id: uuid.UUID, instruction: str) -> list[str]:
-        """Say how many steps to expect, before the first one.
+    async def _publish_outline(
+        self, task_id: uuid.UUID, instruction: str, state: PageState | None = None
+    ) -> list[str]:
+        """Say how many steps to expect, planned from the page the agent has open.
 
         Stored on the task (so a reconnecting client still gets it) and then
         published, in that order. Never fatal: a task with no outline is still a
         task, and an outline is a forecast the agent is free to depart from.
         """
-        steps = await self._planner.outline(instruction)
+        steps = await self._planner.outline(instruction, state)
         if not steps:
             return []
+        await self._save_plan(task_id, steps)
+        return steps
+
+    async def _follow_plan(
+        self,
+        task_id: uuid.UUID,
+        outline: list[str],
+        decision: Decision,
+        plan_at: int | None,
+    ) -> tuple[list[str], int | None]:
+        """Which plan item this step works on, adding any the planner found missing.
+
+        New items go in just before the item the planner is on: they are work
+        that has to happen before it can carry on (a popup to close, a class to
+        choose), and this step is the first of it. The plan is saved and sent
+        again whenever it grows, so the list the person sees keeps up with what
+        the agent is really doing. A number off either end is clamped rather
+        than trusted, and there is a ceiling on how long the plan may grow.
+        """
+        if not outline:
+            return outline, None
+        current = decision.plan_step or plan_at or 1
+        room = max(0, MAX_PLAN_STEPS - len(outline))
+        added = [" ".join(item.split())[:MAX_STEP_CHARS] for item in decision.add_plan_steps]
+        added = [item for item in added if item and item not in outline][
+            : min(room, MAX_PLAN_ADDS_PER_STEP)
+        ]
+        if not added:
+            return outline, min(max(current, 1), len(outline))
+
+        at = min(max(current, 1), len(outline) + 1)
+        grown = outline[: at - 1] + added + outline[at - 1 :]
+        await self._save_plan(task_id, grown)
+        logger.info("plan_grew", added=len(added), steps=len(grown))
+        return grown, at
+
+    async def _save_plan(self, task_id: uuid.UUID, steps: list[str]) -> None:
+        """Store the plan on the task, then send it: a reconnecting client gets it too."""
         async with self._unit_of_work() as uow:
             task = await uow.tasks.get_or_404(task_id)
             task.plan = steps
         await self._events.publish(task_id, PlanEvent(task_id=task_id, steps=steps))
-        return steps
 
     async def _instruction(self, task_id: uuid.UUID) -> str:
         async with self._unit_of_work() as uow:
@@ -1456,12 +1834,76 @@ def _assess(policy: RiskPolicy, decision: Decision, state: PageState) -> RiskAss
     return RiskAssessment(policy.assess(decision, state), [])
 
 
+# What a hand-off is for, as the `target` of its `wait` decision. Clients tell
+# the kinds apart by these, so a payment is not shown as a sign-in: change one
+# and the frontend's hand-off card has to change with it.
+HANDOFF_SIGN_IN: Final = "for you to sign in or sign up"
+HANDOFF_PAY: Final = "for you to pay"
+HANDOFF_DETAILS: Final = "for you to fill in details"
+
 MAX_LOGIN_PAUSES: Final = 3
+# Payment hand-offs before the task is failed for it. A page that still asks to
+# be paid after the person was given it twice is not one they are going to pay.
+MAX_PAYMENT_PAUSES: Final = 2
+# Times the planner may ask the person for details the goal did not give.
+MAX_DETAIL_PAUSES: Final = 2
+# Pages read for questions in one task. Each costs a model call, and a task that
+# has wandered through this many forms is not short of questions.
+MAX_PAGE_SURVEYS: Final = 5
+# Steps after which the outline is made even if no page has been the task's
+# form, so a lookup that never meets one still gets a plan.
+PLAN_BY_STEP: Final = 3
+# How long the plan may grow mid-run, and by how much in one step. A planner
+# adding work on every action is narrating, not planning.
+MAX_PLAN_STEPS: Final = 20
+MAX_PLAN_ADDS_PER_STEP: Final = 2
+# Controls a person fills in or chooses between, as opposed to ones they press.
+_FILL_ROLES: Final = frozenset(
+    {"combobox", "textbox", "searchbox", "radio", "listbox", "spinbutton"}
+)
 # Scrolls in a row that may find the page already at its end before the task is
 # failed for it. A planner that keeps scrolling a page with nothing left is stuck.
 MAX_IDLE_SCROLLS: Final = 2
+# Waits in a row that found the page already settled, for the same reason.
+MAX_IDLE_WAITS: Final = 2
+# Extracts that came back empty, for the same reason.
+MAX_IDLE_EXTRACTS: Final = 2
+# Fresh looks at the page after the planner could not decide, before the task
+# is failed for it. Reset by every step that works.
+MAX_PLANNER_RETRIES: Final = 1
 # Sites the agent chose that would not open, before the task is failed for it.
 MAX_REFUSED_SITES: Final = 3
+# Steps in a row that landed but did not bring what the planner expected,
+# before the task is failed for it. More than this and the planner is not
+# misjudging one page, it is lost.
+MAX_MISSED_FORECASTS: Final = 3
+# Actions on an element, whose landing the page itself shows. A navigation has
+# its own path above; a scroll, an extract or `done` has nothing to forecast.
+_FORECAST_ACTIONS: Final = frozenset({ActionType.CLICK, ActionType.TYPE, ActionType.SELECT})
+# Actions with an element on the page to find, which is all grounding does.
+_GROUNDED_ACTIONS: Final = frozenset({ActionType.CLICK, ActionType.TYPE, ActionType.SELECT})
+
+
+def _history_note(
+    verdict: Verdict, *, missed: bool, action: ActionType | None = None
+) -> str | None:
+    """Why a step failed, as the planner reads it back. Nothing for a step that worked."""
+    if verdict.ok:
+        return None
+    if missed:
+        # Said outright, or the planner reads "failed" and repeats the action
+        # that in fact worked.
+        return f"it ran and the page changed, but {(verdict.detail or 'not as expected')[:80]}"
+    if action is ActionType.WAIT:
+        # Or the planner waits again, for something a wait will never bring.
+        return "nothing changed: the page has finished loading, so act on what it lists"
+    if action is ActionType.SCROLL:
+        # Or it scrolls again, hunting for a control that is not further down.
+        return (
+            "the page did not move: there is nothing more that way. What you need is "
+            "on the page as listed, or under an open popup"
+        )
+    return (verdict.detail or "")[:100] or None
 
 
 def _address_in_goal(url: str | None, instruction: str) -> bool:
@@ -1476,13 +1918,6 @@ def _history_target(decision: Decision, result: ActionResult, verdict: Verdict) 
         why = (result.error_message or "it would not open")[:80]
         return f"{decision.value} ({why}; choose a different site)"
     return decision.target
-
-
-def _scroll_is_at_its_end(decision: Decision, state: PageState) -> bool:
-    """Was the scroll asked to go where the page has no more room?"""
-    if (decision.value or "").strip().lower() == "up":
-        return state.scroll.y <= 0
-    return state.scroll.y >= state.scroll.max_y - 1
 
 
 MAX_OVERLAY_CLEARS: Final = 2
@@ -1520,10 +1955,54 @@ def _login_wall(state: PageState, instruction: str) -> bool:
     return False
 
 
+def _on_a_site(state: PageState) -> bool:
+    """Is a real page open, rather than the blank tab a task starts on?"""
+    return urlsplit(state.url).scheme in {"http", "https"}
+
+
+def _page_key(state: PageState) -> str:
+    """A page, for asking about it once: host and path, without the query."""
+    parts = urlsplit(state.url)
+    return f"{parts.hostname or ''}{parts.path.rstrip('/')}"
+
+
+def _has_fields(state: PageState) -> bool:
+    """Does the page have anything to fill in or choose? Nothing to ask otherwise."""
+    return any(
+        not element.disabled
+        and (element.tag in {"input", "select", "textarea"} or (element.role or "") in _FILL_ROLES)
+        for element in state.elements
+    )
+
+
+# Second-level labels a country code sits under: irctc.co.in, bbc.co.uk.
+_SECOND_LEVEL: Final = frozenset({"co", "com", "org", "net", "gov", "ac", "edu"})
+# How titles join a site's name to the rest: a bar, or a hyphen or en or em
+# dash with spaces round it ("IRCTC, en dash, Official ...").
+_TITLE_PARTS: Final = re.compile(r"\s+[|\u2013\u2014-]\s+|\s*\|\s*")
+
+
 def _site_of(state: PageState) -> str:
-    """A name for the page a person would recognise."""
-    host = urlsplit(state.url).hostname or ""
-    return state.title.split("|")[-1].strip() or host
+    """The site's own short name, as a person would say it: "IRCTC".
+
+    Not the page title: "IRCTC - Official Indian Railway Catering & Tourism
+    Corporation Portal" quoted in every prompt is noise. A title segment that
+    is the site's name keeps its capitals ("MakeMyTrip"); otherwise the bare
+    domain ("uber.com").
+    """
+    host = (urlsplit(state.url).hostname or "").removeprefix("www.")
+    labels = host.split(".")
+    owned = 3 if len(labels) >= 3 and labels[-2] in _SECOND_LEVEL and len(labels[-1]) == 2 else 2
+    domain = ".".join(labels[-owned:]) if len(labels) >= owned else host
+    name = _letters(labels[-owned]) if len(labels) >= owned else _letters(host)
+    for part in _TITLE_PARTS.split(state.title):
+        if name and _letters(part) == name:
+            return part.strip()
+    return domain
+
+
+def _letters(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", text.casefold())
 
 
 def _hint_text(hint: CachedHint | None) -> str | None:

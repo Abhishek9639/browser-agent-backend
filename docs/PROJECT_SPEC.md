@@ -4,7 +4,7 @@
 
 ## 0. Product in one paragraph
 
-A supervised autonomous browser agent. A user types a natural-language task in a web app ("find the cheapest flight from Delhi to Bengaluru on 20 Oct"). A server-side Playwright browser perceives the page (compact DOM summary, screenshot only when needed), an LLM proposes exactly one next action as structured JSON (an optional outline of the expected steps may be produced first, purely so the user can see how long the task is; it never binds the agent), the backend executes it, a deterministic verifier confirms the outcome, a recovery layer retries with alternate strategies on failure, and every step streams live to the frontend (screenshot + highlighted target + activity log) and is persisted. High-risk actions (payment, deletion, final submission) pause for human approval. Successful flows are cached and replayed. Usage is metered in credits by a separate payments service.
+A supervised autonomous browser agent. A user types a natural-language task in a web app ("find the cheapest flight from Delhi to Bengaluru on 20 Oct"). A server-side Playwright browser perceives the page (compact DOM summary, screenshot only when needed), an LLM proposes exactly one next action as structured JSON (an optional outline of the expected steps may be produced once the agent has opened the site, read its form and asked the user about what that form needs, purely so the user can see how long the task is; it never binds the agent), the backend executes it, a deterministic verifier confirms the outcome, a recovery layer retries with alternate strategies on failure, and every step streams live to the frontend (screenshot + highlighted target + activity log) and is persisted. High-risk actions (payment, deletion, final submission) pause for human approval. Successful flows are cached and replayed. Usage is metered in credits by a separate payments service.
 
 ## 1. Conflict resolutions (PRD v3 vs Complete Documentation)
 
@@ -180,8 +180,8 @@ New browser context per task, no shared storage, downloads disabled (one opt-in 
 | Table | Columns |
 |---|---|
 | users | id (uuid), name, email (unique), password_hash, role (TASK_SUBMITTER/APPROVER/ADMIN), created_at |
-| tasks | id, task_number (unique, e.g. T-000123), instruction, status, created_by → users, start_url, final_answer (jsonb), failure_reason, plan (jsonb, the outline shown before the first action), credits_reservation_id, cache_flow_id, created_at, updated_at, finished_at |
-| task_steps | id, task_id → tasks, step_number, action, target, target_index, value_redacted, tab_id, selector_used, bbox (jsonb), screenshot_ref, status, created_at — unique(task_id, step_number) |
+| tasks | id, task_number (unique, e.g. T-000123), instruction, status, created_by → users, start_url, final_answer (jsonb), failure_reason, plan (jsonb, the outline, made once the agent has opened the site and its questions are answered), credits_reservation_id, cache_flow_id, created_at, updated_at, finished_at |
+| task_steps | id, task_id → tasks, step_number, action, target, target_index, value_redacted, tab_id, selector_used, bbox (jsonb), screenshot_ref, plan_step (the plan item worked on, nullable), status, created_at — unique(task_id, step_number) |
 | llm_decisions | id, step_id → task_steps, prompt_version, model_name, provider, reasoning_summary, confidence, risk_level, used_vision, input_tokens, output_tokens, latency_ms, raw_output (jsonb), created_at |
 | verifications | id, step_id, expected_outcome (jsonb), actual_outcome (jsonb), verified, verification_method, created_at |
 | recovery_attempts | id, step_id, attempt_number, strategy_used, outcome, error, created_at |
@@ -213,8 +213,8 @@ Status codes: 400 validation, 401 auth, 402 insufficient credits, 403 authz, 404
 Every event: `{ "type", "taskId", "seq", "timestamp", ... }`
 
 - `status` — `{status, previousStatus}`
-- `plan` — `{steps: [string]}`, sent once before the first action when `AGENT_PLAN_PREVIEW` is on; a forecast of the steps expected, so the person can see roughly how long the task is. The agent still chooses each real step from what the page shows, so the count can change.
-- `step` — `{stepNumber, action, target, value (redacted), verified, screenshot (base64 JPEG, ≤1280px wide, q≈60), bbox {x,y,width,height}, viewport {width,height}, url, tabId, reasoning, confidence, usedVision}`
+- `plan` — `{steps: [string]}`, the whole plan as it now stands; each one replaces the last. Sent when `AGENT_PLAN_PREVIEW` is on: first after the agent has opened the site, read its form and had any questions about it answered (or after its third step if no page it opens holds the task's form), so it arrives after the first step or two, not before them. Sent again whenever the agent meets work the plan did not list (a popup, choosing a class) and adds items for it, just before the item it is on; the plan grows to at most 20 items. A forecast of the steps expected, so the person can see roughly how long the task is. The agent still chooses each real step from what the page shows, so the count can change.
+- `step` — `{stepNumber, action, target, value (redacted), verified, screenshot (base64 JPEG, ≤1280px wide, q≈60), bbox {x,y,width,height}, viewport {width,height}, url, tabId, reasoning, confidence, usedVision, planStep}`. `planStep` is the plan item the step worked on, numbered from 1 in the latest `plan`; null without a plan.
 - `recovery` — `{stepNumber, attemptNumber, strategy, outcome}`
 - `approval_required` — `{approvalId, stepNumber, proposedAction, riskLevel, reason, screenshot, bbox}`
 - `approval_resolved` — `{approvalId, approved, by, reason}`

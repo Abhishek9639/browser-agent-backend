@@ -27,10 +27,11 @@ from app.agent.contracts import (
     Verdict,
 )
 from app.agent.llm.mock import MockLLM
-from app.agent.perception.dom_extractor import MASK, BoundingBox, ElementInfo
+from app.agent.perception.dom_extractor import MASK, BoundingBox, ElementInfo, PageNotReadyError
 from app.agent.perception.state import PageState
 from app.agent.planner.planner import Planner
 from app.agent.planner.schema import Decision
+from app.agent.safety.payment import is_payment_page
 from app.core.config import Settings
 from app.domain.enums import (
     ActionType,
@@ -42,7 +43,12 @@ from app.domain.enums import (
 )
 from app.services.events import EventType, InMemoryEventBus
 
-from app.agent.orchestrator import Orchestrator, RunOutcome  # isort: skip
+from app.agent.orchestrator import (  # isort: skip
+    MAX_DETAIL_PAUSES,
+    MAX_PAYMENT_PAUSES,
+    Orchestrator,
+    RunOutcome,
+)
 
 TASK_ID = uuid.UUID("aaaaaaaa-0000-4000-8000-000000000001")
 GOAL = "Search for flights from Delhi"
@@ -685,8 +691,9 @@ async def test_a_final_event_goes_out_even_when_the_database_is_gone(
 
 
 async def test_a_planner_that_cannot_decide_fails_safely(settings: Settings) -> None:
+    # Two rounds of two attempts: the page is looked at again once before giving up.
     rig = build(
-        script=[{"action": "not-an-action"}, {"action": "still-not"}],
+        script=[{"action": "not-an-action"}, {"action": "still-not"}] * 2,
         settings=settings,
     )
 
@@ -697,6 +704,20 @@ async def test_a_planner_that_cannot_decide_fails_safely(settings: Settings) -> 
         "The planner could not produce a valid decision for this page."
     )
     assert rig.bus.published[-1].type is EventType.FINAL
+
+
+async def test_one_round_the_planner_could_not_decide_is_not_the_end(settings: Settings) -> None:
+    """The page is read again and the model asked again, once, before the task is failed."""
+    rig = build(
+        script=[{"action": "not-an-action"}, {"action": "still-not"}, done_payload("Found it")],
+        settings=settings,
+    )
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.COMPLETED
+    # It looked at the page afresh rather than planning against the old reading.
+    assert rig.browser.perceive_calls >= 2
 
 
 async def test_an_action_the_browser_rejects_fails_the_task(settings: Settings) -> None:
@@ -1163,6 +1184,36 @@ async def test_a_vision_grounded_step_is_counted_and_costs_more(
     assert outcome.credits_used == 3
 
 
+async def test_a_step_with_no_element_to_find_is_never_grounded(settings: Settings) -> None:
+    """Vision finds a target. A navigation has none, so photographing it is waste."""
+
+    class Counts:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def resolve(
+            self, decision: Decision, state: PageState, screenshot: bytes, reason: str
+        ) -> GroundingOutcome:
+            self.calls += 1
+            return GroundingOutcome(decision=decision, used_vision=True, reason=reason)
+
+    grounder = Counts()
+    go = decision_payload(
+        action="navigate",
+        targetIndex=None,
+        target="the site",
+        value="https://example.test/",
+        needsVision=True,
+        expectedOutcome={"type": "url_contains", "value": "example"},
+    )
+    rig = build(script=[go, done_payload()], settings=settings, grounder=grounder)
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.COMPLETED
+    assert grounder.calls == 0
+
+
 async def test_grounding_choosing_a_missing_element_is_refused(settings: Settings) -> None:
     class GroundsWrong:
         async def resolve(
@@ -1268,6 +1319,54 @@ async def test_a_sign_in_page_hands_the_browser_to_the_person(settings: Settings
     assert browser.indicators == ["waiting", "working"]
 
 
+async def test_the_sign_in_prompt_says_what_works_when_a_site_refuses_the_agent_s_browser(
+    settings: Settings,
+) -> None:
+    """Google tells a person typing into the agent's browser that it is "not secure"."""
+    own_browser = ApprovingGate()
+    await build(
+        script=[done_payload()],
+        settings=settings.model_copy(update={"AGENT_CDP_URL": ""}),
+        browser=LoginThenFormBrowser(),
+        approvals=own_browser,
+    ).orchestrator.run(TASK_ID)
+    their_chrome = ApprovingGate()
+    await build(
+        script=[done_payload()],
+        settings=settings.model_copy(update={"AGENT_CDP_URL": "http://127.0.0.1:9222"}),
+        browser=LoginThenFormBrowser(),
+        approvals=their_chrome,
+    ).orchestrator.run(TASK_ID)
+
+    hint = "scripts/chrome_debug.ps1"
+    assert hint in own_browser.requests[0]["reasons"][0]
+    # In the person's own Chrome there is nothing better to suggest.
+    assert hint not in their_chrome.requests[0]["reasons"][0]
+
+
+@pytest.mark.parametrize(
+    ("url", "title", "said"),
+    [
+        (
+            "https://www.irctc.co.in/nget/payment/bkgPaymentOptions",
+            # IRCTC's title really uses an en dash.
+            "IRCTC \u2013 Official Indian Railway Catering & Tourism Corporation Portal",
+            "IRCTC",
+        ),
+        ("https://www.makemytrip.com/cabs/", "MakeMyTrip - #1 Travel Website", "MakeMyTrip"),
+        ("https://www.skyfare.test/results", "Results | SkyFare", "SkyFare"),
+        # No title part is the site's name: the bare domain, not a sentence.
+        ("https://auth.uber.com/v2/", "Sign up or Log in with Uber", "uber.com"),
+        ("https://www.bbc.co.uk/news", "Home - BBC News", "bbc.co.uk"),
+    ],
+)
+def test_a_site_is_named_the_way_a_person_says_it(url: str, title: str, said: str) -> None:
+    """Every prompt used to quote IRCTC's whole page title."""
+    from app.agent.orchestrator import _site_of
+
+    assert _site_of(page(url=url).model_copy(update={"title": title})) == said
+
+
 async def test_a_sign_in_wall_met_after_a_failed_step_still_hands_over(
     settings: Settings,
 ) -> None:
@@ -1351,6 +1450,106 @@ async def test_a_scroll_with_nowhere_to_go_does_not_fail_the_task(settings: Sett
     assert rig.store.steps[0].status is StepStatus.FAILED
 
 
+class ScrollGoesNowhere(PassingVerifier):
+    async def check(self, decision: Decision, *args: Any) -> Verdict:
+        verdict = await super().check(decision, *args)
+        return replace(
+            verdict, ok=decision.action.value != "scroll", detail="The page did not scroll."
+        )
+
+
+def scroll_down() -> dict[str, Any]:
+    return decision_payload(
+        action="scroll",
+        targetIndex=None,
+        target="page",
+        value="down",
+        expectedOutcome={"type": "dom_changed", "value": ""},
+    )
+
+
+async def test_a_scroll_that_moves_nothing_is_not_the_end_whatever_the_height_says(
+    settings: Settings,
+) -> None:
+    """IRCTC's results page sat at its footer while its measured height said
+    there was more, and "the page did not scroll" failed the task."""
+    from app.agent.perception.state import ScrollState
+
+    mid_page = page(element(0)).model_copy(update={"scroll": ScrollState(y=600, max_y=2400)})
+    llm = MockLLM(script=[scroll_down(), done_payload("Read the results")])
+    rig = build(
+        script=[], settings=settings, browser=FakeBrowser(mid_page), verifier=ScrollGoesNowhere()
+    )
+    rig.orchestrator._planner = Planner(llm)  # type: ignore[attr-defined]
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.COMPLETED
+    # The planner is told why, so it does not go on hunting further down.
+    assert "the page did not move" in llm.calls[1].last_user_text
+
+
+async def test_scrolling_nowhere_again_and_again_still_ends_the_task(settings: Settings) -> None:
+    from app.agent.orchestrator import MAX_IDLE_SCROLLS
+
+    rig = build(
+        script=[scroll_down()] * (MAX_IDLE_SCROLLS + 1),
+        settings=settings,
+        verifier=ScrollGoesNowhere(),
+    )
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.EXECUTION_FAILED
+    assert len(rig.store.steps) == MAX_IDLE_SCROLLS + 1
+
+
+class NothingComesOfWaiting(PassingVerifier):
+    async def check(self, decision: Decision, *args: Any) -> Verdict:
+        verdict = await super().check(decision, *args)
+        return replace(verdict, ok=decision.action.value != "wait", detail="The page is unchanged.")
+
+
+def wait_to_look() -> dict[str, Any]:
+    return decision_payload(
+        action="wait",
+        targetIndex=None,
+        target="November 16 date in calendar",
+        value=None,
+        expectedOutcome={"type": "dom_changed", "value": ""},
+    )
+
+
+async def test_a_wait_that_changes_nothing_does_not_fail_the_task(settings: Settings) -> None:
+    """A planner that could not find a date waited "to see the page", and the run was over."""
+    llm = MockLLM(script=[wait_to_look(), done_payload("Picked the date")])
+    rig = build(script=[], settings=settings, verifier=NothingComesOfWaiting())
+    rig.orchestrator._planner = Planner(llm)  # type: ignore[attr-defined]
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.COMPLETED
+    assert rig.store.steps[0].status is StepStatus.FAILED
+    # The planner is told why, so it acts instead of waiting again.
+    second_turn = " ".join(message.text for message in llm.calls[1].messages)
+    assert "the page has finished loading" in second_turn
+
+
+async def test_waiting_again_and_again_still_ends_the_task(settings: Settings) -> None:
+    from app.agent.orchestrator import MAX_IDLE_WAITS
+
+    rig = build(
+        script=[wait_to_look()] * (MAX_IDLE_WAITS + 1),
+        settings=settings,
+        verifier=NothingComesOfWaiting(),
+    )
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.EXECUTION_FAILED
+    assert len(rig.store.steps) == MAX_IDLE_WAITS + 1
+
+
 async def test_a_site_the_agent_chose_that_refuses_it_is_not_the_end(settings: Settings) -> None:
     class RefusesTheFirstSite(FakeBrowser):
         async def execute(self, action: Any) -> ActionResult:
@@ -1393,6 +1592,98 @@ async def test_a_site_the_agent_chose_that_refuses_it_is_not_the_end(settings: S
         "https://blocked.test/",
         "https://open.test/",
     ]
+
+
+class OpensADropdown(FakeBrowser):
+    """Each action opens something new, the way clicking a "To" field does."""
+
+    async def perceive(self) -> PageState:
+        self.perceive_calls += 1
+        opened = [element(i + 1, name=f"Suggestion {i}") for i in range(len(self.executed))]
+        state = page(element(0), *opened)
+        return state.model_copy(update={"dom_hash": f"hash-{len(self.executed)}"})
+
+
+class ForecastNeverComesTrue(PassingVerifier):
+    """The planner expected "2024" in a calendar; the page shows a city list."""
+
+    async def check(self, decision: Decision, *args: Any) -> Verdict:
+        verdict = await super().check(decision, *args)
+        if decision.action is ActionType.DONE:
+            return verdict
+        return replace(verdict, ok=False, detail="'2024' does not appear on the page.")
+
+
+def _click_to_field() -> dict[str, Any]:
+    return decision_payload(
+        action="click",
+        target="To field",
+        value=None,
+        expectedOutcome={"type": "text_present", "value": "2024"},
+    )
+
+
+async def test_a_click_that_landed_but_missed_the_forecast_is_not_the_end(
+    settings: Settings,
+) -> None:
+    rig = build(
+        script=[_click_to_field(), done_payload("Found it")],
+        settings=settings,
+        browser=OpensADropdown(),
+        verifier=ForecastNeverComesTrue(),
+    )
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.COMPLETED
+    # Still on record as not having done what the planner said it would.
+    assert rig.store.steps[0].status is StepStatus.FAILED
+    # The click landed, so the ladder did not re-click it three more times.
+    clicks = [a for a in rig.browser.executed if getattr(a, "action", None) is ActionType.CLICK]
+    assert len(clicks) == 1
+
+
+async def test_a_click_that_changed_nothing_still_fails_the_task(settings: Settings) -> None:
+    rig = build(
+        script=[_click_to_field(), done_payload()],
+        settings=settings,
+        verifier=ForecastNeverComesTrue(),
+    )
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.EXECUTION_FAILED
+
+
+async def test_missing_every_forecast_in_a_row_fails_the_task(settings: Settings) -> None:
+    rig = build(
+        script=[_click_to_field() for _ in range(5)] + [done_payload()],
+        settings=settings,
+        browser=OpensADropdown(),
+        verifier=ForecastNeverComesTrue(),
+    )
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.EXECUTION_FAILED
+    assert outcome.steps == 4
+
+
+def test_a_missed_forecast_tells_the_planner_the_action_worked() -> None:
+    from app.agent.orchestrator import _history_note
+
+    verdict = Verdict(
+        ok=False,
+        method=VerificationMethod.TEXT_PRESENT,
+        expected={},
+        actual={},
+        detail="'2024' does not appear on the page.",
+    )
+
+    note = _history_note(verdict, missed=True)
+
+    assert note is not None
+    assert note.startswith("it ran and the page changed")
 
 
 async def test_declining_to_sign_in_stops_the_task(settings: Settings) -> None:
@@ -1481,6 +1772,102 @@ async def test_the_outline_is_stored_and_published_before_the_first_step(
     assert rig.store.task.plan == ["Open the form", "Fill the origin", "Read the fare"]
     kinds = [event.type for event in rig.bus.published]
     assert kinds.index(EventType.PLAN) < kinds.index(EventType.STEP)
+
+
+def _steps_published(rig: Rig) -> list[Any]:
+    return [event for event in rig.bus.published if event.type is EventType.STEP]
+
+
+async def test_the_plan_grows_when_the_agent_meets_work_it_did_not_list(
+    settings: Settings,
+) -> None:
+    """The person's list kept showing three items while the agent did seven things."""
+    rig = build(
+        script=[
+            {"steps": ["Open the form", "Fill the origin", "Search"]},
+            decision_payload(planStep=2, addPlanSteps=["Close the cookie popup"]),
+            decision_payload(planStep=3),
+            done_payload(),
+        ],
+        settings=settings.model_copy(update={"AGENT_PLAN_PREVIEW": True}),
+    )
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.COMPLETED
+    grown = ["Open the form", "Close the cookie popup", "Fill the origin", "Search"]
+    assert rig.store.task.plan == grown
+    plans = [event.steps for event in rig.bus.published if event.type is EventType.PLAN]
+    assert plans == [["Open the form", "Fill the origin", "Search"], grown]
+    # The new item went in before the one the agent was on, and this step is its first.
+    assert [row.plan_step for row in rig.store.steps] == [2, 3, 3]
+    assert [event.plan_step for event in _steps_published(rig)] == [2, 3, 3]
+    # The planner then saw the plan as it now stands, and where it was.
+    calls = rig.orchestrator._planner._llm.calls  # type: ignore[attr-defined]
+    assert "2. Close the cookie popup  <- last step was on this item" in calls[2].last_user_text
+
+
+async def test_a_plan_item_number_off_the_end_is_clamped(settings: Settings) -> None:
+    rig = build(
+        script=[
+            {"steps": ["Open the form", "Fill the origin"]},
+            decision_payload(
+                planStep=9,
+                addPlanSteps=["Fill the origin", "Choose a class", "Pick a seat", "Add meals"],
+            ),
+            done_payload(),
+        ],
+        settings=settings.model_copy(update={"AGENT_PLAN_PREVIEW": True}),
+    )
+
+    await rig.orchestrator.run(TASK_ID)
+
+    # Nothing it already had, at most two new items for one step, put at the end.
+    assert rig.store.task.plan == [
+        "Open the form",
+        "Fill the origin",
+        "Choose a class",
+        "Pick a seat",
+    ]
+    assert rig.store.steps[0].plan_step == 3
+
+
+async def test_the_plan_never_grows_past_its_ceiling(settings: Settings) -> None:
+    from app.agent.orchestrator import MAX_PLAN_STEPS
+
+    full = [f"Item {i}" for i in range(1, MAX_PLAN_STEPS + 1)]
+    rig = build(
+        script=[decision_payload(planStep=1, addPlanSteps=["One more"]), done_payload()],
+        settings=settings.model_copy(update={"AGENT_PLAN_PREVIEW": True}),
+    )
+    # A made outline is capped lower than this; a plan this long is what a run
+    # of additions builds, so the test starts from one.
+    rig.orchestrator._planner.outline = _returns(full)  # type: ignore[method-assign]
+
+    await rig.orchestrator.run(TASK_ID)
+
+    assert rig.store.task.plan == full
+    assert len([e for e in rig.bus.published if e.type is EventType.PLAN]) == 1
+
+
+def _returns(steps: list[str]) -> Any:
+    async def outline(*args: Any, **kwargs: Any) -> list[str]:
+        return list(steps)
+
+    return outline
+
+
+async def test_without_a_plan_no_plan_item_is_recorded(settings: Settings) -> None:
+    rig = build(
+        script=[decision_payload(planStep=2, addPlanSteps=["Close the popup"]), done_payload()],
+        settings=settings,
+    )
+
+    await rig.orchestrator.run(TASK_ID)
+
+    assert rig.store.task.plan is None
+    assert [row.plan_step for row in rig.store.steps] == [None, None]
+    assert EventType.PLAN not in [event.type for event in rig.bus.published]
 
 
 async def test_no_outline_call_is_made_when_the_preview_is_off(settings: Settings) -> None:
@@ -1616,12 +2003,21 @@ def _ask_two() -> dict[str, Any]:
     }
 
 
+def _page_asks(*questions: tuple[str, list[str]], for_task: bool = True) -> dict[str, Any]:
+    """The model's reading of a page: is it the task's form, and what to ask about it."""
+    return {
+        "formForTask": for_task,
+        "questions": [{"question": text, "options": options} for text, options in questions],
+    }
+
+
 async def test_questions_are_asked_first_and_the_answers_reach_the_planner(
     settings: Settings,
 ) -> None:
     gate = Answering("3AC", "Evening")
     rig = build(
-        script=[_ask_two(), decision_payload(), done_payload()],
+        # The page the fake starts on has a field, so it is read for questions too.
+        script=[_ask_two(), _page_asks(), decision_payload(), done_payload()],
         settings=settings.model_copy(update={"AGENT_CLARIFY": True}),
         approvals=gate,
     )
@@ -1641,7 +2037,7 @@ async def test_questions_are_asked_first_and_the_answers_reach_the_planner(
 async def test_skipping_a_question_does_not_stop_the_task(settings: Settings) -> None:
     gate = Answering(None, "Evening")
     rig = build(
-        script=[_ask_two(), decision_payload(), done_payload()],
+        script=[_ask_two(), _page_asks(), decision_payload(), done_payload()],
         settings=settings.model_copy(update={"AGENT_CLARIFY": True}),
         approvals=gate,
     )
@@ -1676,3 +2072,448 @@ async def test_no_question_call_is_made_when_clarifying_is_off(settings: Setting
     await rig.orchestrator.run(TASK_ID)
 
     assert gate.requests == []
+
+
+# ------------------------------------------------ the page is read, then asked about
+
+
+class Pages(FakeBrowser):
+    """Shows each page in turn, moving to the next one after every action."""
+
+    def __init__(self, *states: PageState) -> None:
+        super().__init__(states[0])
+        self._states = list(states)
+        self._at = 0
+
+    async def perceive(self) -> PageState:
+        self.perceive_calls += 1
+        return self._states[self._at]
+
+    async def execute(self, action: Any) -> ActionResult:
+        result = await super().execute(action)
+        self._at = min(self._at + 1, len(self._states) - 1)
+        return result
+
+
+BLANK = page(url="about:blank")
+
+
+def cab_form(url: str = "https://cabs.test/cabs") -> PageState:
+    return page(
+        element(0, name="One Way", input_type="radio"),
+        element(1, name="Round Trip", input_type="radio"),
+        element(2, name="From"),
+        url=url,
+    ).model_copy(
+        update={
+            "summary_text": (
+                '[0] input[type=radio] "One Way" (checked)\n'
+                '[1] input[type=radio] "Round Trip"\n'
+                '[2] input[type=text] "From"'
+            )
+        }
+    )
+
+
+def go_to(url: str = "https://cabs.test/cabs") -> dict[str, Any]:
+    return decision_payload(
+        action="navigate",
+        targetIndex=None,
+        target="the site",
+        value=url,
+        expectedOutcome={"type": "url_contains", "value": "cabs.test"},
+    )
+
+
+def outline_of(*steps: str) -> dict[str, Any]:
+    return {"steps": list(steps)}
+
+
+def clarifying(settings: Settings, *, preview: bool = True) -> Settings:
+    return settings.model_copy(update={"AGENT_CLARIFY": True, "AGENT_PLAN_PREVIEW": preview})
+
+
+async def test_the_plan_waits_until_the_site_is_open(settings: Settings) -> None:
+    """Spec section 6: planned from the page, not from the task text before anything."""
+    rig = build(
+        script=[go_to(), outline_of("Choose the trip type", "Fill the form"), done_payload()],
+        settings=settings.model_copy(update={"AGENT_PLAN_PREVIEW": True}),
+        browser=Pages(BLANK, cab_form()),
+    )
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.COMPLETED
+    assert rig.store.task.plan == ["Choose the trip type", "Fill the form"]
+    kinds = [event.type for event in rig.bus.published]
+    # The first step opened the site; the plan came after it.
+    assert kinds.index(EventType.STEP) < kinds.index(EventType.PLAN)
+    # And it was made from the page the agent had open.
+    calls = rig.orchestrator._planner._llm.calls  # type: ignore[attr-defined]
+    assert "Round Trip" in calls[1].last_user_text
+
+
+async def test_the_page_is_read_and_asked_about_before_the_plan(settings: Settings) -> None:
+    gate = Answering("Round Trip")
+    rig = build(
+        script=[
+            {"questions": []},
+            go_to(),
+            _page_asks(("One way or round trip?", ["One Way", "Round Trip"])),
+            outline_of("Choose Round Trip", "Fill the form"),
+            done_payload(),
+        ],
+        settings=clarifying(settings),
+        browser=Pages(BLANK, cab_form()),
+        approvals=gate,
+    )
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.COMPLETED
+    assert [r["reasons"][0] for r in gate.requests] == ["One way or round trip?"]
+    assert gate.requests[0]["decision"].value == "One Way|Round Trip"
+    assert gate.requests[0]["site"]
+    calls = rig.orchestrator._planner._llm.calls  # type: ignore[attr-defined]
+    # The page went to the question call, fenced as untrusted data.
+    assert "<page_state>" in calls[2].last_user_text
+    assert "One Way" in calls[2].last_user_text
+    # The plan was made after the answer, and the planner works from the answer.
+    assert "Round Trip" in calls[3].last_user_text
+    assert "One way or round trip? Round Trip" in calls[4].last_user_text
+    assert rig.store.task.plan == ["Choose Round Trip", "Fill the form"]
+
+
+async def test_each_new_page_is_asked_about_once(settings: Settings) -> None:
+    gate = Answering("Round Trip", "Sedan")
+    results = cab_form("https://cabs.test/cabs/search")
+    rig = build(
+        script=[
+            {"questions": []},
+            _page_asks(("One way or round trip?", ["One Way", "Round Trip"])),
+            decision_payload(targetIndex=2),
+            _page_asks(("Which car?", ["Hatchback", "Sedan"])),
+            decision_payload(targetIndex=2),
+            done_payload(),
+        ],
+        settings=clarifying(settings, preview=False),
+        browser=Pages(cab_form(), results, results),
+        approvals=gate,
+    )
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.COMPLETED
+    assert [r["reasons"][0] for r in gate.requests] == ["One way or round trip?", "Which car?"]
+    # Six calls: the opening questions, two pages, two actions and the answer.
+    # The results page was not read twice.
+    assert rig.orchestrator._planner._llm.call_count == 6  # type: ignore[attr-defined]
+
+
+async def test_a_skipped_question_is_not_asked_again_on_the_page(settings: Settings) -> None:
+    gate = Answering(None)
+    rig = build(
+        script=[
+            {"questions": [{"question": "Which class?", "options": ["AC", "Non-AC"]}]},
+            _page_asks(),
+            done_payload(),
+        ],
+        settings=clarifying(settings, preview=False),
+        browser=FakeBrowser(cab_form()),
+        approvals=gate,
+    )
+
+    await rig.orchestrator.run(TASK_ID)
+
+    page_call = rig.orchestrator._planner._llm.calls[1]  # type: ignore[attr-defined]
+    assert "do not ask them again" in page_call.last_user_text
+    assert "Which class?" in page_call.last_user_text
+
+
+async def test_a_page_with_nothing_to_fill_is_not_asked_about(settings: Settings) -> None:
+    article = page(
+        ElementInfo(
+            index=0,
+            tag="a",
+            name="Read more",
+            bbox=BoundingBox(x=0, y=0, width=80, height=20),
+            in_viewport=True,
+        ),
+        url="https://news.test/story",
+    )
+    rig = build(
+        script=[{"questions": []}, done_payload("Read it")],
+        settings=clarifying(settings, preview=False),
+        browser=FakeBrowser(article),
+    )
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.COMPLETED
+    assert rig.orchestrator._planner._llm.call_count == 2  # type: ignore[attr-defined]
+
+
+async def test_a_run_answered_on_a_page_is_not_cached(settings: Settings) -> None:
+    """The cache is looked up before any page is read, so a cached flow holding
+    this person's trip type would be replayed for somebody who never chose it."""
+    cache = RecordingCache()
+    rig = build(
+        script=[
+            {"questions": []},
+            _page_asks(("One way or round trip?", ["One Way", "Round Trip"])),
+            done_payload(),
+        ],
+        settings=clarifying(settings, preview=False),
+        browser=FakeBrowser(cab_form()),
+        approvals=Answering("Round Trip"),
+        cache=cache,
+    )
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.COMPLETED
+    assert cache.saved is None
+
+
+# ------------------------------------------------------------- unreadable page
+
+
+async def test_a_page_that_cannot_be_read_is_reported_plainly(settings: Settings) -> None:
+    """It used to end as "internal error (PageNotReadyError)", which tells nobody anything."""
+
+    class NeverReady(FakeBrowser):
+        async def perceive(self) -> PageState:
+            raise PageNotReadyError("Could not read the page: Execution context was destroyed")
+
+    rig = build(script=[done_payload()], settings=settings, browser=NeverReady())
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.EXECUTION_FAILED
+    assert outcome.failure_reason == (
+        "The page kept changing and could not be read. Try the task again."
+    )
+
+
+# ------------------------------------------------------------ payment hand-off
+
+BOOKING = "Book the cheapest flight from Delhi to Mumbai"
+
+
+def card_form() -> PageState:
+    return page(
+        element(0, name="Card number"),
+        element(1, name="CVV"),
+        url="https://pay.skyfare.test/checkout",
+    )
+
+
+def confirmation() -> PageState:
+    """Still under /payment and naming how it was paid: a page to read, not a second till."""
+    return page(
+        element(0, name="Download ticket"), url="https://skyfare.test/payment/success"
+    ).model_copy(update={"text": "Booking confirmed. PNR ABC123. Paid by UPI. Credit card offers."})
+
+
+def pay_now(label: str = "Pay now") -> dict[str, Any]:
+    return decision_payload(
+        action="click",
+        target=label,
+        value=None,
+        expectedOutcome={"type": "dom_changed", "value": ""},
+        riskLevel="HIGH",
+        requiresApproval=True,
+    )
+
+
+def booking_store() -> FakeStore:
+    return FakeStore(task=FakeTask(instruction=BOOKING))
+
+
+class PaysThenConfirms(FakeBrowser):
+    """The payment form until the person has paid, then the confirmation."""
+
+    def __init__(self) -> None:
+        super().__init__(card_form())
+        self.paid = False
+        self.indicators: list[str] = []
+
+    async def perceive(self) -> PageState:
+        self.perceive_calls += 1
+        return confirmation() if self.paid else self._state
+
+    async def set_indicator(self, mode: str) -> None:
+        self.indicators.append(mode)
+
+
+class PersonPays(ApprovingGate):
+    def __init__(self, browser: PaysThenConfirms) -> None:
+        super().__init__()
+        self._browser = browser
+
+    async def request(self, **kwargs: Any) -> ApprovalOutcome:
+        self._browser.paid = True
+        return await super().request(**kwargs)
+
+
+async def test_a_payment_page_hands_the_browser_to_the_person(settings: Settings) -> None:
+    browser = PaysThenConfirms()
+    gate = PersonPays(browser)
+    rig = build(
+        script=[done_payload("Booked AI-203, PNR ABC123")],
+        settings=settings.model_copy(update={"AGENT_PAYMENT_WAIT_SECONDS": 4321}),
+        store=booking_store(),
+        browser=browser,
+        approvals=gate,
+    )
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.COMPLETED
+    assert outcome.final_answer == "Booked AI-203, PNR ABC123"
+    assert len(gate.requests) == 1
+    request = gate.requests[0]
+    assert "ready for payment" in request["reasons"][0]
+    assert request["decision"].target == "for you to pay"
+    assert request["timeout_seconds"] == 4321
+    # Nothing was typed into the card form.
+    assert all(a.action.value == "done" for a in browser.executed)
+    assert browser.indicators == ["waiting", "working"]
+    # The page check would have fired on the confirmation too, and did not.
+    assert is_payment_page(confirmation())
+
+
+async def test_a_lookup_is_not_stopped_by_a_card_field(settings: Settings) -> None:
+    gate = ApprovingGate()
+    rig = build(
+        script=[done_payload("It costs 4,500")],
+        settings=settings,
+        browser=FakeBrowser(card_form()),
+        approvals=gate,
+    )
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.COMPLETED
+    assert gate.requests == []
+
+
+async def test_the_agent_never_presses_pay_itself(settings: Settings) -> None:
+    """Approved or not: the planner asks to press Pay, the person is handed the browser."""
+    gate = ApprovingGate()
+    browser = FakeBrowser(page(element(0, name="Pay ₹4,500")))
+    rig = build(
+        script=[pay_now("Pay ₹4,500"), done_payload("Paid by the person")],
+        settings=settings,
+        browser=browser,
+        approvals=gate,
+    )
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.COMPLETED
+    assert len(gate.requests) == 1
+    assert "never pays" in gate.requests[0]["reasons"][0]
+    assert not any(a.action.value == "click" for a in browser.executed)
+    # No step was spent on a click that never happened: only the answer is recorded.
+    assert rig.store.step_numbers() == [1]
+
+
+async def test_rejecting_the_payment_stops_the_task_without_paying(settings: Settings) -> None:
+    browser = FakeBrowser(card_form())
+    # The default gate refuses, which here is the person deciding not to pay.
+    rig = build(script=[done_payload()], settings=settings, store=booking_store(), browser=browser)
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.REJECTED
+    assert browser.executed == []
+
+
+async def test_a_page_still_asking_for_payment_ends_the_task(settings: Settings) -> None:
+    gate = ApprovingGate()
+    browser = FakeBrowser(page(element(0, name="Pay now")))
+    rig = build(
+        script=[pay_now()] * (MAX_PAYMENT_PAUSES + 1),
+        settings=settings,
+        browser=browser,
+        approvals=gate,
+    )
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.EXECUTION_FAILED
+    assert outcome.failure_reason is not None
+    assert "never pays itself" in outcome.failure_reason
+    assert len(gate.requests) == MAX_PAYMENT_PAUSES
+    assert browser.executed == []
+
+
+async def test_a_cached_flow_never_replays_a_payment(settings: Settings) -> None:
+    cached_pay = ReplayStep(
+        action=ActionType.CLICK,
+        locator=Locator(role="input", name="Pay now"),
+        value=None,
+        target="Pay now",
+        expected_type=VerificationMethod.DOM_CHANGED,
+        expected_value="",
+    )
+    browser = FakeBrowser(page(element(0, name="Pay now")))
+    rig = build(
+        script=[done_payload("Stopped at payment")],
+        settings=settings,
+        browser=browser,
+        cache=RecordingCache(cached_pay),
+    )
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.COMPLETED
+    assert outcome.replayed_steps == 0
+    assert not any(a.action.value == "click" for a in browser.executed)
+
+
+# ------------------------------------------------------- details the goal left out
+
+
+def ask_for(fields: str) -> dict[str, Any]:
+    return decision_payload(
+        action="wait",
+        targetIndex=None,
+        target=fields,
+        value=None,
+        requiresApproval=True,
+        expectedOutcome={"type": "dom_changed", "value": ""},
+    )
+
+
+async def test_the_planner_can_ask_the_person_for_missing_details(settings: Settings) -> None:
+    gate = ApprovingGate()
+    browser = FakeBrowser(page(element(0, name="Full name")))
+    rig = build(
+        script=[ask_for("traveller name, age and phone"), done_payload()],
+        settings=settings,
+        browser=browser,
+        approvals=gate,
+    )
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.COMPLETED
+    assert len(gate.requests) == 1
+    assert "traveller name, age and phone" in gate.requests[0]["reasons"][0]
+    assert not any(a.action.value == "wait" for a in browser.executed)
+
+
+async def test_asking_for_details_again_and_again_ends_the_task(settings: Settings) -> None:
+    gate = ApprovingGate()
+    rig = build(
+        script=[ask_for("traveller name")] * (MAX_DETAIL_PAUSES + 1),
+        settings=settings,
+        approvals=gate,
+    )
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.EXECUTION_FAILED
+    assert len(gate.requests) == MAX_DETAIL_PAUSES

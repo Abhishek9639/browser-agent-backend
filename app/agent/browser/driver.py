@@ -188,6 +188,8 @@ def host_is_allowed(url: str, allowed: tuple[str, ...]) -> bool:
     """
     if not allowed:
         return False
+    if "*" in allowed:
+        return True
 
     parts = urlsplit(url)
     hostname = (parts.hostname or "").lower()
@@ -219,13 +221,15 @@ NEW_TAB_WAIT_S = 3.0
 NEW_TAB_PEEK_S = 0.4
 NEW_TAB_LOAD_MS = 8_000
 OBSTRUCTION_SETTLE_S = 0.4
-# Things a person can type into. Checkboxes, radios and buttons are inputs too,
-# but typing into them is never what anybody meant.
+# Things ``fill`` can type into. Checkboxes, radios and buttons are inputs too,
+# but typing into them is never what anybody meant. ARIA roles are left out on
+# purpose: a ``div role=combobox`` is a wrapper (a flight search's "Where to?"
+# is one), ``fill`` refuses it, and the real field is the input inside it. A
+# role-only widget with no field inside is typed into at the keyboard instead.
 EDITABLE_SELECTOR = (
     "input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=button])"
     ":not([type=submit]):not([type=reset]):not([type=file]):not([type=image]), textarea, "
-    "[contenteditable=''], [contenteditable='true'], [role=textbox], [role=searchbox], "
-    "[role=combobox]"
+    "[contenteditable=''], [contenteditable='true']"
 )
 GLIDE_STEPS = 22
 SMOOTH_SCROLL_POLL_S = 0.1
@@ -724,38 +728,49 @@ class PlaywrightDriver:
         locator = await self._locate(action.selector)
         await self._clear_obstruction(locator)
         await self._glide_to(locator)
-        field = await self._editable_in(locator)
-
         if "\n" in action.value:
             await self._insert_block(locator, action)
             return
+        field = await self._editable_in(locator)
+
         if field is None:
             # Nothing editable to fill: focus it and type at the keyboard, which
             # is what a custom widget listens for.
-            await locator.click()
-            if action.clear_first:
-                await self.page.keyboard.press("Control+A")
-                await self.page.keyboard.press("Backspace")
-            await self.page.keyboard.type(action.value, delay=TYPE_DELAY_MS)
-            if action.press_enter:
-                await self.page.keyboard.press("Enter")
+            await self._type_at_keyboard(locator, action)
             return
 
-        if action.clear_first:
-            await field.fill("")
-        await field.fill(action.value)
-        if not await self._holds(field, action.value):
-            # The widget threw the value away, which is what a mask or an
-            # autocomplete that watches key events does to a programmatic fill.
-            # Type it the way a person would.
-            await field.click()
-            await field.fill("")
-            await field.press_sequentially(action.value, delay=TYPE_DELAY_MS)
-        if action.press_enter:
-            await field.press("Enter")
+        try:
+            if action.clear_first:
+                await field.fill("")
+            await field.fill(action.value)
+            if not await self._holds(field, action.value):
+                # The widget threw the value away, which is what a mask or an
+                # autocomplete that watches key events does to a programmatic fill.
+                # Type it the way a person would.
+                await field.click()
+                await field.fill("")
+                await field.press_sequentially(action.value, delay=TYPE_DELAY_MS)
+            if action.press_enter:
+                await field.press("Enter")
+        except PlaywrightError as exc:
+            # A combobox like a flight search's "Where to?" hands focus to a
+            # separate popup input on click, so the element that was located is
+            # no longer fillable. Whatever has focus now is what to type into.
+            logger.info("type_fell_back_to_keyboard", error_type=type(exc).__name__)
+            await self._type_at_keyboard(locator, action)
 
-    async def _editable_in(self, locator: Locator) -> Locator | None:
-        """The locator itself if it is a field, else a field inside it, else None."""
+    async def _type_at_keyboard(self, locator: Locator, action: TypeAction) -> None:
+        """Click the target, then type into whatever the click focused."""
+        await locator.click()
+        # Let a widget that swaps in its own input finish doing so.
+        await asyncio.sleep(OBSTRUCTION_SETTLE_S)
+        if action.clear_first:
+            await self.page.keyboard.press("Control+A")
+            await self.page.keyboard.press("Backspace")
+        await self.page.keyboard.type(action.value, delay=TYPE_DELAY_MS)
+        if action.press_enter:
+            await self.page.keyboard.press("Enter")
+
     async def _insert_block(self, locator: Locator, action: TypeAction) -> None:
         """Put a multi-line text (a program) into an editor in one piece.
 
@@ -773,6 +788,8 @@ class PlaywrightDriver:
         if action.press_enter:
             await self.page.keyboard.press("Enter")
 
+    async def _editable_in(self, locator: Locator) -> Locator | None:
+        """The locator itself if it is a field, else a field inside it, else None."""
         if await locator.evaluate("(el, sel) => el.matches(sel)", EDITABLE_SELECTOR):
             return locator
         inner = locator.locator(EDITABLE_SELECTOR).first
@@ -946,7 +963,13 @@ class PlaywrightDriver:
 
     async def _extract(self, action: ExtractAction) -> str:
         if action.selector:
-            return await (await self._locate(action.selector)).inner_text()
+            try:
+                locator = await self._locate(action.selector)
+                text = await locator.inner_text()
+                if text and text.strip():
+                    return text.strip()
+            except Exception:
+                pass
         return await self._all_text()
 
     async def _locate(self, selector: str) -> Locator:

@@ -139,6 +139,10 @@ class TaskStep(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     selector_used: Mapped[str | None] = mapped_column(Text)
     bbox: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     screenshot_ref: Mapped[str | None] = mapped_column(String(512))
+    # The item of the task's plan this step worked on, numbered from 1 in the
+    # plan as it then stood. Kept so a reconnecting client ticks the same items
+    # the live one did. Null without a plan, and for a replayed step.
+    plan_step: Mapped[int | None] = mapped_column(Integer)
     status: Mapped[StepStatus] = mapped_column(
         enum_column(StepStatus, "step_status"),
         nullable=False,

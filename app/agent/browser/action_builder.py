@@ -1,3 +1,4 @@
+# This acts as a translator between your Planner and your Browser Driver.
 """Turning a planner decision into the typed action the driver runs.
 
 Shared by the loop and by recovery, which needs to replay the same action
@@ -56,6 +57,8 @@ def build_action(
         case ActionType.TYPE | ActionType.SELECT:
             payload["selector"] = target
             payload["value"] = decision.value
+            if decision.action is ActionType.TYPE and decision.press_enter:
+                payload["press_enter"] = True
         case ActionType.SCROLL:
             payload["direction"] = decision.value if decision.value in {"up", "down"} else "down"
         case ActionType.EXTRACT:
