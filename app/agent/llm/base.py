@@ -47,6 +47,8 @@ logger = get_logger(__name__)
 DEFAULT_MAX_ATTEMPTS: Final = 3
 DEFAULT_BASE_DELAY_S: Final = 0.5
 DEFAULT_MAX_DELAY_S: Final = 8.0
+# A rate limit asking for longer than this is a quota, not a blip: do not sleep through it.
+DEFAULT_MAX_RETRY_WAIT_S: Final = 90.0
 DEFAULT_TIMEOUT_S: Final = 60.0
 
 
@@ -196,6 +198,8 @@ class RetryingLLM:
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
         base_delay_s: float = DEFAULT_BASE_DELAY_S,
         max_delay_s: float = DEFAULT_MAX_DELAY_S,
+        retry_rate_limits: bool = True,
+        max_retry_wait_s: float = DEFAULT_MAX_RETRY_WAIT_S,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         rng: random.Random | None = None,
     ) -> None:
@@ -205,6 +209,8 @@ class RetryingLLM:
         self._max_attempts = max_attempts
         self._base_delay_s = base_delay_s
         self._max_delay_s = max_delay_s
+        self._retry_rate_limits = retry_rate_limits
+        self._max_retry_wait_s = max_retry_wait_s
         # Injected so tests do not sleep and backoff is reproducible.
         self._sleep = sleep
         self._rng = rng or random.Random()  # noqa: S311 - jitter, not crypto
@@ -253,6 +259,22 @@ class RetryingLLM:
                     # Re-sending an identical prompt would produce an identical
                     # answer at the same cost.
                     raise
+                if isinstance(error, LLMRateLimited) and not self._retry_rate_limits:
+                    raise
+                if (
+                    isinstance(error, LLMRateLimited)
+                    and (error.retry_after_s or 0.0) > self._max_retry_wait_s
+                ):
+                    # A quota that clears in minutes (a daily limit, say) is
+                    # not a delay worth sleeping through: the task has a time
+                    # budget, and a person is watching it. Fail now, so the
+                    # fallback or the user can decide what to do.
+                    logger.warning(
+                        "llm_rate_limit_too_long",
+                        provider=self.provider,
+                        retry_after_s=error.retry_after_s,
+                    )
+                    raise
                 last = error
                 if attempt == self._max_attempts:
                     break
@@ -277,6 +299,79 @@ class RetryingLLM:
         raise last if last else LLMUnavailable("The provider could not be reached.")
 
 
+DEFAULT_RATE_LIMIT_COOLDOWN_S: Final = 60.0
+MAX_RATE_LIMIT_COOLDOWN_S: Final = 300.0
+# A primary that needs no more than this is worth waiting for once the fallback is also limited.
+SHORT_WAIT_S: Final = 30.0
+
+
+class RequestPacer:
+    """Spaces requests so a provider's requests-per-minute limit is never hit.
+
+    Failing over after a 429 costs a failed call and lands on a provider with
+    limits of its own. Waiting a few seconds for a turn costs only the wait.
+    One pacer is shared by every client of a provider, because the limit is the
+    account's, not the client's.
+    """
+
+    def __init__(
+        self,
+        min_interval_s: float,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
+        self._interval = min_interval_s
+        self._clock = clock
+        self._sleep = sleep
+        self._next_at = 0.0
+        self._lock: asyncio.Lock | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    def _lock_for_this_loop(self) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        if self._lock is None or self._loop is not loop:
+            self._lock, self._loop = asyncio.Lock(), loop
+        return self._lock
+
+    async def wait_turn(self) -> None:
+        async with self._lock_for_this_loop():
+            wait = self._next_at - self._clock()
+            if wait > 0:
+                await self._sleep(wait)
+            self._next_at = max(self._clock(), self._next_at) + self._interval
+
+
+class PacedLLM:
+    """A client that takes its turn on a :class:`RequestPacer` before each call."""
+
+    def __init__(self, inner: LLMClient, pacer: RequestPacer) -> None:
+        self._inner = inner
+        self._pacer = pacer
+
+    @property
+    def provider(self) -> str:
+        return self._inner.provider
+
+    @property
+    def model_name(self) -> str:
+        return self._inner.model_name
+
+    async def generate_json(
+        self,
+        system: str,
+        messages: Sequence[LLMMessage],
+        json_schema: dict[str, Any],
+        *,
+        images: Sequence[bytes] | None = None,
+        timeout_s: float = DEFAULT_TIMEOUT_S,
+    ) -> LLMResponse:
+        await self._pacer.wait_turn()
+        return await self._inner.generate_json(
+            system, messages, json_schema, images=images, timeout_s=timeout_s
+        )
+
+
 class FallbackLLM:
     """Try one client, then another.
 
@@ -286,9 +381,24 @@ class FallbackLLM:
     is the transport-level half of that.
     """
 
-    def __init__(self, primary: LLMClient, fallback: LLMClient) -> None:
+    def __init__(
+        self,
+        primary: LLMClient,
+        fallback: LLMClient,
+        *,
+        rate_limit_cooldown_s: float = DEFAULT_RATE_LIMIT_COOLDOWN_S,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
         self._primary = primary
         self._fallback = fallback
+        self._sleep = sleep
+        self._cooldown_s = rate_limit_cooldown_s
+        self._clock = clock
+        # While the primary is known to be rate limited, go straight to the
+        # fallback instead of spending a request (and a second or two) finding
+        # that out again on every step.
+        self._primary_blocked_until = 0.0
 
     @property
     def provider(self) -> str:
@@ -307,11 +417,19 @@ class FallbackLLM:
         images: Sequence[bytes] | None = None,
         timeout_s: float = DEFAULT_TIMEOUT_S,
     ) -> LLMResponse:
+        if self._clock() < self._primary_blocked_until:
+            return await self._fallback.generate_json(
+                system, messages, json_schema, images=images, timeout_s=timeout_s
+            )
         try:
             return await self._primary.generate_json(
                 system, messages, json_schema, images=images, timeout_s=timeout_s
             )
         except LLMError as error:
+            primary_wait = error.retry_after_s if isinstance(error, LLMRateLimited) else None
+            if isinstance(error, LLMRateLimited):
+                wait = error.retry_after_s if error.retry_after_s else self._cooldown_s
+                self._primary_blocked_until = self._clock() + min(wait, MAX_RATE_LIMIT_COOLDOWN_S)
             if isinstance(error, LLMBadOutput):
                 # The provider is healthy and the model answered badly. Asking
                 # a different model the same question hides a prompt problem.
@@ -322,9 +440,21 @@ class FallbackLLM:
                 fallback=self._fallback.provider,
                 error_type=type(error).__name__,
             )
-            return await self._fallback.generate_json(
-                system, messages, json_schema, images=images, timeout_s=timeout_s
-            )
+            try:
+                return await self._fallback.generate_json(
+                    system, messages, json_schema, images=images, timeout_s=timeout_s
+                )
+            except LLMRateLimited as fb_err:
+                # Both are limited. If either only needs a short wait, sleep and retry the primary.
+                wait_time = primary_wait or fb_err.retry_after_s or 5.0
+                if wait_time > SHORT_WAIT_S:
+                    raise
+                logger.warning("llm_waiting_for_primary", seconds=wait_time)
+                await self._sleep(wait_time + 0.5)
+                self._primary_blocked_until = 0.0
+                return await self._primary.generate_json(
+                    system, messages, json_schema, images=images, timeout_s=timeout_s
+                )
 
 
 def merge_images(

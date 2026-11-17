@@ -5,7 +5,7 @@ forbids logging or storing a password, so nothing here ever puts the plaintext
 into a log line, an audit row, or an exception message.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from app.core.config import Settings
 from app.core.errors import Conflict, InvalidCredentials, RefreshTokenReuse, Unauthorized
@@ -140,12 +140,17 @@ class AuthService:
         *,
         user_agent: str | None = None,
         ip: str | None = None,
-    ) -> tuple[User, AccessToken, str]:
+    ) -> tuple[User, AccessToken, str | None]:
         """Exchange a refresh token for a new pair.
 
         Rotation is single-use: the presented token is revoked and points at its
         successor. Presenting a revoked token again means two parties hold the
         same cookie, so the whole chain is destroyed.
+
+        The one exception is a token rotated within ``REFRESH_REUSE_GRACE_SECONDS``:
+        that is two requests from the same client racing, and the loser is
+        given an access token but no new refresh token (``None``), because the
+        winner's rotated cookie is already on its way to the browser.
         """
         presented = await self._uow.refresh_tokens.get_by_token_hash(hash_refresh_token(raw_token))
 
@@ -153,6 +158,9 @@ class AuthService:
             raise Unauthorized("The refresh token is invalid.")
 
         if presented.revoked_at is not None:
+            tolerated = await self._tolerate_race(presented)
+            if tolerated is not None:
+                return tolerated
             # Either a stolen cookie is being replayed, or the legitimate client
             # is retrying after a lost response. The two are indistinguishable
             # from here, so assume the worse one.
@@ -208,6 +216,31 @@ class AuthService:
             metadata={"session_id": str(token.id)},
         )
         logger.info("user_logged_out", user_id=str(token.user_id))
+
+    async def _tolerate_race(
+        self, presented: RefreshToken
+    ) -> tuple[User, AccessToken, None] | None:
+        """Is this revoked token a harmless race rather than a replay?
+
+        Only a token that was *rotated* qualifies (it has a successor), only
+        within the grace window, and only while the user still has a live
+        session. A token revoked by logout or by an earlier reuse has no
+        successor or leaves no live session, so it is never forgiven.
+        """
+        grace = self._settings.REFRESH_REUSE_GRACE_SECONDS
+        if grace <= 0 or presented.replaced_by_id is None or presented.revoked_at is None:
+            return None
+        if datetime.now(UTC) - presented.revoked_at > timedelta(seconds=grace):
+            return None
+        if not await self._uow.refresh_tokens.list_active_for_user(presented.user_id):
+            return None
+
+        user = await self._uow.users.get(presented.user_id)
+        if user is None:
+            return None
+
+        logger.info("refresh_race_tolerated", user_id=str(user.id))
+        return user, self._tokens.create_access_token(user), None
 
     async def _handle_reuse(self, presented: RefreshToken) -> None:
         """A revoked token came back. Destroy every session for that user.

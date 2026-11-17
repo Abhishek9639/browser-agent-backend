@@ -1,3 +1,4 @@
+# This file is actually the security + validation layer of your browser automation agent.
 """The action allow-list as typed, validated models (spec section 4.4).
 
 These are plain data: no Playwright import, nothing that touches a page. The

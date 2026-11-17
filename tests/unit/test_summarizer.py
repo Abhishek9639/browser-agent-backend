@@ -68,6 +68,18 @@ def test_disabled_and_covered_are_flagged() -> None:
     assert "(covered)" in format_element(element(covered=True))
 
 
+def test_the_choice_a_form_starts_on_is_flagged() -> None:
+    """A checked "One Way" beside a plain "Round Trip" says which trip the form is set to."""
+    one_way = format_element(element(tag="input", input_type="radio", name="One Way", checked=True))
+    round_trip = format_element(
+        element(tag="input", input_type="radio", name="Round Trip", checked=False)
+    )
+
+    assert one_way == '[0] input[type=radio] "One Way" (checked)'
+    assert "(checked)" not in round_trip
+    assert "(selected)" in format_element(element(tag="option", name="Economy", selected=True))
+
+
 def test_a_masked_value_stays_masked() -> None:
     line = format_element(element(tag="input", input_type="password", value=MASK))
 

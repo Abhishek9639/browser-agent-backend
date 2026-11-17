@@ -23,6 +23,7 @@ from typing import Final, Protocol
 from app.agent.browser.action_builder import build_action, selector_for
 from app.agent.contracts import AttemptResult, Grounder, RecoveryContext
 from app.agent.perception.dom_extractor import ElementInfo
+from app.agent.perception.overlays import icon_closers
 from app.agent.perception.state import PageState
 from app.agent.planner.schema import Decision
 from app.core.logging import get_logger
@@ -424,7 +425,9 @@ class DismissOverlay:
                     break
 
         found.sort(key=lambda pair: pair[0])
-        return [element for _, element in found]
+        labelled = [element for _, element in found]
+        # An icon with no label is the last resort: a position is a guess.
+        return labelled + [e for e in icon_closers(state) if e not in labelled]
 
 
 class VisualGrounding:

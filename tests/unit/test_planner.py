@@ -15,6 +15,7 @@ from app.agent.planner.planner import (
     compress_history,
 )
 from app.agent.planner.registry import PromptRegistry
+from app.agent.planner.schema import Decision
 
 GOAL = "find the cheapest flight from Delhi to Bengaluru on 20 Oct"
 
@@ -369,3 +370,233 @@ def test_every_acceptable_action_is_on_the_allow_list() -> None:
     for case in cases:
         for entry in case["acceptable"]:
             assert entry["action"] in allowed, f"{case['id']}: {entry['action']}"
+
+
+# ------------------------------------------------------------------ covered inputs
+
+
+def _field(index: int, *, covered: bool, name: str = "") -> ElementInfo:
+    return ElementInfo(
+        index=index,
+        tag="input",
+        name=name,
+        input_type="text",
+        bbox=BoundingBox(x=10, y=10 * index, width=100, height=20),
+        in_viewport=True,
+        covered=covered,
+    )
+
+
+def _type_decision(index: int) -> Decision:
+    return Decision.model_validate(
+        {
+            "action": "type",
+            "targetIndex": index,
+            "target": "search",
+            "value": "Full Stack",
+            "expectedOutcome": {"type": "value_equals", "value": "Full Stack"},
+        }
+    )
+
+
+def _state_with(*elements: ElementInfo) -> PageState:
+    return PageState(url="https://example.test/", elements=list(elements))
+
+
+def test_typing_into_a_covered_box_is_refused_when_a_visible_one_exists() -> None:
+    from app.agent.planner.planner import input_target_problem
+
+    state = _state_with(_field(11, covered=True), _field(24, covered=False, name="Search"))
+
+    problem = input_target_problem(_type_decision(11), state)
+
+    assert problem is not None
+    assert "24" in problem
+
+
+def test_a_covered_box_is_allowed_when_it_is_the_only_input() -> None:
+    from app.agent.planner.planner import input_target_problem
+
+    state = _state_with(_field(11, covered=True))
+
+    assert input_target_problem(_type_decision(11), state) is None
+
+
+def test_a_visible_target_is_never_refused() -> None:
+    from app.agent.planner.planner import input_target_problem
+
+    state = _state_with(_field(11, covered=True), _field(24, covered=False, name="Search"))
+
+    assert input_target_problem(_type_decision(24), state) is None
+
+
+def test_an_unnamed_input_is_refused_when_a_named_one_is_below_the_fold() -> None:
+    from app.agent.planner.planner import input_target_problem
+
+    unnamed = _field(8, covered=False)
+    named = ElementInfo(
+        index=21,
+        tag="input",
+        name="e.g. Design, Mumbai",
+        input_type="text",
+        bbox=BoundingBox(x=0, y=900, width=100, height=20),
+        in_viewport=False,
+    )
+
+    problem = input_target_problem(_type_decision(8), _state_with(unnamed, named))
+
+    assert problem is not None
+    assert "21" in problem
+    assert "scroll" in problem
+
+
+def test_a_filled_named_input_is_not_offered_as_the_better_choice() -> None:
+    from app.agent.planner.planner import input_target_problem
+
+    unnamed = _field(20, covered=False)  # the date box, with no label
+    filled = ElementInfo(
+        index=9,
+        tag="input",
+        name="Enter From station",
+        input_type="text",
+        value="MATHURA JN - MTJ",
+        bbox=BoundingBox(x=0, y=0, width=100, height=20),
+        in_viewport=True,
+    )
+
+    assert input_target_problem(_type_decision(20), _state_with(unnamed, filled)) is None
+
+
+def _button(index: int) -> ElementInfo:
+    return ElementInfo(
+        index=index,
+        tag="button",
+        name="",
+        bbox=BoundingBox(x=405, y=369, width=26, height=26),
+        in_viewport=True,
+    )
+
+
+def test_typing_into_a_button_names_the_real_fields() -> None:
+    from app.agent.planner.planner import not_editable_problem
+
+    state = _state_with(_button(18), _field(17, covered=False, name="From"))
+
+    problem = not_editable_problem(_type_decision(18), state)
+
+    assert problem is not None
+    assert "17" in problem
+    assert "<button>" in problem
+
+
+def test_typing_into_a_field_is_never_refused_as_not_editable() -> None:
+    from app.agent.planner.planner import not_editable_problem
+
+    state = _state_with(_button(18), _field(17, covered=False, name="From"))
+
+    assert not_editable_problem(_type_decision(17), state) is None
+
+
+def test_a_page_with_no_fields_is_left_to_the_driver() -> None:
+    from app.agent.planner.planner import not_editable_problem
+
+    assert not_editable_problem(_type_decision(18), _state_with(_button(18))) is None
+
+
+# ------------------------------------------------------ following the plan
+
+
+def _turn(goal: str = GOAL, history: Any = (), plan: Any = ()) -> str:
+    planner = Planner(MockLLM(script=[valid()]))
+    return planner._build_turn(goal, page(0), history, None, plan)[0].text
+
+
+def test_the_expected_plan_is_put_in_front_of_the_planner() -> None:
+    text = _turn(plan=["Open the site", "Search", "Open a result"])
+
+    assert "PLAN" in text
+    assert "2. Search" in text
+
+
+def test_no_plan_section_without_a_plan() -> None:
+    assert "PLAN (" not in _turn()
+
+
+def test_the_planner_is_shown_which_plan_item_it_is_on() -> None:
+    planner = Planner(MockLLM(script=[valid()]))
+    plan = ["Open the site", "Search", "Open a result"]
+
+    text = planner._build_turn(GOAL, page(0), (), None, plan, 2)[0].text
+
+    assert "2. Search  <- last step was on this item" in text
+    assert "1. Open the site\n" in text
+    assert "planStep" in text and "addPlanSteps" in text
+
+
+def test_a_decision_can_name_its_plan_item_and_add_work() -> None:
+    decision = Decision.model_validate(valid(planStep=2, addPlanSteps=["Close the cookie popup"]))
+
+    assert decision.plan_step == 2
+    assert decision.add_plan_steps == ("Close the cookie popup",)
+    # Both are optional: a provider that leaves them out still decides.
+    assert Decision.model_validate(valid()).add_plan_steps == ()
+
+
+@pytest.mark.parametrize(
+    ("plan_step", "add", "read_step", "read_add"),
+    [
+        # What a model with no plan in front of it tends to send.
+        (None, None, None, ()),
+        ("2", "Close the popup", 2, ("Close the popup",)),
+        ("step 3", ["Pick a class", 7, ""], 3, ("Pick a class",)),
+        (2.0, [], 2, ()),
+        ("next", {"oops": 1}, None, ()),
+    ],
+)
+def test_plan_bookkeeping_never_sinks_a_decision(
+    plan_step: Any, add: Any, read_step: int | None, read_add: tuple[str, ...]
+) -> None:
+    """A strict schema here failed a whole task with "could not produce a valid decision"."""
+    decision = Decision.model_validate(valid(planStep=plan_step, addPlanSteps=add))
+
+    assert decision.plan_step == read_step
+    assert decision.add_plan_steps == read_add
+
+
+def test_the_planner_is_told_today_s_date() -> None:
+    """Otherwise "this weekend" is a guess and its idea of the year is stale."""
+    from datetime import date
+
+    assert f"TODAY\n{date.today():%A %d %B %Y}" in _turn()
+
+
+def test_a_failed_step_says_why() -> None:
+    from app.agent.planner.planner import StepSummary
+
+    step = StepSummary(
+        step_number=1, action="click", target="Apply", verified=False, note="The URL did not change"
+    )
+
+    assert "The URL did not change" in step.render()
+    ok = StepSummary(step_number=2, action="click", target="Apply", verified=True, note="ignored")
+    assert "ignored" not in ok.render()
+
+
+def test_a_repeated_action_is_called_out() -> None:
+    from app.agent.planner.planner import StepSummary
+
+    same = [
+        StepSummary(step_number=i, action="scroll", target="page", verified=True) for i in (1, 2, 3)
+    ]
+
+    assert "WARNING" in _turn(history=same)
+    varied = [*same[:2], StepSummary(step_number=3, action="click", target="Next", verified=True)]
+    assert "WARNING" not in _turn(history=varied)
+
+
+def test_a_coding_goal_gets_the_coding_guide() -> None:
+    text = _turn(goal="solve the two sum problem on leetcode")
+
+    assert "CODING TASK GUIDE" in text
+    assert "COMPLETE solution" in text
+    assert "CODING TASK GUIDE" not in _turn(goal="find internships in Delhi")

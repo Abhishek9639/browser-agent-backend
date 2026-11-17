@@ -5,6 +5,8 @@ suite never reaches the internet, so it is deterministic, offline-capable, and
 any failure is our bug rather than someone else's outage.
 """
 
+from dataclasses import replace
+
 import pytest
 
 from app.agent.browser.actions import (
@@ -507,3 +509,510 @@ async def test_the_main_frame_still_wins_when_both_match(
     result = await driver.execute(ClickAction(selector="#outer"))
 
     assert result.ok
+
+
+# ------------------------------------------------------------------ focus
+
+
+async def test_visible_browser_raises_the_tab_it_acts_on(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    """A headed run must put the active tab in front of the user."""
+    raised: list[str] = []
+    real = driver.page.bring_to_front
+
+    async def spy() -> None:
+        raised.append("front")
+        await real()
+
+    driver._config = replace(driver._config, headless=False)
+    await driver.execute(NewTabAction(url=f"{html_server}/select.html"))
+    driver.page.bring_to_front = spy  # type: ignore[method-assign]
+    await driver._focus()
+
+    assert raised == ["front"]
+
+
+async def test_headless_never_tries_to_raise_a_tab(driver: PlaywrightDriver) -> None:
+    called = False
+
+    async def spy() -> None:
+        nonlocal called
+        called = True
+
+    driver.page.bring_to_front = spy  # type: ignore[method-assign]
+    await driver._focus()
+
+    assert not called
+
+
+# ------------------------------------------------------------------ own browser
+
+
+async def test_attached_driver_uses_the_users_browser_and_leaves_it_running(
+    browser_settings: Settings, html_server: str
+) -> None:
+    """CDP mode opens its own tab in the user's context and closes only that."""
+    from playwright.async_api import async_playwright
+
+    async with async_playwright() as pw:
+        user_browser = await pw.chromium.launch(args=["--remote-debugging-port=9333"])
+        try:
+            context = await user_browser.new_context()
+            existing = await context.new_page()
+            await existing.goto(f"{html_server}/buttons.html")
+
+            attached = browser_settings.model_copy(
+                update={"AGENT_CDP_URL": "http://127.0.0.1:9333"}
+            )
+            instance = PlaywrightDriver(attached)
+            await instance.launch()
+            try:
+                assert instance.attached
+                await instance.execute(NavigateAction(url=f"{html_server}/select.html"))
+            finally:
+                await instance.close()
+
+            # The user's own tab and browser survive the task.
+            assert user_browser.is_connected()
+            assert not existing.is_closed()
+        finally:
+            await user_browser.close()
+
+
+# ------------------------------------------------------------------ indicator
+
+
+async def test_a_visible_run_draws_a_frame_that_is_hidden_for_screenshots(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    """The person sees the blue frame; the model's screenshot does not."""
+    driver._config = replace(driver._config, headless=False)
+    await goto(driver, html_server, "buttons.html")
+    await driver.set_indicator("working")
+
+    present = await driver.page.evaluate("!!document.getElementById('__baa_indicator__')")
+    label = await driver.page.evaluate("document.getElementById('__baa_indicator__').textContent")
+    await driver.hide_indicator(True)
+    hidden = await driver.page.evaluate(
+        "document.getElementById('__baa_indicator__').style.display"
+    )
+
+    assert present
+    assert label == "Agent is working"
+    assert hidden == "none"
+
+
+async def test_waiting_switches_the_frame_to_amber_and_it_survives_navigation(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    driver._config = replace(driver._config, headless=False)
+    await goto(driver, html_server, "buttons.html")
+    await driver.set_indicator("waiting")
+
+    await goto(driver, html_server, "select.html")
+    label = await driver.page.evaluate("document.getElementById('__baa_indicator__')?.textContent")
+
+    assert label == "Waiting for you to sign in"
+
+
+async def test_headless_runs_draw_no_frame(driver: PlaywrightDriver, html_server: str) -> None:
+    await goto(driver, html_server, "buttons.html")
+    await driver.set_indicator("working")
+
+    assert not await driver.page.evaluate("!!document.getElementById('__baa_indicator__')")
+
+
+# ------------------------------------------------------------------ full screen
+
+
+def test_a_full_screen_visible_launch_asks_for_a_maximised_window() -> None:
+    from app.agent.browser.driver import launch_args
+
+    assert launch_args(True, False) == ["--start-maximized"]
+    assert launch_args(True, True) == []  # headless has no window to maximise
+    assert launch_args(False, False) == []
+
+
+async def test_the_viewport_is_measured_when_the_window_has_no_fixed_size(
+    browser_settings: Settings, html_server: str
+) -> None:
+    """A maximised window reports no viewport, so the driver reads it from the page."""
+    settings = browser_settings.model_copy(update={"AGENT_FULLSCREEN": True})
+    instance = PlaywrightDriver(settings)
+    await instance.launch()
+    try:
+        await goto(instance, html_server, "buttons.html")
+        size = await instance.viewport_size()
+        snapshot = await instance.capture_state()
+    finally:
+        await instance.close()
+
+    assert size["width"] > 0 and size["height"] > 0
+    assert snapshot.viewport_width == size["width"]
+
+
+# ------------------------------------------------------------------ pointer and scrolling
+
+
+async def test_a_visible_run_shows_a_pointer_that_glides_to_what_it_clicks(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    driver._config = replace(driver._config, headless=False)
+    await goto(driver, html_server, "buttons.html")
+    await driver.set_indicator("working")
+
+    result = await driver.execute(ClickAction(selector="#visible"))
+
+    assert result.ok
+    placed = await driver.page.evaluate(
+        "() => { const c = document.getElementById('__baa_cursor__');"
+        " return c ? c.style.transform : null; }"
+    )
+    box = await driver.page.locator("#visible").bounding_box()
+    assert placed is not None and placed.startswith("translate(")
+    assert box is not None
+    x = float(placed.removeprefix("translate(").split("px")[0])
+    assert abs(x - (box["x"] + box["width"] / 2)) < 2
+
+
+async def test_a_visible_scroll_is_smooth_and_has_landed_before_it_returns(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    driver._config = replace(driver._config, headless=False)
+    await goto(driver, html_server, "long_page.html")
+
+    result = await driver.execute(ScrollAction(direction="down", pixels=400))
+
+    assert result.ok
+    assert await driver.page.evaluate("window.scrollY") >= 380
+
+
+async def test_headless_runs_draw_no_pointer(driver: PlaywrightDriver, html_server: str) -> None:
+    await goto(driver, html_server, "buttons.html")
+    await driver.set_indicator("working")
+
+    assert not await driver.page.evaluate("!!document.getElementById('__baa_cursor__')")
+
+
+# ------------------------------------------------------------------ typing and scrolling anywhere
+
+
+async def test_typing_into_a_wrapper_finds_the_field_inside_it(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    await goto(driver, html_server, "widget_input.html")
+
+    result = await driver.execute(TypeAction(selector="#wrapper", value="02/11/2026"))
+
+    assert result.ok, result.error_message
+    assert await driver.page.input_value("#masked") == "02/11/2026"
+
+
+async def test_typing_into_a_combobox_wrapper_fills_the_input_inside_it(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    """The wrapper carries role=combobox; fill() on it would throw."""
+    await goto(driver, html_server, "combobox.html")
+
+    result = await driver.execute(TypeAction(selector="#where-to", value="Delhi"))
+
+    assert result.ok, result.error_message
+    assert await driver.page.input_value("#where-to-input") == "Delhi"
+
+
+async def test_typing_into_a_combobox_lands_in_the_popup_it_opens(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    await goto(driver, html_server, "combobox.html")
+
+    result = await driver.execute(TypeAction(selector="#from", value="Bangalore"))
+
+    assert result.ok, result.error_message
+    assert await driver.page.input_value("#popup-input") == "Bangalore"
+
+
+async def test_a_widget_that_discards_a_fill_still_gets_the_text(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    """The field empties anything that did not come from the keyboard."""
+    await goto(driver, html_server, "widget_input.html")
+
+    result = await driver.execute(TypeAction(selector="#masked", value="02112026"))
+
+    assert result.ok, result.error_message
+    assert await driver.page.input_value("#masked") == "02112026"
+
+
+async def test_typing_into_a_button_is_a_clear_failure_not_unknown(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    await goto(driver, html_server, "widget_input.html")
+
+    result = await driver.execute(TypeAction(selector="#swap", value="hello"))
+
+    # Nothing to fill, so the keyboard path runs; the button simply holds no text.
+    assert result.error_code is not ActionErrorCode.UNKNOWN
+
+
+async def test_a_page_that_scrolls_an_inner_panel_can_be_scrolled_and_measured(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    await goto(driver, html_server, "inner_scroll.html")
+    before = await driver.capture_state()
+
+    result = await driver.execute(ScrollAction(direction="down", pixels=500))
+    after = await driver.capture_state()
+
+    assert result.ok
+    assert await driver.page.evaluate("document.getElementById('pane').scrollTop") >= 400
+    assert before.scroll_y == 0
+    assert after.scroll_y >= 400
+
+
+async def test_a_picker_left_open_over_the_next_control_is_closed_before_clicking(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    """The calendar stays open after the date is typed and covers the Search button."""
+    await goto(driver, html_server, "open_picker.html")
+    await driver.execute(TypeAction(selector="#date", value="02/11/2026"))
+    assert (
+        await driver.page.evaluate("getComputedStyle(document.getElementById('picker')).display")
+        == "block"
+    )
+
+    result = await driver.execute(ClickAction(selector="#go"))
+
+    assert result.ok, result.error_message
+    assert await driver.page.text_content("#log") == "searched"
+
+
+# ------------------------------------------------------------------ links that open a new tab
+
+
+async def test_a_link_that_opens_a_new_tab_is_followed(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    """The listing opens beside the results; the agent must look at the listing."""
+    await goto(driver, html_server, "popup_link.html")
+
+    result = await driver.execute(ClickAction(selector="#blank"))
+
+    assert result.ok, result.error_message
+    assert len(driver.sessions.tab_ids) == 2
+    assert driver.page.url.endswith("detail.html")
+    assert result.url_after.endswith("detail.html")
+
+
+async def test_a_script_that_opens_a_window_is_followed_too(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    await goto(driver, html_server, "popup_link.html")
+
+    result = await driver.execute(ClickAction(selector="#script"))
+
+    assert result.ok, result.error_message
+    assert driver.page.url.endswith("detail.html")
+
+
+async def test_an_ordinary_click_stays_on_the_page(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    await goto(driver, html_server, "popup_link.html")
+
+    result = await driver.execute(ClickAction(selector="#same"))
+
+    assert result.ok
+    assert len(driver.sessions.tab_ids) == 1
+    assert driver.page.url.endswith("popup_link.html")
+
+
+async def test_a_new_tab_outside_the_allowed_domains_is_closed_and_refused(
+    browser_settings: Settings, html_server: str
+) -> None:
+    import contextlib
+
+    locked = browser_settings.model_copy(update={"AGENT_ALLOWED_DOMAINS": ["127.0.0.1:1"]})
+    instance = PlaywrightDriver(locked)
+    await instance.launch()
+    try:
+        # The first page is outside the list as well, so open it without the guard.
+        await instance.page.goto(f"{html_server}/popup_link.html")
+        with contextlib.suppress(Exception):
+            await instance.execute(ClickAction(selector="#blank"))
+        assert len(instance.sessions.tab_ids) == 1
+    finally:
+        await instance.close()
+
+
+async def test_a_window_closed_under_the_task_is_reported_as_closed_not_unlaunched(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    from app.agent.browser.errors import BrowserClosedError
+
+    await goto(driver, html_server, "buttons.html")
+    await driver.page.close()
+    import asyncio
+
+    await asyncio.sleep(0.2)
+
+    with pytest.raises(BrowserClosedError):
+        _ = driver.page
+
+    # An action on a closed window raises the same error rather than a vague one.
+    with pytest.raises(BrowserClosedError):
+        await driver.execute(ClickAction(selector="#visible"))
+
+
+# ------------------------------------------------------- a site that says no
+
+
+async def test_a_site_that_refuses_this_browser_is_tried_in_another(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """403 for Chromium, 200 for Firefox: the driver moves to Firefox and carries on."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    monkeypatch.setattr("app.agent.browser.driver.RENDER_WAIT_S", 1.0)
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            firefox = "Firefox" in (self.headers.get("User-Agent") or "")
+            body = b"<title>in</title><h1>welcome</h1>" if firefox else b"denied"
+            self.send_response(200 if firefox else 403)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_port}/"
+    settings = Settings(
+        AGENT_HEADLESS=True,
+        AGENT_BROWSER_FALLBACKS=["firefox"],
+        AGENT_ALLOWED_DOMAINS=["127.0.0.1"],
+    )
+    driver = PlaywrightDriver(settings)
+    try:
+        await driver.launch()
+        result = await driver.execute(NavigateAction(url=url))
+
+        assert result.ok, result.error_message
+        assert "Firefox" in await driver.page.evaluate("navigator.userAgent")
+        assert "welcome" in await driver.page.inner_text("h1")
+    finally:
+        await driver.close()
+        server.shutdown()
+
+
+async def test_a_refusal_with_no_other_browser_to_try_still_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    monkeypatch.setattr("app.agent.browser.driver.RENDER_WAIT_S", 1.0)
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(403)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    settings = Settings(
+        AGENT_HEADLESS=True, AGENT_BROWSER_FALLBACKS=[], AGENT_ALLOWED_DOMAINS=["127.0.0.1"]
+    )
+    driver = PlaywrightDriver(settings)
+    try:
+        await driver.launch()
+        result = await driver.execute(NavigateAction(url=f"http://127.0.0.1:{server.server_port}/"))
+
+        assert not result.ok
+        assert "403" in (result.error_message or "")
+    finally:
+        await driver.close()
+        server.shutdown()
+
+
+async def test_a_403_that_still_draws_the_page_is_not_a_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Signed-out visitors often get a 403 and the page anyway; the agent should look at it."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    monkeypatch.setattr("app.agent.browser.driver.RENDER_WAIT_S", 1.0)
+    body = (
+        "<title>Practice problem</title><p>" + "Sign in to see the full problem. " * 20
+    ).encode()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(403)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    settings = Settings(
+        AGENT_HEADLESS=True, AGENT_BROWSER_FALLBACKS=[], AGENT_ALLOWED_DOMAINS=["127.0.0.1"]
+    )
+    driver = PlaywrightDriver(settings)
+    try:
+        await driver.launch()
+        result = await driver.execute(NavigateAction(url=f"http://127.0.0.1:{server.server_port}/"))
+
+        assert result.ok, result.error_message
+        assert await driver.page.title() == "Practice problem"
+    finally:
+        await driver.close()
+        server.shutdown()
+
+
+# --------------------------------------------------------------- code editors
+
+
+async def test_a_program_is_inserted_whole_not_typed_into_an_auto_indenting_editor(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    program = (
+        "def solve(a, b):\n"
+        "    if a > b:\n"
+        "        return a - b\n"
+        "    return a + b\n"
+        "\n"
+        "print(solve(*map(int, input().split())))"
+    )
+    await goto(driver, html_server, "code_editor.html")
+
+    result = await driver.execute(TypeAction(selector="#editor", value=program, clear_first=True))
+
+    assert result.ok, result.error_message
+    assert await driver.page.input_value("#editor") == program
+
+
+async def test_inserting_a_program_replaces_what_the_editor_held(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    await goto(driver, html_server, "code_editor.html")
+    await driver.page.fill("#editor", "old = 1\nold = 2")
+
+    await driver.execute(TypeAction(selector="#editor", value="x = 1\ny = 2", clear_first=True))
+
+    assert await driver.page.input_value("#editor") == "x = 1\ny = 2"

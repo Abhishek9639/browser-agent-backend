@@ -24,7 +24,7 @@ from typing import Final
 from playwright.async_api import Browser, Playwright, async_playwright
 
 from app.agent.browser.agent_browser import DriverBrowser
-from app.agent.browser.driver import PlaywrightDriver
+from app.agent.browser.driver import PlaywrightDriver, launch_args
 from app.agent.cache.store import DatabaseFlowCache
 from app.agent.llm.factory import build_llm
 from app.agent.orchestrator import Orchestrator, UnitOfWorkFactory, database_unit_of_work
@@ -109,7 +109,10 @@ class TaskRunner:
         self._orchestrator_factory = orchestrator_factory
         self._open_unit_of_work: UnitOfWorkFactory = unit_of_work or database_unit_of_work(database)
 
-        self._semaphore = asyncio.Semaphore(settings.AGENT_MAX_CONCURRENT_TASKS)
+        # One shared user browser means one task at a time, or tasks would
+        # fight over focus and see each other's tabs.
+        slots = 1 if settings.AGENT_CDP_URL else settings.AGENT_MAX_CONCURRENT_TASKS
+        self._semaphore = asyncio.Semaphore(slots)
         self._tasks: dict[uuid.UUID, asyncio.Task[None]] = {}
         self._cancellations: dict[uuid.UUID, _Cancellation] = {}
         self._drivers: dict[uuid.UUID, PlaywrightDriver] = {}
@@ -142,9 +145,19 @@ class TaskRunner:
             return
 
         self._playwright = await async_playwright().start()
-        self._browser = await self._playwright.chromium.launch(
-            headless=self._settings.AGENT_HEADLESS
-        )
+        if self._settings.AGENT_CDP_URL:
+            # Opt-in: drive the user's own Chrome. Disconnects on stop; the
+            # browser itself keeps running.
+            self._browser = await self._playwright.chromium.connect_over_cdp(
+                self._settings.AGENT_CDP_URL, slow_mo=self._settings.AGENT_SLOW_MO_MS
+            )
+        else:
+            self._browser = await self._playwright.chromium.launch(
+                headless=self._settings.AGENT_HEADLESS,
+                slow_mo=self._settings.AGENT_SLOW_MO_MS,
+                channel=self._settings.AGENT_BROWSER_CHANNEL or None,
+                args=launch_args(self._settings.AGENT_FULLSCREEN, self._settings.AGENT_HEADLESS),
+            )
         self._started = True
         logger.info("task_runner_started", max_concurrent=self._settings.AGENT_MAX_CONCURRENT_TASKS)
 

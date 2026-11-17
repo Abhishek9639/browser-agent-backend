@@ -577,6 +577,22 @@ The task moved between lifecycle states. `previousStatus` is null on the first o
 ```
 
 
+### `plan`
+
+Sent once, before the first action, when the backend runs with `AGENT_PLAN_PREVIEW=true`. It outlines the steps the task is expected to take, so a client can show "step 2 of about 6". It is a forecast: the agent chooses each real step from what the page shows, so the actual count can differ. Also returned as `plan` on the task, and replayed first when a client reconnects.
+
+
+```json
+{
+  "taskId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "seq": 2,
+  "timestamp": "2026-09-29T02:51:04.118Z",
+  "type": "plan",
+  "steps": ["Open the site", "Search for the flight", "Read the cheapest fare"]
+}
+```
+
+
 ### `step`
 
 One executed step, after it has been committed. The screenshot is base64 JPEG, no wider than 1280 and quality about 60. `replayed` is true when the step came from a cached flow rather than the planner, in which case there is no reasoning behind it.

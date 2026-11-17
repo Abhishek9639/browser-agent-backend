@@ -509,3 +509,279 @@ def test_the_verifier_never_reaches_for_a_model() -> None:
 
     assert "llm" not in text.lower().replace("llm_", "")
     assert "app.agent.llm" not in text
+
+
+# ------------------------------------------------------------------ loose names
+
+
+def _named(index: int, name: str, placeholder: str | None = None) -> ElementInfo:
+    return ElementInfo(
+        index=index,
+        tag="input",
+        name=name,
+        placeholder=placeholder,
+        bbox=BoundingBox(x=0, y=0, width=10, height=10),
+        in_viewport=True,
+    )
+
+
+def test_a_planner_description_finds_the_control_the_page_calls_something_else() -> None:
+    from app.agent.verification.verifier import _find
+
+    state = PageState(url="https://x.test/", elements=[_named(3, "Search here...")])
+
+    assert _find(state, "search input field") is not None
+
+
+def test_every_meaningful_word_must_match() -> None:
+    from app.agent.verification.verifier import _find
+
+    state = PageState(url="https://x.test/", elements=[_named(3, "Search")])
+
+    assert _find(state, "search results") is None
+
+
+def test_an_input_description_does_not_match_a_button() -> None:
+    from app.agent.verification.verifier import _find
+
+    button = ElementInfo(
+        index=5,
+        tag="button",
+        name="Search",
+        bbox=BoundingBox(x=0, y=0, width=10, height=10),
+        in_viewport=True,
+    )
+    state = PageState(url="https://x.test/", elements=[button])
+
+    assert _find(state, "search input field") is None
+
+
+def test_a_described_input_matches_when_half_the_meaningful_words_do() -> None:
+    from app.agent.verification.verifier import _find
+
+    field = _named(88, "Search here...", "Search here...")
+    state = PageState(url="https://x.test/", elements=[field])
+
+    assert _find(state, "Search input field for internships") is field
+
+
+def test_naming_only_a_kind_of_control_matches_any_visible_one() -> None:
+    from app.agent.verification.verifier import _find
+
+    field = _named(88, "Search here...")
+    state = PageState(url="https://x.test/", elements=[field])
+
+    assert _find(state, "input") is field
+    assert _find(PageState(url="https://x.test/", elements=[]), "input") is None
+
+
+# ------------------------------------------------------------------ weak expectations
+
+
+def _click(target: str, outcome_type: str, value: str) -> Any:
+    from app.agent.planner.schema import Decision
+
+    return Decision.model_validate(
+        {
+            "action": "click",
+            "targetIndex": 0,
+            "target": target,
+            "expectedOutcome": {"type": outcome_type, "value": value},
+        }
+    )
+
+
+def test_a_fragment_of_the_goal_is_not_held_against_the_page() -> None:
+    from app.agent.verification.verifier import DeterministicVerifier
+    from app.domain.enums import VerificationMethod
+
+    expectation = DeterministicVerifier()._expectation(_click("Next", "element_visible", "7"))
+
+    assert expectation.type is VerificationMethod.DOM_CHANGED
+
+
+def test_closing_a_popup_is_verified_by_the_page_changing() -> None:
+    from app.agent.verification.verifier import DeterministicVerifier
+    from app.domain.enums import VerificationMethod
+
+    expectation = DeterministicVerifier()._expectation(
+        _click("close confirmation modal", "text_present", "Mathura to Delhi")
+    )
+
+    assert expectation.type is VerificationMethod.DOM_CHANGED
+
+
+def test_a_real_expectation_is_left_alone() -> None:
+    from app.agent.verification.verifier import DeterministicVerifier
+    from app.domain.enums import VerificationMethod
+
+    expectation = DeterministicVerifier()._expectation(
+        _click("Search flights", "url_contains", "/results")
+    )
+
+    assert expectation.type is VerificationMethod.URL_CONTAINS
+
+
+# ------------------------------------------------------------------ autocomplete choice
+
+
+def test_choosing_a_suggestion_is_verified_by_the_field_that_now_holds_it() -> None:
+    from app.agent.planner.schema import Decision
+    from app.agent.verification.verifier import _value_equals
+
+    suggestion = ElementInfo(
+        index=10,
+        tag="li",
+        name="NEW DELHI - NDLS",
+        bbox=BoundingBox(x=0, y=0, width=10, height=10),
+        in_viewport=True,
+    )
+    field = ElementInfo(
+        index=9,
+        tag="input",
+        name="To",
+        value="NEW DELHI - NDLS(NEW DELHI)",
+        bbox=BoundingBox(x=0, y=0, width=10, height=10),
+        in_viewport=True,
+    )
+    decision = Decision.model_validate(
+        {
+            "action": "click",
+            "targetIndex": 10,
+            "target": "NEW DELHI - NDLS",
+            "expectedOutcome": {"type": "value_equals", "value": "NEW DELHI - NDLS (NEW DELHI)"},
+        }
+    )
+    before = PageState(url="https://x.test/", elements=[field, suggestion])
+    after = PageState(url="https://x.test/", elements=[field])  # the list closed
+
+    outcome = _value_equals(decision, before, after, "NEW DELHI - NDLS (NEW DELHI)")
+
+    assert outcome.ok
+
+
+def test_a_field_with_the_wrong_value_still_fails() -> None:
+    from app.agent.planner.schema import Decision
+    from app.agent.verification.verifier import _value_equals
+
+    field = ElementInfo(
+        index=9,
+        tag="input",
+        name="To",
+        value="MATHURA JN - MTJ",
+        bbox=BoundingBox(x=0, y=0, width=10, height=10),
+        in_viewport=True,
+    )
+    decision = Decision.model_validate(
+        {
+            "action": "type",
+            "targetIndex": 9,
+            "target": "To",
+            "value": "DELHI",
+            "expectedOutcome": {"type": "value_equals", "value": "DELHI"},
+        }
+    )
+    state = PageState(url="https://x.test/", elements=[field])
+
+    assert not _value_equals(decision, state, state, "DELHI").ok
+
+
+# ------------------------------------------------------- a type step's forecast
+
+
+def _typing(outcome: str, value: str, *, press_enter: bool = False) -> Decision:
+    typed = decision(action="type", outcome=outcome, value=value, decision_value="Delhi")
+    return typed.model_copy(update={"press_enter": press_enter})
+
+
+async def test_a_url_forecast_on_a_type_step_does_not_fail_text_that_went_in() -> None:
+    """The planner forecast the search URL; typing only puts Delhi in the field."""
+    verdict = await verify(
+        _typing("url_contains", "to=Delhi"),
+        page(element(0, name="Where to?", value="")),
+        page(element(0, name="Where to?", value="Delhi")),
+    )
+
+    assert verdict.ok is True
+    assert verdict.actual["check"] == Check.VALUE_EQUALS.value
+
+
+async def test_a_url_forecast_that_comes_true_is_still_what_is_recorded() -> None:
+    verdict = await verify(
+        _typing("url_contains", "q=Delhi", press_enter=True),
+        page(element(0, name="Search", value="")),
+        page(element(0, name="Search", value="Delhi"), url="https://skyfare.test/?q=Delhi"),
+    )
+
+    assert verdict.ok is True
+    assert verdict.actual["check"] == Check.URL_CONTAINS.value
+
+
+async def test_a_missed_forecast_with_nothing_typed_still_fails() -> None:
+    verdict = await verify(
+        _typing("url_contains", "to=Delhi"),
+        page(element(0, name="Where to?", value="")),
+        page(element(0, name="Where to?", value="")),
+    )
+
+    assert verdict.ok is False
+    assert verdict.actual["check"] == Check.VALUE_EQUALS.value
+
+
+async def test_enter_that_moved_the_page_counts_when_the_search_box_is_gone() -> None:
+    verdict = await verify(
+        _typing("url_contains", "to=Delhi", press_enter=True),
+        page(element(0, name="Where to?", value="")),
+        page(url="https://skyfare.test/explore"),
+    )
+
+    assert verdict.ok is True
+    assert verdict.actual["check"] == Check.URL_CHANGED.value
+
+
+async def test_text_typed_into_the_popup_a_combobox_opened_counts() -> None:
+    """The targeted field stays empty; the popup's own input holds the text."""
+    before = page(element(0, name="Where to?", value="", css_path="#to"))
+    after = page(
+        element(0, name="Where to?", value="", css_path="#to"),
+        element(1, name="Where else?", value="Delhi", css_path="#popup"),
+    )
+
+    verdict = await verify(_typing("value_equals", "Delhi"), before, after)
+
+    assert verdict.ok is True
+
+
+async def test_a_field_that_already_held_the_text_is_no_evidence() -> None:
+    before = page(
+        element(0, name="Where to?", value="", css_path="#to"),
+        element(1, name="Recent", value="Delhi", css_path="#recent"),
+    )
+
+    verdict = await verify(_typing("value_equals", "Delhi"), before, before)
+
+    assert verdict.ok is False
+
+
+CODE = "def solve(a, b):\n    return a + b\n\nprint(solve(1, 2))"
+
+
+async def test_code_typed_into_an_editor_is_verified_by_seeing_it_on_the_page() -> None:
+    editor = element(0, tag="div", name="Code editor", value="")
+    shown = page(editor).model_copy(
+        update={"text": "Two Sum  def solve(a, b):  return a + b  print(solve(1, 2))"}
+    )
+
+    seen = await verify(
+        decision(action="type", outcome="value_equals", value=CODE, decision_value=CODE),
+        page(editor),
+        shown,
+    )
+    missing = await verify(
+        decision(action="type", outcome="value_equals", value=CODE, decision_value=CODE),
+        page(editor),
+        page(editor),
+    )
+
+    assert seen.ok is True
+    assert missing.ok is False

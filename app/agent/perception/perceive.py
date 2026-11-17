@@ -2,7 +2,10 @@
 
 from typing import Protocol
 
-from app.agent.perception.dom_extractor import extract
+from playwright.async_api import Error as PlaywrightError
+
+from app.agent.browser.scroller import METRICS_JS
+from app.agent.perception.dom_extractor import PageNotReadyError, extract
 from app.agent.perception.state import PageState, ScrollState, compute_dom_hash
 from app.agent.perception.summarizer import SUMMARY_TOKEN_BUDGET, build_header, build_summary
 from app.core.logging import get_logger
@@ -13,21 +16,16 @@ logger = get_logger(__name__)
 
 # Page metrics in one round trip. Doing these as separate evaluate calls would
 # be three crossings of the process boundary per step.
-_METRICS = """() => ({
-  url: location.href,
-  title: document.title,
-  scrollY: Math.round(window.scrollY),
-  text: ((document.body && document.body.innerText) || "").slice(0, 4000),
-  maxScrollY: Math.max(
-    0,
-    Math.round(
-      Math.max(
-        document.documentElement.scrollHeight,
-        document.body ? document.body.scrollHeight : 0
-      ) - window.innerHeight
-    )
-  )
-})"""
+_METRICS = (
+    "() => { const m = ("
+    + METRICS_JS
+    + ")(); return {"
+    + " url: location.href,"
+    + " title: document.title,"
+    + " scrollY: m[0],"
+    + ' text: ((document.body && document.body.innerText) || "").slice(0, 4000),'
+    + " maxScrollY: m[1] }; }"
+)
 
 
 class TabSource(Protocol):
@@ -71,7 +69,13 @@ async def perceive(
     stamps the DOM, and everything afterwards refers to those indices.
     """
     elements = await extract(page)  # type: ignore[arg-type]
-    metrics = await page.evaluate(_METRICS)  # type: ignore[attr-defined]
+    try:
+        metrics = await page.evaluate(_METRICS)  # type: ignore[attr-defined]
+    except PlaywrightError as exc:
+        # The same navigation that can catch the collector can land between it
+        # and this read, and it is the same condition: wait and look again.
+        message = str(exc).splitlines()[0]
+        raise PageNotReadyError(f"Could not read the page: {message}") from exc
 
     tabs = list(session.tab_ids) if session else []
     active = session.active_tab_id if session else "main"

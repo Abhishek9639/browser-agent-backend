@@ -16,6 +16,7 @@ stays one of the six, so the enum column does not have to grow to hold a
 detail that belongs in JSON.
 """
 
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Final
@@ -29,7 +30,7 @@ from app.agent.planner.schema import Decision, ExpectedOutcome
 from app.core.logging import get_logger
 from app.domain.enums import ActionType, VerificationMethod
 
-__all__ = ["STORED_AS", "Check", "DeterministicVerifier"]
+__all__ = ["STORED_AS", "Check", "DeterministicVerifier", "page_changed"]
 
 logger = get_logger(__name__)
 
@@ -143,6 +144,15 @@ class DeterministicVerifier:
 
         if check in NEEDS_VALUE and not declared.value.strip():
             return self._default_for(decision)
+        if check in {Check.ELEMENT_VISIBLE, Check.TEXT_PRESENT} and _is_throwaway(declared.value):
+            # "7", "x": a fragment of the goal, not something a page can be
+            # held to. Checking it fails a step that worked.
+            return self._default_for(decision)
+        if decision.action is ActionType.CLICK and _is_dismissal(decision):
+            # Closing a popup has one observable effect: the page changed. What
+            # the planner expects to see afterwards is a guess about the page
+            # underneath, which it has not seen yet.
+            return ExpectedOutcome(type=VerificationMethod.DOM_CHANGED, value="")
         return declared
 
     def _default_for(self, decision: Decision) -> ExpectedOutcome:
@@ -206,21 +216,60 @@ class DeterministicVerifier:
         if check is Check.URL_CONTAINS and not expectation.value.strip():
             check = Check.URL_CHANGED
 
-        match check:
-            case Check.URL_CONTAINS:
-                return _url_contains(after, expectation.value)
-            case Check.URL_CHANGED:
-                return _url_changed(before, after)
-            case Check.ELEMENT_VISIBLE:
-                return _element_visible(after, expectation.value)
-            case Check.TEXT_PRESENT:
-                return _text_present(after, expectation.value)
-            case Check.VALUE_EQUALS:
-                return _value_equals(decision, before, after, expectation.value)
-            case Check.NEW_TAB_OPENED:
-                return _new_tab_opened(before, after)
-            case _:
-                return _dom_changed(before, after)
+        outcome = _by_check(check, expectation.value, decision, before, after)
+        if decision.action is ActionType.TYPE and check in _FORECASTS and not outcome.ok:
+            return _typed(decision, before, after, forecast=outcome)
+        return outcome
+
+
+def _by_check(
+    check: Check, wanted: str, decision: Decision, before: PageState, after: PageState
+) -> _Outcome:
+    match check:
+        case Check.URL_CONTAINS:
+            return _url_contains(after, wanted)
+        case Check.URL_CHANGED:
+            return _url_changed(before, after)
+        case Check.ELEMENT_VISIBLE:
+            return _element_visible(after, wanted)
+        case Check.TEXT_PRESENT:
+            return _text_present(after, wanted)
+        case Check.VALUE_EQUALS:
+            return _value_equals(decision, before, after, wanted)
+        case Check.NEW_TAB_OPENED:
+            return _new_tab_opened(before, after)
+        case _:
+            return _dom_changed(before, after)
+
+
+# Expectations about where the page goes next rather than about the field. For
+# a `type` step they are the planner forecasting a later step: "to=Delhi" in
+# the URL is what a search does once a destination is chosen and submitted,
+# not what typing "Delhi" does.
+_FORECASTS: Final = frozenset(
+    {Check.URL_CONTAINS, Check.URL_CHANGED, Check.NEW_TAB_OPENED, Check.DOM_CHANGED}
+)
+
+
+def _typed(decision: Decision, before: PageState, after: PageState, forecast: _Outcome) -> _Outcome:
+    """Judge a `type` step by what typing does, when the planner's forecast missed.
+
+    The forecast is tried first, so a search whose results URL was predicted
+    is still verified exactly. When it misses, the step is still good if the
+    text is in the field, or, with Enter pressed, if the page moved on: on a
+    results page the search box may be gone, and the move is the evidence.
+    Without this every recovery rung retypes, gets graded against the same
+    forecast, and fails a step that worked.
+    """
+    wanted = (decision.value or "").strip()
+    if not wanted:
+        return forecast
+    typed = _value_equals(decision, before, after, wanted)
+    if typed.ok:
+        return typed
+    if decision.press_enter and _urls(before) != _urls(after):
+        return _url_changed(before, after)
+    return typed
 
 
 # ----------------------------------------------------------------- checks
@@ -306,14 +355,29 @@ def _value_equals(decision: Decision, before: PageState, after: PageState, wante
     page was perceived a second time after the action and the indices are
     assigned fresh each time.
     """
+    if "\n" in wanted.strip():
+        return _code_entered(after, wanted)
     target = _same_element(decision, before, after)
-    if target is None:
-        return _Outcome(
-            False,
-            Check.VALUE_EQUALS,
-            {"check": Check.VALUE_EQUALS.value, "found": None},
-            "The field is no longer on the page.",
-        )
+    if target is None or target.tag not in _FIELD_TAGS:
+        # Choosing an autocomplete suggestion is a click on a list item that
+        # disappears the moment it works, and what changed is the field above
+        # it. So when the clicked thing is not a field, or is gone, look for
+        # the value in any field on the page.
+        holder = _field_holding(after, wanted)
+        if holder is not None:
+            return _Outcome(
+                True,
+                Check.VALUE_EQUALS,
+                {"check": Check.VALUE_EQUALS.value, "value": (holder.value or "").strip()},
+                "A field on the page holds the chosen value.",
+            )
+        if target is None:
+            return _Outcome(
+                False,
+                Check.VALUE_EQUALS,
+                {"check": Check.VALUE_EQUALS.value, "found": None},
+                "The field is no longer on the page.",
+            )
 
     if target.is_masked:
         # The collector masks secrets at source, so the real value is not here
@@ -327,12 +391,90 @@ def _value_equals(decision: Decision, before: PageState, after: PageState, wante
 
     actual = (target.value or "").strip()
     ok = actual.casefold() == wanted.strip().casefold()
+    if not ok:
+        # A combobox hands focus to an input of its own when clicked (a flight
+        # search's "Where to?" opens a popup with its own box), so the text
+        # lands there and the field that was targeted stays empty until a
+        # suggestion is chosen. A field the action itself brought onto the
+        # page is where it went.
+        moved = _opened_holding(before, after, wanted)
+        if moved is not None:
+            return _Outcome(
+                True,
+                Check.VALUE_EQUALS,
+                {"check": Check.VALUE_EQUALS.value, "value": (moved.value or "").strip()},
+                "The text went into the field the widget opened.",
+            )
     return _Outcome(
         ok,
         Check.VALUE_EQUALS,
         {"check": Check.VALUE_EQUALS.value, "value": actual},
         f"The field holds {actual!r}." if not ok else "The field holds what was typed.",
     )
+
+
+_FIELD_TAGS: Final = frozenset({"input", "textarea", "select"})
+
+
+def _code_entered(after: PageState, wanted: str) -> _Outcome:
+    """Is a multi-line text, typed into an editor, now on the page?
+
+    A code editor is not a form field: its text lives in styled lines the
+    collector never reports as a value. So the check is the one a person would
+    make, looking at the screen for the first lines of the program, and a field
+    that holds them counts too.
+    """
+    lines = [_squash(line) for line in wanted.splitlines()]
+    probes = [line for line in lines if len(line) >= 6][:2]
+    seen = _squash(after.text)
+    on_page = bool(probes) and all(probe in seen for probe in probes)
+    in_field = _field_holding(after, wanted) is not None
+    ok = on_page or in_field
+    return _Outcome(
+        ok,
+        Check.VALUE_EQUALS,
+        {"check": Check.VALUE_EQUALS.value, "lines": len(lines)},
+        "The editor shows the code." if ok else "The code is not visible in the editor.",
+    )
+
+
+_NON_ALNUM: Final = re.compile(r"[^a-z0-9]+")
+
+
+def _squash(value: str) -> str:
+    """Case, spacing and punctuation removed, so "NEW DELHI - NDLS" and "new delhi ndls" agree."""
+    return _NON_ALNUM.sub("", value.casefold())
+
+
+def _field_holding(state: PageState, wanted: str) -> ElementInfo | None:
+    """A field whose value is the wanted text, ignoring case and punctuation.
+
+    One may contain the other: a suggestion list shows "NEW DELHI - NDLS" and
+    the field then holds "NEW DELHI - NDLS(NEW DELHI)", or the reverse.
+    """
+    return next((element for element in state.elements if _holds(element, wanted)), None)
+
+
+def _opened_holding(before: PageState, after: PageState, wanted: str) -> ElementInfo | None:
+    """A field that was not on the page before the action and now holds the text.
+
+    Only a new field counts. Text in a field that was already there is the
+    agent typing into the wrong one, which is a failure, not a popup.
+    """
+    existing = {element.css_path for element in before.elements}
+    return next(
+        (e for e in after.elements if e.css_path not in existing and _holds(e, wanted)), None
+    )
+
+
+def _holds(element: ElementInfo, wanted: str) -> bool:
+    target = _squash(wanted)
+    if len(target) < 3:
+        return False
+    if element.tag not in _FIELD_TAGS or not element.value or element.is_masked:
+        return False
+    held = _squash(element.value)
+    return bool(held) and (held == target or target in held or held in target)
 
 
 def _dom_changed(before: PageState, after: PageState) -> _Outcome:
@@ -343,10 +485,9 @@ def _dom_changed(before: PageState, after: PageState) -> _Outcome:
     The visible text is compared too, because that is the change a person
     would see and most results are rendered as text rather than as controls.
     """
-    hash_changed = before.dom_hash != after.dom_hash
     url_changed = _urls(before) != _urls(after)
     text_changed = before.text != after.text
-    changed = hash_changed or url_changed or text_changed
+    changed = page_changed(before, after)
 
     return _Outcome(
         changed,
@@ -359,6 +500,15 @@ def _dom_changed(before: PageState, after: PageState) -> _Outcome:
             "textChanged": text_changed,
         },
         "The page changed." if changed else "The page is unchanged.",
+    )
+
+
+def page_changed(before: PageState, after: PageState) -> bool:
+    """Did anything a person could see move: the controls, the URL or the text?"""
+    return (
+        before.dom_hash != after.dom_hash
+        or _urls(before) != _urls(after)
+        or before.text != after.text
     )
 
 
@@ -478,6 +628,46 @@ def _as_check(method: VerificationMethod) -> Check:
     return Check(method.value)
 
 
+_WORDS: Final = re.compile(r"[a-z0-9]+")
+# Words that name the kind of control rather than which one it is.
+_KIND_WORDS: Final = frozenset(
+    {"a", "an", "the", "input", "field", "box", "bar", "button", "link", "text", "element", "icon"}
+)
+
+
+_STOP_WORDS: Final = frozenset({"for", "to", "of", "in", "on", "and", "your", "with", "here"})
+# The element tags a kind word implies.
+_KIND_TAGS: Final = {
+    "input": frozenset({"input", "textarea"}),
+    "field": frozenset({"input", "textarea", "select"}),
+    "box": frozenset({"input", "textarea", "select"}),
+    "button": frozenset({"button"}),
+    "link": frozenset({"a"}),
+}
+
+
+_DISMISSAL: Final = re.compile(
+    r"\b(close|dismiss|not now|no thanks|maybe later|skip)\b|[×✕]|\b(modal|popup|pop-up|dialog)\b",  # noqa: RUF001
+    re.IGNORECASE,
+)
+
+
+def _is_dismissal(decision: Decision) -> bool:
+    """Is this click meant to close a popup, going by what the planner called it?"""
+    return bool(_DISMISSAL.search(decision.target or ""))
+
+
+def _is_throwaway(value: str) -> bool:
+    """Too short to be a real thing to look for (fewer than three letters or digits)."""
+    return (
+        len(_WORDS_ALNUM.findall(value)) == 0
+        or sum(len(w) for w in _WORDS_ALNUM.findall(value)) < 3
+    )
+
+
+_WORDS_ALNUM: Final = re.compile(r"[A-Za-z0-9]+")
+
+
 def _find(state: PageState, wanted: str) -> ElementInfo | None:
     """An element whose name, text or role matches, loosely."""
     needle = wanted.strip().casefold()
@@ -487,6 +677,43 @@ def _find(state: PageState, wanted: str) -> ElementInfo | None:
     for element in state.elements:
         haystack = f"{element.name} {element.text} {element.role or ''}".casefold()
         if needle in haystack:
+            return element
+
+    # The planner names a control it has not seen yet ("search input field"),
+    # and the page calls it something else ("Search here..."). Drop the words
+    # that only say what kind of control it is, and require every remaining
+    # word. "search results" still does not match a lone "Search" button.
+    all_words = _WORDS.findall(needle)
+    wanted_words = [w for w in all_words if w not in _KIND_WORDS and w not in _STOP_WORDS]
+    # "search input field" must be an input, not the "Search" button next to it.
+    kinds = [_KIND_TAGS[w] for w in all_words if w in _KIND_TAGS]
+    if not wanted_words:
+        # Only a kind was named ("input"): any visible control of that kind counts.
+        if not kinds:
+            return None
+        return next(
+            (
+                e
+                for e in state.elements
+                if any(e.tag in tags for tags in kinds) and e.in_viewport and not e.covered
+            ),
+            None,
+        )
+    for element in state.elements:
+        if kinds and not any(element.tag in tags for tags in kinds):
+            continue
+        words = set(
+            _WORDS.findall(f"{element.name} {element.text} {element.placeholder or ''}".casefold())
+        )
+        hits = sum(
+            1 for word in wanted_words if any(w == word or w.startswith(word) for w in words)
+        )
+        # A description that names the kind of control ("search input field for
+        # internships") only has to share half its meaningful words with the
+        # label: the kind already narrows it to inputs. Without a kind, every
+        # word must match, so "search results" never matches a lone "Search".
+        needed = (len(wanted_words) + 1) // 2 if kinds else len(wanted_words)
+        if hits >= max(1, needed):
             return element
     return None
 

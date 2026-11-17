@@ -26,6 +26,7 @@ __all__ = [
     "SECRET_INPUT_TYPES",
     "DeterministicRiskPolicy",
     "RiskAssessment",
+    "phrase_pattern",
 ]
 
 logger = get_logger(__name__)
@@ -129,7 +130,7 @@ class RiskAssessment:
         return self.level is RiskLevel.HIGH
 
 
-def _phrase_pattern(phrases: tuple[str, ...]) -> re.Pattern[str]:
+def phrase_pattern(phrases: tuple[str, ...]) -> re.Pattern[str]:
     """Match whole words only.
 
     A substring rule would find "pay" in "display" and "buy" in "buyer
@@ -146,14 +147,14 @@ def _phrase_pattern(phrases: tuple[str, ...]) -> re.Pattern[str]:
     return re.compile(rf"(?<![\w])(?:{alternatives})(?![\w])", re.IGNORECASE)
 
 
-_PHRASES: Final = _phrase_pattern(HIGH_RISK_PHRASES)
+_PHRASES: Final = phrase_pattern(HIGH_RISK_PHRASES)
 
 
 class DeterministicRiskPolicy:
     """Spec section 4.10. Implements the `RiskPolicy` seam."""
 
     def __init__(self, phrases: tuple[str, ...] | None = None) -> None:
-        self._pattern = _phrase_pattern(phrases) if phrases else _PHRASES
+        self._pattern = phrase_pattern(phrases) if phrases else _PHRASES
 
     def assess(self, decision: Decision, state: PageState) -> RiskLevel:
         """The seam the loop calls. See :meth:`evaluate` for the reasons."""

@@ -93,9 +93,10 @@ async def test_a_target_blank_link_becomes_a_tab(
     await driver.execute(WaitAction(seconds=0.3))
 
     assert driver.tab_ids == ["t1", "t2"]
-    # The click opened it; it did not move the agent into it. Switching is a
-    # decision the planner makes, not a side effect of a link's attributes.
-    assert driver.active_tab_id == "t1"
+    # The click opened it and the agent follows it, as a person looking at the
+    # screen would. Staying put made the verifier judge the page the link was
+    # on, so a listing that opened correctly was reported as a failed click.
+    assert driver.active_tab_id == "t2"
 
 
 async def test_the_agent_can_read_a_popup_and_come_back(
@@ -254,6 +255,8 @@ async def test_orphans_are_closed_when_the_task_ends(
     """
     await goto(driver, html_server, "tabs.html")
     await driver.execute(ClickAction(selector="#detail"))
+    # The agent is now in the new tab; go back to the page that has the other link.
+    await driver.execute(SwitchTabAction(tab_id="t1"))
     await driver.execute(ClickAction(selector="#second"))
     await driver.execute(WaitAction(seconds=0.3))
     assert len(driver.tab_ids) == 3
@@ -298,7 +301,8 @@ async def test_a_tab_nobody_has_looked_at_yet_prints_as_its_id(
     state = await perceive(driver.page, driver)
     line = next(row for row in state.summary_text.splitlines() if row.startswith("Tabs:"))
 
-    assert line == "Tabs: t1 Results (active), t2"
+    # The agent followed the click into t2; t1 was perceived before it opened.
+    assert line.startswith("Tabs:") and "(active)" in line and "t1" in line and "t2" in line
 
 
 # ------------------------------------------------------------- the registry

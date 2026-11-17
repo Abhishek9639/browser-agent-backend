@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Open picker</title>
+<style>
+  #picker { position: absolute; top: 40px; left: 0; width: 400px; height: 300px; background: #eee; display: none; z-index: 10; }
+  #go { position: absolute; top: 100px; left: 20px; }
+</style></head>
+<body>
+  <input id="date" aria-label="Date">
+  <div id="picker">calendar</div>
+  <button id="go" onclick="document.getElementById('log').textContent='searched'">Search</button>
+  <p id="log"></p>
+  <script>
+    const picker = document.getElementById('picker');
+    document.getElementById('date').addEventListener('focus', () => { picker.style.display = 'block'; });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') picker.style.display = 'none'; });
+  </script>
+</body>
+</html>

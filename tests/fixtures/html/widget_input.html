@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Widget input</title></head>
+<body>
+  <!-- A field that throws away a value that did not arrive through the keyboard,
+       the way a masked or autocompleting widget does. -->
+  <div id="wrapper"><input id="masked" type="text" aria-label="Date"></div>
+  <button id="swap" aria-label="swap">&#8646;</button>
+  <script>
+    let typed = false;
+    const field = document.getElementById('masked');
+    field.addEventListener('keydown', () => { typed = true; });
+    field.addEventListener('input', () => { if (!typed) field.value = ''; });
+  </script>
+</body>
+</html>

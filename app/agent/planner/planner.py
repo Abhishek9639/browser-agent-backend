@@ -17,8 +17,10 @@ step. Two chances is a judgement: one is harsh on a model that made a
 recoverable slip, and three is an expensive way to discover the prompt is wrong.
 """
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import date
 from typing import Any, Final
 
 from pydantic import ValidationError
@@ -33,10 +35,18 @@ from app.agent.llm.base import (
 )
 from app.agent.perception.state import PageState
 from app.agent.perception.untrusted import wrap_page_state
+from app.agent.planner.clarify import (
+    PageQuestions,
+    Question,
+    make_page_questions,
+    make_questions,
+)
+from app.agent.planner.outline import make_outline
 from app.agent.planner.registry import PromptRegistry
 from app.agent.planner.schema import DECISION_JSON_SCHEMA, Decision
 from app.core import metrics
 from app.core.logging import get_logger
+from app.domain.enums import ActionType
 
 __all__ = [
     "HISTORY_WINDOW",
@@ -53,9 +63,35 @@ logger = get_logger(__name__)
 # its tokens: what matters is the last few actions and their outcomes, plus the
 # fact that earlier ones happened.
 HISTORY_WINDOW: Final = 8
+# The same action on the same target this many times in a row is a loop.
+REPEAT_LIMIT: Final = 3
 
-# Enough for a list of results, not enough to bury the current page state.
-MAX_EXTRACT_CHARS: Final = 600
+# A goal about solving a problem on a judge site: the platforms by name, and the
+# way people phrase it.
+_CODING_GOAL: Final = re.compile(
+    r"codechef|leetcode|hackerrank|codeforces|geeksforgeeks|hackerearth|atcoder|"
+    r"(solve|answer|submit).{0,30}(problem|question)|coding (problem|question)",
+    re.IGNORECASE,
+)
+CODING_GUIDE: Final = (
+    "CODING TASK GUIDE (this goal is about solving a programming problem)\n"
+    "1. Read the whole statement first with `extract` (constraints, input and output "
+    "format, examples). Do not write code from the title alone.\n"
+    "2. Use the language the editor already has selected, or Python 3 if there is "
+    "no preference. Change it only if the goal names another.\n"
+    "3. Click inside the code editor, then `type` the COMPLETE solution in one action: "
+    "put the whole program in `value` with real line breaks and correct indentation. "
+    "The system replaces the editor's contents, so do not type it line by line. Read "
+    "input exactly as the statement describes it, and print only the required output.\n"
+    "4. Press the site's Run or Test button (not Submit), then `extract` the result.\n"
+    "5. If a sample fails, read the error or the difference, fix the code and type the "
+    "whole corrected program again. Stop after three attempts and report honestly.\n"
+    "6. Submit only when the goal asks you to. Finish with `done`: say whether it passed "
+    "and include the code you used."
+)
+
+# Enough for problem statements or a list of results, without burying the page state.
+MAX_EXTRACT_CHARS: Final = 4000
 
 
 def _clip(text: str) -> str:
@@ -81,6 +117,100 @@ def _clip(text: str) -> str:
 MAX_ATTEMPTS: Final = 2
 
 
+_TEXT_INPUT_TYPES = {None, "text", "search", "email", "tel", "url"}
+
+
+_NOT_TEXT_INPUTS = {"checkbox", "radio", "button", "submit", "reset", "file", "image", "hidden"}
+_EDITABLE_ROLES = {"textbox", "searchbox", "combobox", "spinbutton"}
+
+
+def is_editable(element: Any) -> bool:
+    """Can a person type into this element?"""
+    if element.tag in {"textarea", "select"}:
+        return True
+    if element.tag == "input":
+        return (element.input_type or "text") not in _NOT_TEXT_INPUTS
+    return (element.role or "") in _EDITABLE_ROLES
+
+
+def not_editable_problem(decision: Decision, page_state: PageState) -> str | None:
+    """Refuse typing into something that is not a field, when there are fields.
+
+    A small icon button between two inputs, a label, a heading: Playwright
+    answers "element is not an <input>", the step fails, and the recovery
+    ladder has nothing to try. Naming the real fields in the repair turn is
+    cheaper and works on any site.
+    """
+    if decision.action is not ActionType.TYPE or decision.target_index is None:
+        return None
+    target = page_state.element_at(decision.target_index)
+    if target is None or is_editable(target):
+        return None
+
+    fields = [e for e in page_state.elements if is_editable(e) and not e.disabled]
+    if not fields:
+        return None
+    fields.sort(key=lambda e: (bool(e.value), not e.in_viewport, e.index))
+    shown = ", ".join(
+        f"[{e.index}] {((e.name or e.placeholder or '').strip() or 'unnamed')[:28]!r}"
+        + (f" (holds {e.value[:16]!r})" if e.value else "")
+        for e in fields[:8]
+    )
+    return (
+        f"targetIndex {target.index} is a <{target.tag}>, not something you can type into. "
+        f"Fields on this page: {shown}. Choose the field the text belongs in."
+    )
+
+
+def input_target_problem(decision: Decision, page_state: PageState) -> str | None:
+    """Refuse typing into a hidden or unnamed field when a proper one exists.
+
+    Widgets such as dropdown pickers keep an unnamed search box under the
+    control, often marked covered. Typing there either fails or goes nowhere,
+    while the real search box, with a name or a placeholder, sits further down
+    the list or just below the fold.
+    """
+    if decision.action is not ActionType.TYPE or decision.target_index is None:
+        return None
+    target = page_state.element_at(decision.target_index)
+    if target is None:
+        return None
+
+    unnamed = not (target.name or target.placeholder or "").strip()
+    if not (target.covered or unnamed):
+        return None
+
+    alternatives = [
+        e
+        for e in page_state.elements
+        if e.tag in {"input", "textarea"}
+        and e.input_type in _TEXT_INPUT_TYPES
+        and not e.disabled
+        and e.index != target.index
+        and (e.name or e.placeholder or "").strip()
+        # A field that already holds something is not a candidate for the text
+        # about to be typed: the From and To boxes are named and full, and the
+        # date field the model really wants has no name at all.
+        and not (e.value or "").strip()
+        and (not e.covered or target.covered is False)
+    ]
+    if not alternatives:
+        return None
+
+    alternatives.sort(key=lambda e: (not e.in_viewport, e.index))
+    shown = ", ".join(
+        f"[{e.index}] {(e.name or e.placeholder or '')[:30]!r}"
+        + ("" if e.in_viewport else " (below the fold: scroll first)")
+        for e in alternatives[:6]
+    )
+    reason = "is covered by something else" if target.covered else "has no name or placeholder"
+    return (
+        f"targetIndex {target.index} {reason}, so typing into it will not work. "
+        f"Named text inputs on the page: {shown}. Pick the one that matches what you "
+        "want to type, or dismiss the overlay first."
+    )
+
+
 class PlannerOutputError(RuntimeError):
     """The model could not produce a usable decision, even after a repair turn.
 
@@ -103,6 +233,9 @@ class StepSummary:
     action: str
     target: str | None = None
     verified: bool | None = None
+    # Why a step failed, in a few words. Without it the planner sees only
+    # "failed" and tries the same thing again.
+    note: str | None = None
     # What an `extract` action read. Without this the planner can see that it
     # read the page and not what it read, so a task that has to answer a
     # question about the content can never finish.
@@ -112,6 +245,8 @@ class StepSummary:
         outcome = {True: "verified", False: "failed", None: "pending"}[self.verified]
         target = f" {self.target}" if self.target else ""
         line = f"{self.step_number}. {self.action}{target} -> {outcome}"
+        if self.note and self.verified is False:
+            line += f" ({self.note})"
 
         if self.extracted:
             line += f"\n   extracted: {_clip(self.extracted)}"
@@ -132,6 +267,17 @@ class PlannerResult:
     @property
     def needed_repair(self) -> bool:
         return self.attempts > 1
+
+
+def repeated_action(steps: Sequence[StepSummary], limit: int = REPEAT_LIMIT) -> str | None:
+    """The action the agent keeps doing to no effect, if it is stuck in one."""
+    if len(steps) < limit:
+        return None
+    tail = steps[-limit:]
+    first = tail[0]
+    if all((s.action, s.target) == (first.action, first.target) for s in tail):
+        return f"{first.action}{' ' + first.target if first.target else ''}"
+    return None
 
 
 def compress_history(steps: Sequence[StepSummary], *, window: int = HISTORY_WINDOW) -> str:
@@ -180,6 +326,8 @@ class Planner:
         page_state: PageState,
         history: Sequence[StepSummary],
         cached_hint: str | None,
+        plan: Sequence[str] = (),
+        plan_at: int | None = None,
     ) -> list[LLMMessage]:
         """Assemble the conversation.
 
@@ -188,7 +336,32 @@ class Planner:
         only part that changes every turn, and putting the stable parts first is
         what will let prompt caching work when it is added.
         """
-        parts = [f"GOAL\n{goal.strip()}", f"HISTORY\n{compress_history(history)}"]
+        # The model's sense of "now" is its training cutoff. Without the date it
+        # cannot work out "this weekend", and it expects a calendar to show a
+        # year that has already gone, which fails a click that worked.
+        parts = [f"GOAL\n{goal.strip()}", f"TODAY\n{date.today():%A %d %B %Y}"]
+        if _CODING_GOAL.search(goal):
+            parts.append(CODING_GUIDE)
+        if plan:
+            numbered = "\n".join(
+                f"{i}. {step}{'  <- last step was on this item' if i == plan_at else ''}"
+                for i, step in enumerate(plan, 1)
+            )
+            parts.append(
+                "PLAN (the steps you intended; follow them in order, working out from "
+                "HISTORY which one you are on, and depart only when the page forces you "
+                "to. Put the number of the item this action works on in planStep. When "
+                "the page needs work the plan does not list, name it in addPlanSteps "
+                f"so the person's plan keeps up)\n{numbered}"
+            )
+        parts.append(f"HISTORY\n{compress_history(history)}")
+        stuck = repeated_action(history)
+        if stuck:
+            parts.append(
+                f"WARNING: you have done '{stuck}' {REPEAT_LIMIT} times in a row and it is "
+                "not working. Do something different: another element, another approach, "
+                "or scroll to find what you need."
+            )
 
         if cached_hint:
             parts.append(
@@ -203,19 +376,38 @@ class Planner:
 
         return [LLMMessage(role=MessageRole.USER, text="\n\n".join(parts))]
 
+    async def questions(self, instruction: str, limit: int) -> list[Question]:
+        """What to ask the person before starting, if anything."""
+        return await make_questions(self._llm, instruction, limit)
+
+    async def page_questions(
+        self, instruction: str, page_state: PageState, limit: int, skipped: Sequence[str] = ()
+    ) -> PageQuestions:
+        """What the form on this page needs that the task and answers do not say."""
+        return await make_page_questions(
+            self._llm, instruction, page_state.summary_text, limit, skipped
+        )
+
+    async def outline(self, instruction: str, page_state: PageState | None = None) -> list[str]:
+        """The steps the task will probably take, planned from the page when there is one."""
+        page = page_state.summary_text if page_state is not None else None
+        return await make_outline(self._llm, instruction, page)
+
     async def decide(
         self,
         goal: str,
         page_state: PageState,
         history: Sequence[StepSummary] = (),
         cached_hint: str | None = None,
+        plan: Sequence[str] = (),
+        plan_at: int | None = None,
     ) -> PlannerResult:
         """Choose the next action.
 
         Raises :class:`PlannerOutputError` if the model cannot produce a valid,
         grounded decision within its repair budget.
         """
-        messages = self._build_turn(goal, page_state, history, cached_hint)
+        messages = self._build_turn(goal, page_state, history, cached_hint, plan, plan_at)
         last_problem = ""
 
         for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -241,7 +433,7 @@ class Planner:
             # counted: it is a real request with real tokens behind it.
             record_response(response, purpose="planner")
 
-            problem = self._validate(response.parsed, page_state)
+            problem = self._validate(response.parsed, page_state, advisory=attempt < MAX_ATTEMPTS)
             if problem is None:
                 decision = Decision.model_validate(response.parsed)
                 logger.info(
@@ -274,7 +466,9 @@ class Planner:
 
         raise PlannerOutputError(f"The model could not produce a valid decision: {last_problem}")
 
-    def _validate(self, payload: dict[str, Any], page_state: PageState) -> str | None:
+    def _validate(
+        self, payload: dict[str, Any], page_state: PageState, *, advisory: bool = True
+    ) -> str | None:
         """Return a problem description, or ``None`` when the decision is good."""
         try:
             decision = Decision.model_validate(payload)
@@ -295,7 +489,14 @@ class Planner:
                 f"Available indices: {shown}. Choose one of those, or scroll first."
             )
 
-        return None
+        hard = not_editable_problem(decision, page_state)
+        if hard:
+            return hard
+
+        # A suggestion about which input to use, not a hard rule: asked once, it
+        # steers the model, but on the last attempt the model's choice stands
+        # rather than failing a task over a field we only thought was unwise.
+        return input_target_problem(decision, page_state) if advisory else None
 
     @staticmethod
     def _repair_turn(problem: str) -> LLMMessage:

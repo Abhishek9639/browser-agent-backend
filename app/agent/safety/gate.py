@@ -13,7 +13,7 @@ from app.agent.contracts import ApprovalOutcome
 from app.agent.orchestrator import UnitOfWorkFactory
 from app.agent.planner.schema import Decision
 from app.core.logging import get_logger
-from app.domain.enums import ApprovalStatus, RiskLevel
+from app.domain.enums import ActionType, ApprovalStatus, RiskLevel
 from app.models.approval import Approval
 from app.services.approvals import ApprovalRegistry, expire_pending
 from app.services.events import ApprovalRequiredEvent, BoundingBox, EventBus
@@ -31,6 +31,11 @@ def describe_action(decision: Decision, site: str, reasons: list[str]) -> str:
     approval prompt nobody can answer quickly is one they will start waving
     through.
     """
+    if decision.action is ActionType.WAIT and reasons:
+        # A hand-off to the person (for example, signing in): the reason is the
+        # whole question, and "Wait ... Flagged because" would bury it.
+        return reasons[0]
+
     verb = decision.action.value.replace("_", " ")
     target = f" {decision.target!r}" if decision.target else ""
     where = f" on {site}" if site else ""
@@ -68,6 +73,7 @@ class DatabaseApprovalGate:
         bbox: dict[str, int] | None,
         reasons: list[str],
         site: str,
+        timeout_seconds: int | None = None,
     ) -> ApprovalOutcome:
         description = describe_action(decision, site, reasons)
         approval_id = await self._open(task_id, decision, risk, description)
@@ -95,7 +101,7 @@ class DatabaseApprovalGate:
         )
 
         try:
-            async with asyncio.timeout(self._timeout):
+            async with asyncio.timeout(timeout_seconds or self._timeout):
                 await waiter.wait()
         except TimeoutError:
             return await self._expire(task_id, approval_id)

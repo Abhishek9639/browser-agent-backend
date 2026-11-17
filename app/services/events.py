@@ -57,6 +57,7 @@ class EventType(StrEnum):
     """The section 6.1 event names, as they appear on the wire."""
 
     STATUS = "status"
+    PLAN = "plan"
     STEP = "step"
     RECOVERY = "recovery"
     APPROVAL_REQUIRED = "approval_required"
@@ -74,6 +75,7 @@ class EventType(StrEnum):
 UNDROPPABLE: Final[frozenset[EventType]] = frozenset(
     {
         EventType.STATUS,
+        EventType.PLAN,
         EventType.APPROVAL_REQUIRED,
         EventType.APPROVAL_RESOLVED,
         EventType.FINAL,
@@ -134,6 +136,18 @@ class StatusEvent(BaseEvent):
     previous_status: TaskStatus | None = None
 
 
+class PlanEvent(BaseEvent):
+    """The plan as it now stands, in full.
+
+    Sent when the plan is made, once the site is open and its questions are
+    answered, and again whenever the agent adds an item it found the plan
+    missing. Each one replaces the last.
+    """
+
+    type: Literal[EventType.PLAN] = EventType.PLAN
+    steps: list[str]
+
+
 class StepEvent(BaseEvent):
     type: Literal[EventType.STEP] = EventType.STEP
     step_number: int
@@ -156,6 +170,9 @@ class StepEvent(BaseEvent):
     # because a step nobody chose is a different thing to watch: there is no
     # reasoning behind it and no model call to account for.
     replayed: bool = False
+    # The plan item this step worked on, numbered from 1, so the client ticks
+    # off the item the agent is really on instead of guessing from a count.
+    plan_step: int | None = None
 
     def without_screenshot(self) -> "StepEvent":
         """The same step, minus the expensive part.
@@ -213,6 +230,7 @@ class HeartbeatEvent(BaseEvent):
 
 Event = Annotated[
     StatusEvent
+    | PlanEvent
     | StepEvent
     | RecoveryEvent
     | ApprovalRequiredEvent
@@ -225,6 +243,7 @@ Event = Annotated[
 
 AnyEvent = (
     StatusEvent
+    | PlanEvent
     | StepEvent
     | RecoveryEvent
     | ApprovalRequiredEvent

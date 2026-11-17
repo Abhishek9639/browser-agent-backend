@@ -228,6 +228,15 @@ class TaskResponse(CamelModel):
         default=None,
         description="Present when the task did not complete.",
     )
+    plan: list[str] | None = Field(
+        default=None,
+        description=(
+            "The steps expected, written before the first action. A forecast: "
+            "the agent chooses each real step from the page, so the real count "
+            "can differ."
+        ),
+        examples=[["Open the site", "Search for the flight", "Read the cheapest fare"]],
+    )
     credits_used: int | None = Field(
         default=None,
         description=(
@@ -345,6 +354,11 @@ class StepResponse(CamelModel):
             "Storage reference, not a URL. Fetch the image from "
             "GET /tasks/{id}/steps/{stepId}/screenshot."
         ),
+    )
+    plan_step: int | None = Field(
+        default=None,
+        description="The item of the task's plan this step worked on, numbered from 1.",
+        examples=[2],
     )
     status: StepStatus = Field(examples=[StepStatus.VERIFIED])
     created_at: datetime

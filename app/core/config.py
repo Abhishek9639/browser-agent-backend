@@ -117,11 +117,24 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_TTL_MIN: int = 15  # spec section 2
     REFRESH_TOKEN_TTL_DAYS: int = 7  # spec section 2
     JWT_REFRESH_COOKIE_NAME: str = "refresh_token"
+    # A just-rotated refresh token presented again within this many seconds is
+    # a client race (two tabs, a double mount), not a theft: it gets an access
+    # token but no new refresh cookie, and the session chain survives. 0 turns
+    # the tolerance off and every reuse destroys the chain.
+    REFRESH_REUSE_GRACE_SECONDS: int = Field(default=10, ge=0)
 
     # ---------------------------------------------------------------- llm (B23, B24)
     LLM_PROVIDER: str = "mock"
     # Used when the primary provider is unreachable. Blank disables it.
     LLM_FALLBACK_PROVIDER: str | None = None
+    # Requests per minute the provider's plan allows; 0 means do not pace. Free
+    # tiers are tight (Gemini's is 5), and pacing is cheaper than a 429.
+    GEMINI_REQUESTS_PER_MINUTE: int = Field(default=0, ge=0)
+    GROQ_REQUESTS_PER_MINUTE: int = Field(default=0, ge=0)
+    # Tried in order when LLM_MODEL is used up or unavailable. Comma separated.
+    GEMINI_FALLBACK_MODELS: str = (
+        "gemini-3-flash-preview,gemini-3.1-flash-lite,gemini-3.5-flash-lite"
+    )
     # Optional. Left unset, each provider picks its own sensible default, so
     # switching LLM_PROVIDER does not also require knowing that vendor's model
     # names. Set it to pin a specific model.
@@ -154,6 +167,13 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: SecretStr | None = None
     OPENAI_API_KEY: SecretStr | None = None
     GOOGLE_API_KEY: SecretStr | None = None
+    GROQ_API_KEY: SecretStr | None = None
+    # Groq's own model names, separate from LLM_MODEL so a Groq fallback is
+    # never sent the primary provider's model name.
+    GROQ_MODEL: str | None = None
+    GROQ_VISION_MODEL: str | None = None
+    # Tried in order when GROQ_MODEL is rate limited. Comma separated.
+    GROQ_FALLBACK_MODELS: str = "openai/gpt-oss-20b,qwen/qwen3.8-27b"
     LLM_TIMEOUT_SECONDS: int = 60
     LLM_MAX_OUTPUT_TOKENS: int = 2048
     PLANNER_PROMPT_VERSION: str = "v2"
@@ -195,6 +215,45 @@ class Settings(BaseSettings):
         ]
     )
     AGENT_HEADLESS: bool = True
+    # How long a task waits for a person to sign in or sign up when a site asks
+    # for it. Longer than an ordinary approval, because signing up means email
+    # codes and forms. The wait does not count against AGENT_MAX_TASK_SECONDS.
+    AGENT_LOGIN_WAIT_SECONDS: int = 900
+    # How long a task waits for a person to pay once the agent has taken a
+    # booking or an order to the payment page. The agent never pays itself.
+    # Long enough for a bank's OTP page; not counted against the time limit.
+    AGENT_PAYMENT_WAIT_SECONDS: int = 900
+    # Other browsers to try, in order, when a site answers the agent's browser
+    # with 401, 403 or 429. A separate browser, never the person's own. Names are
+    # `msedge`, `chrome` or `firefox`; empty turns it off.
+    AGENT_BROWSER_FALLBACKS: CsvList = Field(default_factory=lambda: ["msedge", "firefox"])
+    # Open the visible browser maximised and let the page fill the window,
+    # instead of a fixed 1280x800 box. Ignored when headless or attached to the
+    # user's own browser.
+    AGENT_FULLSCREEN: bool = False
+    # One extra model call that outlines the expected steps, so the person can
+    # see how long the task is. Made once the agent has opened the site, read
+    # its form and had its questions answered (spec section 6). A forecast only:
+    # the agent still chooses each real step from the page. Off here so a bare
+    # checkout and the scripted tests spend no extra request.
+    AGENT_PLAN_PREVIEW: bool = False
+    # Ask the person a few questions before starting (the day, the time, the
+    # class, the budget) when the task leaves out something that changes the
+    # result, and again on each page the agent opens with a form, about what
+    # that form needs and nobody has said (one way or round trip). One model
+    # call each time; off here for the same reason as the preview.
+    AGENT_CLARIFY: bool = False
+    AGENT_CLARIFY_MAX_QUESTIONS: int = 3
+    AGENT_CLARIFY_WAIT_SECONDS: int = 600
+    # Which browser Playwright launches. Empty = its bundled Chromium. "chrome"
+    # or "msedge" = the copy installed on this machine, which looks like a
+    # normal browser to sites and is the one the user sees.
+    AGENT_BROWSER_CHANNEL: str = ""
+    # Pause between browser operations, so a visible window is watchable.
+    # Opt-in: attach to the user's own Chrome (started with
+    # --remote-debugging-port) instead of launching an isolated browser.
+    AGENT_CDP_URL: str = ""
+    AGENT_SLOW_MO_MS: int = Field(default=0, ge=0)
     # Spec section 4.7. How long the page must stop changing before it is read
     # for verification, and how long to wait for that before reading anyway.
     AGENT_SETTLE_QUIET_MS: int = 300
@@ -256,7 +315,13 @@ class Settings(BaseSettings):
     STORAGE_S3_SECRET_KEY: SecretStr | None = None
 
     # ---------------------------------------------------------------- validators
-    @field_validator("CORS_ORIGINS", "AGENT_ALLOWED_DOMAINS", "RISK_HIGH_PHRASES", mode="before")
+    @field_validator(
+        "CORS_ORIGINS",
+        "AGENT_ALLOWED_DOMAINS",
+        "AGENT_BROWSER_FALLBACKS",
+        "RISK_HIGH_PHRASES",
+        mode="before",
+    )
     @classmethod
     def _split_csv(cls, value: object) -> object:
         """Accept ``a,b,c`` as well as a real list."""

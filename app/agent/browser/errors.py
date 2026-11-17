@@ -11,6 +11,7 @@ from enum import StrEnum
 __all__ = [
     "ActionErrorCode",
     "ActionNotAllowedError",
+    "BrowserClosedError",
     "BrowserError",
     "DomainNotAllowedError",
 ]
@@ -56,6 +57,16 @@ class ActionNotAllowedError(BrowserError):
     """
 
     code = ActionErrorCode.ACTION_NOT_ALLOWED
+
+
+class BrowserClosedError(BrowserError):
+    """Every tab the task had is gone: the window was closed under it.
+
+    Not something the agent can retry its way out of, and not a bug in the
+    task, so it is reported as what it is rather than as an internal error.
+    """
+
+    code = ActionErrorCode.TAB_NOT_FOUND
 
 
 class DomainNotAllowedError(BrowserError):

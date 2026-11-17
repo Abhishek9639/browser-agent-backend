@@ -134,6 +134,15 @@ class TaskBudget:
         self._steps_used += 1
         return self._steps_used
 
+    def exclude(self, seconds: float) -> None:
+        """Take time the task spent waiting on a person out of its clock.
+
+        Signing in or approving a payment is not the agent being slow. Without
+        this a five minute login would leave a fifteen minute task with ten.
+        """
+        if seconds > 0:
+            self._started_at += seconds
+
     def reset(self) -> None:
         """Start the clock again. Used when a replay falls back to planning."""
         self._started_at = self._clock()

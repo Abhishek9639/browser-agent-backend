@@ -80,7 +80,7 @@ def test_provider_names_are_case_and_space_insensitive() -> None:
 
 
 def test_the_spec_providers_are_all_known() -> None:
-    assert set(KNOWN_PROVIDERS) == {"mock", "anthropic", "openai", "gemini"}
+    assert set(KNOWN_PROVIDERS) == {"mock", "anthropic", "openai", "gemini", "groq"}
 
 
 def test_an_explicit_provider_overrides_settings() -> None:

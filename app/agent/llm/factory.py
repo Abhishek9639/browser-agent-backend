@@ -14,8 +14,9 @@ from typing import Final
 from pydantic import SecretStr
 
 from app.agent.llm.anthropic import AnthropicLLM
-from app.agent.llm.base import FallbackLLM, LLMClient, RetryingLLM
+from app.agent.llm.base import FallbackLLM, LLMClient, PacedLLM, RequestPacer, RetryingLLM
 from app.agent.llm.gemini import GeminiLLM
+from app.agent.llm.groq import GroqLLM
 from app.agent.llm.mock import MockLLM
 from app.agent.llm.openai import OpenAILLM
 from app.core.config import Settings
@@ -33,7 +34,7 @@ logger = get_logger(__name__)
 
 # Named in spec section 4.1. Listed even before they are implemented, so a
 # typo and a not-yet-built provider give different errors.
-KNOWN_PROVIDERS: Final = ("mock", "anthropic", "openai", "gemini")
+KNOWN_PROVIDERS: Final = ("mock", "anthropic", "openai", "gemini", "groq")
 
 
 class UnknownProviderError(ValueError):
@@ -89,12 +90,40 @@ def _build_gemini(settings: Settings) -> LLMClient:
     return GeminiLLM(settings)
 
 
+def _build_groq(settings: Settings) -> LLMClient:
+    _require_key("groq", settings.GROQ_API_KEY, "GROQ_API_KEY")
+    return GroqLLM(settings)
+
+
 _BUILDERS: Final[dict[str, Callable[[Settings], LLMClient]]] = {
     "mock": _build_mock,
     "anthropic": _build_anthropic,
     "openai": _build_openai,
     "gemini": _build_gemini,
+    "groq": _build_groq,
 }
+
+
+# One pacer per provider and interval, shared by every client built for it.
+_PACERS: dict[tuple[str, float], RequestPacer] = {}
+
+
+def _requests_per_minute(name: str, settings: Settings) -> int:
+    return {
+        "gemini": settings.GEMINI_REQUESTS_PER_MINUTE,
+        "groq": settings.GROQ_REQUESTS_PER_MINUTE,
+    }.get(name, 0)
+
+
+def _paced(name: str, client: LLMClient, settings: Settings) -> LLMClient:
+    rpm = _requests_per_minute(name, settings)
+    if rpm <= 0:
+        return client
+    # A little over 60/rpm: the provider counts in a sliding window, so landing
+    # exactly on the boundary still trips it now and then.
+    interval = round(60.0 / rpm + 0.5, 2)
+    pacer = _PACERS.setdefault((name, interval), RequestPacer(interval))
+    return PacedLLM(client, pacer)
 
 
 def _build_bare(name: str, settings: Settings) -> LLMClient:
@@ -106,7 +135,7 @@ def _build_bare(name: str, settings: Settings) -> LLMClient:
             f"{name!r} is not a known LLM provider. Choose one of: {', '.join(KNOWN_PROVIDERS)}."
         )
 
-    return _BUILDERS[normalised](settings)
+    return _paced(normalised, _BUILDERS[normalised](settings), settings)
 
 
 def build_llm(settings: Settings, *, provider: str | None = None) -> LLMClient:
@@ -118,7 +147,15 @@ def build_llm(settings: Settings, *, provider: str | None = None) -> LLMClient:
     answered badly.
     """
     name = (provider or settings.LLM_PROVIDER).strip().lower()
-    client: LLMClient = RetryingLLM(_build_bare(name, settings))
+    fallback = (settings.LLM_FALLBACK_PROVIDER or "").strip().lower()
+    has_fallback = bool(fallback) and fallback != name
+    # Allow short rate limit retries (e.g. 2-15s momentary spikes) on primary
+    # before falling back. If the quota block is longer, it moves to fallback immediately.
+    client: LLMClient = RetryingLLM(
+        _build_bare(name, settings),
+        retry_rate_limits=True,
+        max_retry_wait_s=15.0 if has_fallback else 90.0,
+    )
 
     if settings.is_prod and name == "mock":
         # Fatal, not a warning. An agent running on the mock accepts tasks,
@@ -130,8 +167,7 @@ def build_llm(settings: Settings, *, provider: str | None = None) -> LLMClient:
             "Set a real provider, or set APP_ENV to dev or test."
         )
 
-    fallback = (settings.LLM_FALLBACK_PROVIDER or "").strip().lower()
-    if fallback and fallback != name:
+    if has_fallback:
         client = FallbackLLM(client, RetryingLLM(_build_bare(fallback, settings)))
         logger.info("llm_fallback_configured", primary=name, fallback=fallback)
 

@@ -2,6 +2,164 @@
 
 All notable changes to the backend. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); parts are tracked by their id.
 
+## [Unreleased]
+
+### B45 - A planner that keeps to its plan, and code problems
+
+Changed
+
+- The planner is now shown the outline it made at the start (`AGENT_PLAN_PREVIEW`) on every turn, so it works through those steps instead of improvising each turn from the page alone.
+- A failed step in the history now says why ("The URL did not change"), and three identical actions in a row add a warning to do something different. Before, the planner saw only "failed" and tried the same thing again.
+
+Added
+
+- Programming problems (CodeChef, LeetCode, HackerRank, Codeforces and similar): a goal that mentions them gets a short guide in the planner's turn: read the statement with `extract`, write the whole program in one `type`, press Run rather than Submit, read the result, fix and retry up to three times, and submit only if asked.
+- A `type` whose value has line breaks is inserted into the editor in one piece, replacing its contents. Typed key by key, a program is mangled by auto-indent and auto-closed brackets. The verifier checks that the first lines of the code are visible on the page, since a code editor does not expose its text as a field value.
+
+### B44 - Questions before the task starts
+
+Added
+
+- With `AGENT_CLARIFY=true` the agent asks the person a few short questions before it starts, when the task leaves out something that changes the result (for a train: the day, the time of day, the class, the budget). One extra model call decides what to ask, at most `AGENT_CLARIFY_MAX_QUESTIONS` (3), each with two to six likely answers; the person can also type their own. It never asks for a password, a card or a one-time code.
+- A question rides the existing approval channel, so no new endpoint or event type: `approval_required` arrives with `proposedAction.action == "wait"`, `proposedAction.target == "question"`, the options in `proposedAction.value` separated by `|`, and the question in `reason`. The answer is the `reason` sent to `POST /tasks/{id}/approve`; `POST /tasks/{id}/reject` skips the question (no preference) and does not stop the task. Answers are added to the task text the planner reads. Nobody answering within `AGENT_CLARIFY_WAIT_SECONDS` times the task out, and the wait does not count against the task time limit.
+
+### B43 - Follow a click into the tab it opens
+
+Changed
+
+- A click that opens a new tab (a `target="_blank"` link, a script's `window.open`, a sign-in popup) now takes the agent into that tab, as a person looking at the screen would. Before, the agent kept looking at the page it started on, so a listing that opened correctly was verified against the old page's unchanged URL and reported as a failed click. A link that asks for a new tab is waited for (up to 3 seconds); any other click only gets a short look (0.4 seconds). A new tab outside the allowed domains is closed, the agent returns to where it was, and the breach is reported.
+- This reverses an earlier rule, that opening a tab does not move the agent and switching is always the planner's decision. The planner can still `switch_tab` back to the page it came from, and its prompt now says so.
+
+### B42 - Typing, scrolling and login waits on any site
+
+Added
+
+- Typing handles the widgets real sites use: a selector that lands on a wrapper finds the field inside it; a field that discards a programmatic fill (a mask, an autocomplete that watches key events) is retyped at the keyboard; something with nothing editable in it is focused and typed at. The planner is refused when it targets something that is not a field while fields exist (an icon button between two inputs was taken for a date box), and is told which fields there are.
+- Scrolling and scroll position use whatever actually scrolls: the window, or the largest inner panel of an app shell. A smooth scroll waits until the position stops changing.
+- Before a click or type, if something covers the target (an open calendar, an autocomplete list), Escape is pressed once to close it.
+- `AGENT_LOGIN_WAIT_SECONDS` (default 900): how long to wait for a person to sign in or sign up. The wait is taken out of the task's time limit (`TaskBudget.exclude`), so a slow login no longer leaves the task out of time. A page that says it needs a login ("please login to continue") now starts the wait too, not only a visible password field.
+
+Fixed
+
+- Playwright's "Element is not an <input>" was classed UNKNOWN, so recovery had nothing to try; it is now NOT_INTERACTABLE.
+
+### B41 - Full screen, a visible pointer, and autocomplete
+
+Added
+
+- `AGENT_FULLSCREEN` (default off): the visible browser opens maximised and the page fills the window instead of a fixed 1280x800 box. The real size is measured from the page (`PlaywrightDriver.viewport_size`), because a maximised window reports none, and screenshots, snapshots and coordinate clicks all use it.
+- A visible pointer in a visible browser: a blue arrow that follows every mouse event and rings on a click. Before each click or type the real pointer glides to the target in a short arc, and a scroll is smooth and has landed before the step is checked.
+
+Fixed
+
+- Choosing an autocomplete suggestion ("NEW DELHI - NDLS") was marked failed: the verifier looked for the value on the clicked list item, which disappears when it works. A `value_equals` check on something that is not a field now looks for a field holding the value, ignoring case and punctuation.
+- A replayed cached flow that failed a step ended the task with `IllegalTransition` (RECOVERING to PLANNING). The return to planning now walks the legal path from wherever the task is.
+- The "prefer a named input" planner check no longer offers a field that already holds a value (the From and To boxes are named and full, and the date box the model wanted is not), and is advisory: on the last attempt the model's choice stands.
+
+### B40 - Language gates, popup verification
+
+Changed
+
+- A step is no longer failed for an expectation that is not meaningful: an `element_visible` or `text_present` value with fewer than three letters or digits ("7", from a date in the goal) falls back to the action's default check, and a click whose target is a popup closer is verified by the page changing rather than by a guess about the page underneath. A real run had marked a working "close confirmation modal" click as failed this way.
+- The popup closer also matches on a control's text when its accessible name is garbled, accepts "English" so a language gate in front of a site is passed, and presses Escape once when a popup blocks the page but nothing on it says "close".
+
+### B39 - Plan preview
+
+Added
+
+- `AGENT_PLAN_PREVIEW` (default off). When on, one extra model call before the first action outlines the steps a task is expected to take. The outline is stored on the task (`tasks.plan`, migration `b3c1d9a47e20`), returned as `plan` on the task, sent once as a `plan` WebSocket event, and replayed first on reconnect.
+- The outline is a forecast. The agent still chooses each real step from the page (spec section 4.5), so a popup or a changed layout cannot break a plan it never depended on. A failed outline call is not an error: the task simply has no outline.
+- Spec sections 1, 5 and 6.1 amended to record the field and the event.
+
+### B38 - Free-tier quotas, request pacing and model rotation
+
+Added
+
+- `GEMINI_FALLBACK_MODELS` (default `gemini-3-flash-preview,gemini-3.1-flash-lite,gemini-3.5-flash-lite`): when a Gemini model is used up or not available to the account, the next answers, and a used-up model is skipped until its quota returns. Found because the free tier allows only 20 requests a day per model, and a new account gets a 404 on `gemini-2.5-flash`.
+- `GEMINI_REQUESTS_PER_MINUTE` and `GROQ_REQUESTS_PER_MINUTE` (default 0, off): requests are spaced so a per-minute limit is never hit, sharing one pacer per provider.
+- When the fallback is also rate limited and the primary asked for 30 seconds or less, the primary is waited for once.
+- Gemini network failures (a failed DNS lookup, a dropped connection) count as "provider unreachable", so they retry and fall back instead of ending the task. A 429 keeps the wait Google asks for.
+- Grounding may no longer move a `type` onto an unnamed or covered input that the planner was already refused for.
+
+### B37 - Popups, unnamed inputs and rate limits
+
+Added
+
+- `app/agent/perception/overlays.py`: finds a popup that covers the page (eight or more covered elements) and the control that closes it, including an unnamed icon in the popup's top-right corner. Before planning, the loop closes such a popup by clicking a dismissal (never "Accept"). The recovery ladder's popup step now recognises the same icons.
+- The planner refuses a `type` into a covered or unnamed input when a named one exists, and says which and whether to scroll first, using the existing repair turn.
+- `GROQ_FALLBACK_MODELS` (default `openai/gpt-oss-20b,qwen/qwen3.8-27b`): when the Groq model is rate limited, the next is tried, since daily limits are per model.
+- The fallback provider skips a rate-limited primary until its cooldown ends instead of retrying it every step.
+
+Changed
+
+- A rate limit that asks for more than 90 seconds is no longer slept through. It fails at once, so the fallback or the person decides. A real run lost 12 minutes to a 756 second Groq daily limit.
+- Groq: a 413 (request over the model's per-minute token limit) moves to the next model, and the output allowance is capped at 1024 tokens, because Groq counts the whole allowance against that limit.
+- `element_visible` accepts a planner's description that differs from the page's label ("search input field" for "Search here..."): words that only name the kind of control are dropped, every other word must match (or half of them when the description names a kind of control), and the element must be the right kind (an input, not the Search button beside it).
+
+### B36 - Sign-in hand-off and a working indicator
+
+Added
+
+- When the page needs a sign-in or sign-up (a usable password field, or a login-looking path with an email field), the agent stops and hands the browser to the person through the existing approval flow. The person signs in in the visible window and presses Approve; the agent re-reads the page and carries on. Declining stops the task, an unanswered prompt times it out, and after three hand-offs on the same task it fails with "The site still needs you to sign in or sign up." A goal that mentions a password or credentials is left to the agent.
+- A frame around every tab the agent uses in a visible browser: blue with "Agent is working", amber with "Waiting for you to sign in" while handed off. It ignores clicks, survives navigation, and is hidden while a screenshot is taken so the model never sees it.
+- The frontend approval card reads "Sign-in needed" with an "I've signed in, continue" button for a hand-off.
+
+Changed
+
+- Tests that type into a password field now state a goal about signing in, because otherwise the agent correctly hands over.
+
+### B35 - Run in installed Chrome, and say why an action failed
+
+Added
+
+- `AGENT_BROWSER_CHANNEL` (default empty = bundled Chromium). `chrome` or `msedge` launches the browser installed on the machine, for both the shared task browser and a standalone driver.
+
+Changed
+
+- A step whose action did not run now reports why, e.g. `The action did not run: the page could not be loaded; check the address (Page.goto: net::ERR_NAME_NOT_RESOLVED at ...)`. Before, every such failure read "The action did not run."
+- Groq default models replaced with ones that exist: `openai/gpt-oss-120b` for text, `qwen/qwen3.8-27b` for images.
+- Planner prompt: guidance not to `wait` when the answer is already on the page. A `wait` that expected the DOM to change failed a finished page.
+
+### B34 - Tolerate a racing refresh
+
+Added
+
+- `REFRESH_REUSE_GRACE_SECONDS` (default 10, 0 disables). A refresh token rotated within this window and presented again gets an access token but no new refresh cookie, and the session chain survives. Previously two tabs (or a double mount) refreshing at once made the loser look like a thief, and every session for the user was revoked.
+
+Unchanged
+
+- A token revoked by logout, or presented after the window, or when the user has no live session, still destroys the chain and is audited as `TOKEN_REUSE_DETECTED`.
+
+Tests
+
+- The four existing replay tests now age the rotation past the window first; new tests cover a tolerated race and a logged-out token never being forgiven.
+
+### B33 - Groq provider and fast rate-limit fallback
+
+Added
+
+- `app/agent/llm/groq.py`: a Groq adapter over Groq's OpenAI-compatible endpoint, using the existing `openai` SDK (no new dependency). JSON mode with the schema in the system prompt; a separate vision model is used when images are attached.
+- `GROQ_API_KEY`, `GROQ_MODEL`, `GROQ_VISION_MODEL` settings. `groq` is now a valid `LLM_PROVIDER` and `LLM_FALLBACK_PROVIDER`. Groq never reads `LLM_MODEL`, so a Groq fallback is not sent the primary's model name.
+- `RetryingLLM(retry_rate_limits=...)`.
+
+Changed
+
+- When `LLM_FALLBACK_PROVIDER` is set, a rate-limited primary hands over to the fallback immediately instead of sleeping out its retry-after. Other transient failures are still retried first.
+
+### B32 - Drive the user's own browser
+
+Added
+
+- `AGENT_CDP_URL` (default empty). When set, the driver and the task runner attach to the user's running Chrome over CDP instead of launching an isolated Chromium. The agent opens its own tabs in that browser, closes only those, and never closes the user's context or browser.
+- `AGENT_SLOW_MO_MS` (default 0): a pause between browser operations so a visible window can be followed.
+- The driver raises the active tab to the front when it opens, switches or closes one, in any visible mode (`PlaywrightDriver._focus`).
+- `scripts/chrome_debug.ps1`: starts Chrome with a remote debugging port and a dedicated profile.
+- ADR-013, and an exception noted in spec section 4.13.
+
+Changed
+
+- In CDP mode the task runner allows one task at a time.
+
 ## [1.0.0] - 2026-09-29
 
 The backend, feature-complete against `docs/PROJECT_SPEC.md`. Release notes in

@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cab search with an open date picker</title>
+<style>
+  body { font-family: sans-serif; margin: 0; padding: 20px; }
+  .form { display: flex; gap: 8px; position: relative; }
+  .form form { display: flex; gap: 8px; }
+  .form label { display: block; width: 220px; }
+  .form input { width: 200px; height: 32px; }
+  /* Opens over the TO field the moment a destination is chosen, the way
+     MakeMyTrip's cab search does. Absolute and low, so not a modal. */
+  .popover {
+    position: absolute; left: 180px; top: 0; width: 420px; height: 220px;
+    background: #fff; border: 1px solid #ccc; z-index: 10;
+  }
+  .DayPicker-wrapper { padding: 8px; }
+  .DayPicker-Month { display: grid; grid-template-columns: repeat(7, 48px); }
+  .DayPicker-Day { cursor: pointer; height: 32px; text-align: center; }
+  .DayPicker-Day--disabled { cursor: default; color: #bbb; }
+  .DayPicker-Day p { margin: 0; }
+  .plain-picker { display: grid; grid-template-columns: repeat(7, 48px); margin-top: 300px; }
+  .plain-day { cursor: pointer; height: 32px; }
+  .chip { cursor: pointer; display: inline-block; padding: 8px; margin-top: 20px; }
+</style>
+</head>
+<body>
+  <div class="form">
+    <form id="journey" onsubmit="return false">
+      <label>FROM <input id="from" value="Govardhan, Uttar Pradesh, India"></label>
+      <label>TO <input id="to" value="Agra Airport"></label>
+      <!-- IRCTC's Search sits under the calendar the agent has just used. -->
+      <button type="submit" style="position:absolute; left:300px; top:120px">Search trains</button>
+    </form>
+    <!-- Not the form's: an ordinary control under the popup is still dropped. -->
+    <button id="search" style="position:absolute; left:240px; top:40px">Search under the picker</button>
+    <div class="popover">
+      <!-- react-day-picker 7: the month grid holds the focus, one day is
+           reachable by Tab and every other day has tabindex -1. -->
+      <div class="DayPicker-wrapper" tabindex="0">
+        <div class="DayPicker-Month" role="grid">
+          <div class="DayPicker-Day DayPicker-Day--disabled" role="gridcell" tabindex="-1"
+               aria-disabled="true" aria-label="Sat Nov 14 2026"><p>14</p></div>
+          <div class="DayPicker-Day" role="gridcell" tabindex="0"
+               aria-disabled="false" aria-label="Sun Nov 15 2026"><p>15</p></div>
+          <div class="DayPicker-Day" role="gridcell" tabindex="-1"
+               aria-disabled="false" aria-label="Mon Nov 16 2026"><p>16</p></div>
+          <div class="DayPicker-Day" role="gridcell" tabindex="-1"
+               aria-disabled="false" aria-label="Tue Nov 17 2026"><p>17</p></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- A picker with no roles at all: pointer-styled days in a focusable grid. -->
+  <div class="plain-picker" tabindex="0">
+    <span class="plain-day">Day 20</span>
+    <span class="plain-day">Day 21</span>
+    <span class="plain-day">Day 22</span>
+  </div>
+
+  <!-- A focusable custom button: its label inherits the pointer cursor and
+       must not be listed as a second target. -->
+  <div class="chip" tabindex="0"><span>Chip label</span></div>
+</body>
+</html>

@@ -21,6 +21,7 @@
   // accessibility guidance asks for far more.
   const MIN_INTERACTIVE_PX = 8;
   const MASK = "••••";
+  const FIELD_TAGS = new Set(["INPUT", "SELECT", "TEXTAREA"]);
 
   const SEMANTIC_SELECTOR = [
     "a[href]",
@@ -38,6 +39,9 @@
     '[role="menuitem"]',
     '[role="switch"]',
     '[role="combobox"]',
+    // A day in a date picker. Pickers give one day tabindex 0 and the rest -1,
+    // so without this the agent saw a month with a single date in it.
+    '[role="gridcell"]',
     "[onclick]",
     '[contenteditable="true"]',
   ].join(",");
@@ -238,6 +242,18 @@
     return { covered: true, byModal: isModal(top) };
   }
 
+  // A form's own controls stay listed, marked covered, when a popup such as a
+  // date picker sits on them. A field: what it holds is the state of the form,
+  // and when MakeMyTrip's calendar opened over the destination just chosen the
+  // agent concluded the choice was lost and typed it again. And the button
+  // that submits the form: IRCTC's Search sat under the calendar the agent had
+  // just used, so it went scrolling for a button that was right there.
+  // Clicking a covered target closes the popup first, so listing it is enough.
+  function keptUnderPopup(el) {
+    if (FIELD_TAGS.has(el.tagName)) return true;
+    return el.tagName === "BUTTON" && el.type === "submit" && el.form !== null;
+  }
+
   function describe(el, win, doc, frameId, offsetX, offsetY) {
     const rect = el.getBoundingClientRect();
     const tag = el.tagName.toLowerCase();
@@ -245,6 +261,15 @@
 
     const expanded = el.getAttribute("aria-expanded");
     const ariaChecked = el.getAttribute("aria-checked");
+    const ariaSelected = el.getAttribute("aria-selected");
+    const ariaCurrent = el.getAttribute("aria-current");
+    const isSelected =
+      el.selected === true ||
+      ariaSelected === "true" ||
+      ariaCurrent === "page" ||
+      ariaCurrent === "true" ||
+      ariaCurrent === "step" ||
+      (el.classList && (el.classList.contains("active") || el.classList.contains("selected")));
 
     return {
       element: el,
@@ -274,7 +299,7 @@
       disabled: el.disabled === true || el.getAttribute("aria-disabled") === "true",
       checked:
         el.checked === true ? true : ariaChecked === "true" ? true : ariaChecked === "false" ? false : null,
-      selected: el.selected === true ? true : null,
+      selected: isSelected ? true : ariaSelected === "false" ? false : null,
       expanded: expanded === "true" ? true : expanded === "false" ? false : null,
       cross_origin: false,
     };
@@ -284,9 +309,15 @@
     const semantic = new Set(doc.querySelectorAll(SEMANTIC_SELECTOR));
 
     // tabindex >= 0 is focusable, so it is reachable and therefore clickable.
+    // Kept apart when that is its only claim, because such an element is as
+    // often a container (a date picker's month, a scroll region) as a control.
+    const focusableOnly = new Set();
     for (const el of doc.querySelectorAll("[tabindex]")) {
       const value = parseInt(el.getAttribute("tabindex"), 10);
-      if (Number.isFinite(value) && value >= 0) semantic.add(el);
+      if (Number.isFinite(value) && value >= 0 && !semantic.has(el)) {
+        semantic.add(el);
+        focusableOnly.add(el);
+      }
     }
 
     // Anything the page styles as clickable, even without semantics.
@@ -295,6 +326,17 @@
       if (semantic.has(el)) continue;
       if (win.getComputedStyle(el).cursor === "pointer") pointer.add(el);
     }
+
+    // Does this ancestor make a pointer element inside it part of itself?
+    // A control does, and so does a pointer element: cursor is inherited, so
+    // the text inside a clickable div is pointer-styled too. A container that
+    // is focusable and nothing more does not, unless it is pointer-styled
+    // itself: what sets its own pointer inside one is a target of its own,
+    // like a day in a calendar whose month grid holds the focus.
+    const subsumes = (node) =>
+      pointer.has(node) ||
+      (semantic.has(node) &&
+        (!focusableOnly.has(node) || win.getComputedStyle(node).cursor === "pointer"));
 
     // Keep the outermost meaningful target. A pointer wrapper around a real
     // button is noise, and a chain of nested pointer divs is worse.
@@ -309,7 +351,7 @@
       let ancestor = el.parentElement;
       let nested = false;
       while (ancestor) {
-        if (semantic.has(ancestor) || pointer.has(ancestor)) {
+        if (subsumes(ancestor)) {
           nested = true;
           break;
         }
@@ -325,10 +367,10 @@
       if (hiddenReason(el, win, doc)) continue;
 
       const { covered, byModal } = coverage(el, win, doc);
-      // Covered means unreachable, so it is dropped. A modal is the exception:
-      // the recovery ladder dismisses overlays, so it needs to see what is
-      // behind one.
-      if (covered && !byModal) continue;
+      // Covered means unreachable, so it is dropped. Two exceptions. Behind a
+      // modal: the recovery ladder dismisses overlays, so it needs to see what
+      // is there. And a form's own controls under a popup (see keptUnderPopup).
+      if (covered && !byModal && !keptUnderPopup(el)) continue;
 
       const info = describe(el, win, doc, frameId, offsetX, offsetY);
       info.covered = covered;

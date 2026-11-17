@@ -1,3 +1,10 @@
+import asyncio
+import sys
+
+# Windows: the default SelectorEventLoop cannot spawn subprocesses,
+# which Playwright needs. Switch to ProactorEventLoop before anything else.
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 """Application factory.
 
 ``create_app`` builds a fully wired FastAPI instance. Everything it needs comes

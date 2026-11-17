@@ -39,3 +39,8 @@ htmlcov/
 .idea/
 .vscode/
 .DS_Store
+
+# Local documents
+*.pdf
+docs/viva_prep_master.*
+scripts/build_viva_pdf.py
