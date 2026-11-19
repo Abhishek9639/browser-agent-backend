@@ -599,7 +599,15 @@ class PlaywrightDriver:
                 await self._glide_to(locator)
                 tabs_before = set(self._sessions.tab_ids)
                 opens_tab = await self._opens_new_tab(locator)
-                await locator.click()
+                try:
+                    await locator.click()
+                except PlaywrightTimeoutError:
+                    # The element is covered or behind a CSS transition.
+                    # A forced click bypasses actionability checks and lands
+                    # directly on the element's coordinates, which is the best
+                    # we can do when something invisible is in the way.
+                    logger.info("click_forced_through_cover")
+                    await locator.click(force=True)
                 await self._follow_new_tab(tabs_before, opens_tab)
             case TypeAction():
                 await self._type(action)
@@ -741,8 +749,18 @@ class PlaywrightDriver:
 
         try:
             if action.clear_first:
+                # Triple-click selects all, works even when Ctrl+A is ignored by
+                # a custom widget (some rich-text editors trap it).
+                try:
+                    await field.triple_click()
+                    await asyncio.sleep(0.1)
+                except PlaywrightError:
+                    pass
                 await field.fill("")
             await field.fill(action.value)
+            # Give autocomplete dropdowns a moment to react before we check
+            # whether the value stuck — a dropdown that swaps focus needs ~200 ms.
+            await asyncio.sleep(0.15)
             if not await self._holds(field, action.value):
                 # The widget threw the value away, which is what a mask or an
                 # autocomplete that watches key events does to a programmatic fill.
@@ -750,6 +768,8 @@ class PlaywrightDriver:
                 await field.click()
                 await field.fill("")
                 await field.press_sequentially(action.value, delay=TYPE_DELAY_MS)
+                # Let the autocomplete settle before the verifier reads the field.
+                await asyncio.sleep(0.2)
             if action.press_enter:
                 await field.press("Enter")
         except PlaywrightError as exc:
@@ -765,9 +785,17 @@ class PlaywrightDriver:
         # Let a widget that swaps in its own input finish doing so.
         await asyncio.sleep(OBSTRUCTION_SETTLE_S)
         if action.clear_first:
+            # Control+A then Delete covers most editors; Backspace is kept as a
+            # second pass for widgets that don't respond to Delete.
+            await self.page.keyboard.press("Control+A")
+            await self.page.keyboard.press("Delete")
+            await asyncio.sleep(0.05)
             await self.page.keyboard.press("Control+A")
             await self.page.keyboard.press("Backspace")
         await self.page.keyboard.type(action.value, delay=TYPE_DELAY_MS)
+        # Give an autocomplete popup a moment to appear before the next action
+        # tries to interact with the page.
+        await asyncio.sleep(0.2)
         if action.press_enter:
             await self.page.keyboard.press("Enter")
 
@@ -779,11 +807,23 @@ class PlaywrightDriver:
         result is a program that no longer parses. Inserting the text at once
         sends it to the editor as a paste would, with none of that. The editor's
         contents are replaced, because a half-edited program is never the goal.
+
+        Monaco / CodeMirror handle select-all differently, so two passes are
+        tried: Control+A and then Command+A (macOS editors embedded in Windows
+        Electron shells sometimes respond only to the latter).
         """
         await locator.click()
         if action.clear_first:
+            # First pass: Ctrl+A + Delete (most editors)
             await self.page.keyboard.press("Control+A")
+            await asyncio.sleep(0.05)
             await self.page.keyboard.press("Delete")
+            await asyncio.sleep(0.05)
+            # Second pass: in case Delete left a trailing newline (Monaco does this)
+            await self.page.keyboard.press("Control+A")
+            await asyncio.sleep(0.05)
+            await self.page.keyboard.press("Backspace")
+            await asyncio.sleep(0.1)
         await self.page.keyboard.insert_text(action.value)
         if action.press_enter:
             await self.page.keyboard.press("Enter")
@@ -867,7 +907,8 @@ class PlaywrightDriver:
         agent wants. Playwright then waits ten seconds for a click that can
         never land. Escape closes a well-built widget and does nothing to a page
         without one, so it is tried once, and only when the target really is
-        covered.
+        covered. Tab is tried as a secondary dismissal: some autocomplete
+        dropdowns ignore Escape but close on focus-out.
         """
         try:
             await locator.scroll_into_view_if_needed(timeout=2_000)
@@ -875,6 +916,10 @@ class PlaywrightDriver:
                 return
             await self.page.keyboard.press("Escape")
             await asyncio.sleep(OBSTRUCTION_SETTLE_S)
+            if await self._is_covered(locator):
+                # Escape didn't close it; try Tab (focus-out dismissal).
+                await self.page.keyboard.press("Tab")
+                await asyncio.sleep(OBSTRUCTION_SETTLE_S)
             if await self._is_covered(locator):
                 logger.info("target_still_covered")
         except PlaywrightError as exc:
@@ -924,17 +969,36 @@ class PlaywrightDriver:
         does nothing otherwise, which made this a no-op headless.
         ``window.scrollBy`` is deterministic and still fires scroll events, so
         infinite-scroll pages behave the same.
+
+        A large pixel value (≥ 10 000) is treated as "jump to top/bottom" so
+        the planner can skip long pages in one step.
         """
         delta = action.pixels if action.direction == "down" else -action.pixels
         smooth = self._shows_indicator
         start, room = (0, 0)
         if smooth:
-            start, room = (int(v) for v in await self.page.evaluate(METRICS_JS))
+            try:
+                start, room = (int(v) for v in await self.page.evaluate(METRICS_JS))
+            except PlaywrightError:
+                start, room = 0, 0
         # Nowhere to go (already at the end in that direction): nothing to wait for.
         can_move = (start < room - 1) if delta > 0 else (start > 0)
         # Whatever actually scrolls: the window, or the panel an app shell
         # scrolls instead of it.
         await self.page.evaluate(scroll_by_js("smooth" if smooth else "instant"), delta)
+        # Also try scrolling with the mouse wheel over the viewport centre for
+        # sites that intercept wheel events but ignore programmatic scrollBy.
+        if not can_move or not smooth:
+            # Fire a synthetic wheel event at the viewport centre so event-driven
+            # scroll containers (Flipkart, Amazon sidebars) also advance.
+            try:
+                vp = await self.viewport_size()
+                cx = vp["width"] / 2
+                cy = vp["height"] / 2
+                await self.page.mouse.move(cx, cy)
+                await self.page.mouse.wheel(0, delta)
+            except PlaywrightError:
+                pass
         if smooth and can_move:
             await self._wait_for_scroll(start)
 

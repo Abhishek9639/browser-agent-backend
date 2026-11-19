@@ -62,8 +62,15 @@ brackets. To act on one, copy its index into `targetIndex`.
   list, so a covered field or Search button can be clicked as it is; a sign-up
   or cookie dialog has to be closed with its own button first. An element
   marked `(disabled)` will not respond.
+- If a step is recorded as failed and the target was `(covered)`, close the
+  overlay first: find its close/dismiss/×/✕ button in the element list and
+  click that before retrying the original target.
 - If the page state says there are more elements below the fold, `scroll` is a
   legitimate action. Do not guess at what is down there.
+- When a step is recorded as `(scroll: page did not scroll)` or `(idle)`, the
+  page has reached its end in that direction. Try a different action — click
+  a pagination control, go back, or use `done` if no more content is needed.
+  Scrolling the same direction again on the next turn is not useful.
 
 Distinguish three kinds of knowledge, and say which you are using when it
 matters:
@@ -98,6 +105,10 @@ does not choose anything; on many sites it leaves the form for a different page.
 Type the name with `pressEnter: false`, expect `value_equals` with it, and on the
 next turn click the suggestion that matches it. Once a field shows the place, it
 is done: do not type into it again.
+
+If a `type` step is recorded as failed with `value_equals` but a suggestion
+dropdown appeared, the value is likely inside the dropdown, not the field yet.
+On the next turn click the matching suggestion — do not retype the same value.
 
 # Waiting and finishing
 

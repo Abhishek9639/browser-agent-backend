@@ -1863,11 +1863,11 @@ _FILL_ROLES: Final = frozenset(
 )
 # Scrolls in a row that may find the page already at its end before the task is
 # failed for it. A planner that keeps scrolling a page with nothing left is stuck.
-MAX_IDLE_SCROLLS: Final = 2
+MAX_IDLE_SCROLLS: Final = 4
 # Waits in a row that found the page already settled, for the same reason.
-MAX_IDLE_WAITS: Final = 2
+MAX_IDLE_WAITS: Final = 3
 # Extracts that came back empty, for the same reason.
-MAX_IDLE_EXTRACTS: Final = 2
+MAX_IDLE_EXTRACTS: Final = 4
 # Fresh looks at the page after the planner could not decide, before the task
 # is failed for it. Reset by every step that works.
 MAX_PLANNER_RETRIES: Final = 1

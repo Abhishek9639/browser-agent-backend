@@ -46,7 +46,7 @@ logger = get_logger(__name__)
 
 # difflib ratio at or above this counts as the same label. Below it, a button
 # called "Search" starts matching one called "Clear".
-FUZZY_THRESHOLD: Final = 0.8
+FUZZY_THRESHOLD: Final = 0.65
 
 # What a close button usually says. Ordered so the least destructive reading
 # of the overlay wins: reject before accept, because clicking "Accept all"

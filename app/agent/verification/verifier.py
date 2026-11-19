@@ -556,11 +556,21 @@ def _tab_closed(before: PageState, after: PageState) -> _Outcome:
 
 def _scrolled(before: PageState, after: PageState) -> _Outcome:
     moved = before.scroll.y != after.scroll.y
+    # A scroll that triggered lazy-load content changes the DOM / text even if
+    # the numeric scroll position didn't update (virtual-scroll containers keep
+    # scrollTop at 0 and swap items in place).  Count that as a success too.
+    content_changed = before.dom_hash != after.dom_hash or before.text != after.text
+    ok = moved or content_changed
     return _Outcome(
-        moved,
+        ok,
         Check.SCROLLED,
-        {"check": Check.SCROLLED.value, "before": before.scroll.y, "after": after.scroll.y},
-        "The page scrolled." if moved else "The page did not scroll.",
+        {
+            "check": Check.SCROLLED.value,
+            "before": before.scroll.y,
+            "after": after.scroll.y,
+            "contentChanged": content_changed,
+        },
+        "The page scrolled." if ok else "The page did not scroll.",
     )
 
 
