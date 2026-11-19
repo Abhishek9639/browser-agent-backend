@@ -89,25 +89,44 @@ class StreamService:
             if task is None:
                 return None
 
-            steps = [
-                step
-                for step in await uow.task_steps.list_for_task(task_id)
-                if step.step_number > after_step
-            ]
+            all_steps = await uow.task_steps.list_for_task(task_id)
+            steps = [step for step in all_steps if step.step_number > after_step]
             pending = await uow.approvals.get_pending_for_task(task_id)
             status = TaskStatus(task.status)
             pending_is_open = pending is not None and (
                 ApprovalStatus(pending.approval_status) is ApprovalStatus.PENDING
             )
             approval = pending if pending_is_open else None
-            snapshot = _snapshot(task, len(await uow.task_steps.list_for_task(task_id)))
+            snapshot = _snapshot(task, len(all_steps))
             plan = list(task.plan) if task.plan else None
+
+        # Derive the highest plan step that has been completed so the frontend
+        # can accurately mark items as done vs pending.  We use *all* steps
+        # (not just the ones sent after `after_step`) so a fresh connection
+        # gets the right position even when it missed earlier steps.
+        current_plan_step: int | None = None
+        if plan and all_steps:
+            completed_plan_steps = [
+                s.plan_step
+                for s in all_steps
+                if s.plan_step is not None
+                and StepStatus(s.status) is StepStatus.VERIFIED
+            ]
+            if completed_plan_steps:
+                current_plan_step = max(completed_plan_steps)
 
         events: list[AnyEvent] = [
             StatusEvent(task_id=task_id, status=status, seq=REPLAY_SEQ),
         ]
         if plan:
-            events.append(PlanEvent(task_id=task_id, steps=plan, seq=REPLAY_SEQ))
+            events.append(
+                PlanEvent(
+                    task_id=task_id,
+                    steps=plan,
+                    current_step=current_plan_step,
+                    seq=REPLAY_SEQ,
+                )
+            )
 
         for step in steps:
             events.append(await self._step_event(task_id, step))

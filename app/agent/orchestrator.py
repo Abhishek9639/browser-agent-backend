@@ -780,6 +780,17 @@ class Orchestrator:
             if decision.action is ActionType.DONE:
                 raise _Stop(TaskStatus.COMPLETED, final_answer=decision.final_answer)
 
+            # After a verified step, tell the frontend the plan item is done.
+            # _follow_plan sends current_step=plan_at BEFORE the step runs
+            # (item is "active"). Here we advance it to plan_at+1 (item is
+            # "completed") so the tick appears the moment the step succeeds.
+            if outline and plan_at is not None:
+                next_at = min(plan_at + 1, len(outline))
+                await self._events.publish(
+                    task_id,
+                    PlanEvent(task_id=task_id, steps=outline, current_step=next_at),
+                )
+
             # The page as it is now is what the next step plans against.
             state = after
             await self._set_status(task_id, TaskStatus.PLANNING)
@@ -1667,20 +1678,46 @@ class Orchestrator:
             : min(room, MAX_PLAN_ADDS_PER_STEP)
         ]
         if not added:
-            return outline, min(max(current, 1), len(outline))
+            new_at = min(max(current, 1), len(outline))
+            # Plan didn't change — just broadcast the current position so the
+            # frontend can tick the right item. No DB write needed.
+            await self._events.publish(
+                task_id,
+                PlanEvent(task_id=task_id, steps=outline, current_step=new_at),
+            )
+            return outline, new_at
 
         at = min(max(current, 1), len(outline) + 1)
         grown = outline[: at - 1] + added + outline[at - 1 :]
-        await self._save_plan(task_id, grown)
+        await self._save_plan(task_id, grown, current_step=at)
         logger.info("plan_grew", added=len(added), steps=len(grown))
         return grown, at
 
-    async def _save_plan(self, task_id: uuid.UUID, steps: list[str]) -> None:
-        """Store the plan on the task, then send it: a reconnecting client gets it too."""
-        async with self._unit_of_work() as uow:
-            task = await uow.tasks.get_or_404(task_id)
-            task.plan = steps
-        await self._events.publish(task_id, PlanEvent(task_id=task_id, steps=steps))
+    async def _save_plan(
+        self,
+        task_id: uuid.UUID,
+        steps: list[str],
+        current_step: int | None = None,
+        *,
+        persist: bool = True,
+    ) -> None:
+        """Store the plan on the task, then send it: a reconnecting client gets it too.
+
+        ``current_step`` tells the frontend which item is active so it can
+        mark earlier items as completed and later ones as pending.
+
+        ``persist`` controls whether the plan is written to the database.
+        Set it to False when only the current-step cursor moved so a DB write
+        is not triggered on every loop iteration.
+        """
+        if persist:
+            async with self._unit_of_work() as uow:
+                task = await uow.tasks.get_or_404(task_id)
+                task.plan = steps
+        await self._events.publish(
+            task_id,
+            PlanEvent(task_id=task_id, steps=steps, current_step=current_step),
+        )
 
     async def _instruction(self, task_id: uuid.UUID) -> str:
         async with self._unit_of_work() as uow:

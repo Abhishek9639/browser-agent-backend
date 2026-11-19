@@ -142,10 +142,16 @@ class PlanEvent(BaseEvent):
     Sent when the plan is made, once the site is open and its questions are
     answered, and again whenever the agent adds an item it found the plan
     missing. Each one replaces the last.
+
+    ``current_step`` is the 1-based index of the plan item the agent is
+    actively working on when this event is sent. Items before it are
+    completed; items at or after it are pending. ``None`` means the agent
+    has not started executing yet (the plan was just made).
     """
 
     type: Literal[EventType.PLAN] = EventType.PLAN
     steps: list[str]
+    current_step: int | None = None
 
 
 class StepEvent(BaseEvent):
