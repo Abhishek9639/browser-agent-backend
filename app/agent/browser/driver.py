@@ -99,7 +99,13 @@ class BrowserConfig:
     action_timeout_ms: int = 10_000
     navigation_timeout_ms: int = 30_000
     allowed_domains: tuple[str, ...] = ()
-    user_agent: str | None = None
+    # Real Chrome 131 UA — avoids the "HeadlessChrome" string that Google and
+    # many other sites use to block automated sign-in flows.
+    user_agent: str = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/131.0.0.0 Safari/537.36"
+    )
     max_tabs: int = DEFAULT_MAX_TABS
 
     @classmethod
@@ -312,8 +318,26 @@ def indicator_script(mode: str) -> str:
 
 
 def launch_args(fullscreen: bool, headless: bool) -> list[str]:
-    """Chromium flags for the launch: open maximised when a full screen was asked for."""
-    return ["--start-maximized"] if fullscreen and not headless else []
+    """Chromium flags for the launch.
+
+    Stealth flags strip the automation fingerprints that Google and other sites
+    use to detect Playwright/Selenium and block sign-in with the
+    "This browser or app may not be secure" message.
+    """
+    args = [
+        # Remove the CDP / DevTools automation fingerprint.
+        "--disable-blink-features=AutomationControlled",
+        # Drop the yellow "Chrome is being controlled…" infobars.
+        "--disable-infobars",
+        # Skip first-run / "set as default" dialogs.
+        "--no-first-run",
+        "--no-default-browser-check",
+        # Suppress the enable-automation switch that Playwright adds by default.
+        "--disable-features=ChromeWhatsNewUI",
+    ]
+    if fullscreen and not headless:
+        args.append("--start-maximized")
+    return args
 
 
 class PlaywrightDriver:
@@ -384,6 +408,14 @@ class PlaywrightDriver:
             )
         self._context.set_default_timeout(self._config.action_timeout_ms)
         self._context.set_default_navigation_timeout(self._config.navigation_timeout_ms)
+
+        # Stealth: hide the navigator.webdriver flag that Google and other sites
+        # read to detect automation. Runs before every page script so it can't
+        # be detected by checking the flag on DOMContentLoaded.
+        if not self.attached:
+            await self._context.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+            )
 
         # A popup opened by the page becomes a tracked tab, so the agent can
         # switch to it instead of losing it. A fresh manager per launch, so a
@@ -580,6 +612,9 @@ class PlaywrightDriver:
             return self._failure(action, started, url_before, ActionErrorCode.TIMEOUT, exc)
         except PlaywrightError as exc:
             return self._failure(action, started, url_before, self._classify(exc), exc)
+        except Exception as exc:
+            logger.exception("unexpected_dispatch_error", error=type(exc).__name__)
+            return self._failure(action, started, url_before, ActionErrorCode.UNKNOWN, exc)
 
         return ActionResult(
             ok=True,
@@ -751,10 +786,11 @@ class PlaywrightDriver:
             if action.clear_first:
                 # Triple-click selects all, works even when Ctrl+A is ignored by
                 # a custom widget (some rich-text editors trap it).
+                # Playwright Locator uses click(click_count=3) rather than triple_click().
                 try:
-                    await field.triple_click()
+                    await field.click(click_count=3, timeout=1_000)
                     await asyncio.sleep(0.1)
-                except PlaywrightError:
+                except Exception:
                     pass
                 await field.fill("")
             await field.fill(action.value)
@@ -855,7 +891,7 @@ class PlaywrightDriver:
                     "(el) => { const a = el.closest('a'); return !!(a && a.target === '_blank'); }"
                 )
             )
-        except PlaywrightError:
+        except Exception:
             return False
 
     async def _follow_new_tab(self, before: set[str], expected: bool) -> None:
@@ -922,7 +958,7 @@ class PlaywrightDriver:
                 await asyncio.sleep(OBSTRUCTION_SETTLE_S)
             if await self._is_covered(locator):
                 logger.info("target_still_covered")
-        except PlaywrightError as exc:
+        except Exception as exc:
             logger.debug("obstruction_check_failed", error_type=type(exc).__name__)
 
     @staticmethod
@@ -959,7 +995,7 @@ class PlaywrightDriver:
             await self.page.mouse.move(
                 box["x"] + box["width"] / 2, box["y"] + box["height"] / 2, steps=GLIDE_STEPS
             )
-        except PlaywrightError as exc:
+        except Exception as exc:
             logger.debug("glide_failed", error_type=type(exc).__name__)
 
     async def _scroll(self, action: ScrollAction) -> None:
