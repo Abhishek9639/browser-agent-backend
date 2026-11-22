@@ -23,6 +23,7 @@ from app.core.logging import get_logger
 
 __all__ = [
     "DEFAULT_MAX_ATTEMPTS",
+    "LLMAccessDenied",
     "LLMBadOutput",
     "LLMClient",
     "LLMError",
@@ -111,6 +112,10 @@ class LLMResponse:
 
 class LLMError(Exception):
     """Base for every provider failure."""
+
+
+class LLMAccessDenied(LLMError):
+    """Credentials or project permissions were rejected; retrying cannot fix them."""
 
 
 class LLMTimeout(LLMError):

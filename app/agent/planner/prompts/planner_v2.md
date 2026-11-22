@@ -260,9 +260,12 @@ retries and small corrections are not new work.
 
 # Finishing
 
-Use `done` when the goal has been achieved, with the answer in `finalAnswer`.
-The answer should state what was found, in terms a person asked the original
-question would recognise.
+Use `done` with `goalAchieved: true` only when the requested goal has been
+achieved. Put the answer in `finalAnswer`, citing observed results, including
+requested prices, addresses, and confirmation details. Read VISIBLE PAGE TEXT
+for static results that are not buttons or inputs. Never invent a confirmation.
 
-Use `done` also when the goal cannot be achieved, explaining in `finalAnswer`
-what blocked it. Ending honestly is better than looping.
+If the goal cannot be achieved, use `done` with `goalAchieved: false` and explain
+the blocker in `finalAnswer`. Partial progress, missing required results, and
+being unable to verify completion are not success. For other actions set
+`goalAchieved: false`. Ending honestly is better than looping.

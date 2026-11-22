@@ -2517,3 +2517,35 @@ async def test_asking_for_details_again_and_again_ends_the_task(settings: Settin
 
     assert outcome.status is TaskStatus.EXECUTION_FAILED
     assert len(gate.requests) == MAX_DETAIL_PAUSES
+
+
+def test_provider_access_failure_explains_key_configuration_without_echoing_secrets() -> None:
+    from app.agent.llm.base import LLMAccessDenied
+    from app.agent.orchestrator import _safe_reason
+
+    reason = _safe_reason(LLMAccessDenied("private-provider-response"))
+    assert "API key" in reason
+    assert "private-provider-response" not in reason
+    assert "internal error" not in reason
+
+
+async def test_a_blocked_done_is_failed_and_never_cached_as_success(settings: Settings) -> None:
+    cache = RecordingCache()
+    blocker = "The selected ride confirmation is missing."
+    rig = build(
+        script=[decision_payload(), done_payload(blocker) | {"goalAchieved": False}],
+        settings=settings,
+        cache=cache,
+    )
+    outcome = await rig.orchestrator.run(TASK_ID)
+    assert outcome.status is TaskStatus.EXECUTION_FAILED
+    assert outcome.final_answer is None
+    assert outcome.failure_reason == blocker
+    assert rig.store.task.status is TaskStatus.EXECUTION_FAILED
+    assert rig.store.task.final_answer is None
+    assert rig.store.task.failure_reason == blocker
+    assert cache.saved is None
+    final = rig.bus.published[-1]
+    assert final.type == "final"
+    assert final.status is TaskStatus.EXECUTION_FAILED
+    assert final.failure_reason == blocker

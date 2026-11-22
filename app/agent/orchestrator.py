@@ -59,7 +59,7 @@ from app.agent.contracts import (
     Verdict,
     Verifier,
 )
-from app.agent.llm.base import LLMRateLimited, LLMTimeout, LLMUnavailable
+from app.agent.llm.base import LLMAccessDenied, LLMRateLimited, LLMTimeout, LLMUnavailable
 from app.agent.perception.dom_extractor import MASK, ElementInfo, PageNotReadyError
 from app.agent.perception.overlays import is_blocked, safe_closers
 from app.agent.perception.state import PageState
@@ -140,6 +140,10 @@ _SAFE_REASONS: Final[tuple[tuple[type[BaseException], str], ...]] = (
     ),
     # These three are ordinary weather rather than a bug in the task, and a
     # user who is told "internal error" has no idea whether to try again.
+    (
+        LLMAccessDenied,
+        "The model provider rejected access. Check the API key and its project/API permissions.",
+    ),
     (LLMRateLimited, "The model provider is rate limiting this account. Try again shortly."),
     (LLMTimeout, "The model did not answer in time."),
     (LLMUnavailable, "The model provider is unavailable."),
@@ -771,6 +775,13 @@ class Orchestrator:
             missed_forecasts = 0
             planner_retries = 0
             if decision.action is ActionType.DONE:
+                if not decision.goal_achieved:
+                    raise _Stop(
+                        TaskStatus.EXECUTION_FAILED,
+                        failure_reason=(decision.final_answer or "The goal could not be achieved.")[
+                            :2000
+                        ],
+                    )
                 raise _Stop(TaskStatus.COMPLETED, final_answer=decision.final_answer)
 
             # The page as it is now is what the next step plans against.

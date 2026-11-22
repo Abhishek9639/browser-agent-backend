@@ -86,9 +86,8 @@ class PageState(BaseModel):
     # The compact section 4.6 rendering. This, not `elements`, is what reaches
     # the model.
     summary_text: str = ""
-    # The page's visible text, clipped. Deliberately not sent to the model:
-    # it exists so the section 4.7 text_present check can look at what a
-    # person would read, rather than only at the interactive elements.
+    # Visible text for verification and bounded planner context, including
+    # static results and confirmations that have no interactive element.
     text: str = ""
     dom_hash: str = ""
     # Every frame's URL, main frame first. A link inside an iframe navigates
@@ -96,6 +95,15 @@ class PageState(BaseModel):
     # looked at `url` would call a working click a failure.
     frame_urls: list[str] = Field(default_factory=list)
     captured_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @property
+    def planner_summary(self) -> str:
+        """Controls plus bounded readable results; callers must fence as untrusted."""
+        if not self.text.strip():
+            return self.summary_text
+        return (
+            f"{self.summary_text}\n\nVISIBLE PAGE TEXT (up to 4000 characters)\n{self.text[:4000]}"
+        )
 
     @property
     def element_count(self) -> int:

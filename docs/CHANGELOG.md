@@ -857,3 +857,12 @@ Added
 - Scroll active autocomplete lists, focused panels and visible dialogs before the background page, using the same metrics for verification.
 - Added local cab-form regression coverage. Live Uber reproduction remains unverified pending the actual task and real-provider configuration; see `docs/phase-notes/input-and-scroll-reliability.md`.
 - Verified all 20 focused input/scroll cases across the focused run and corrected cab-form recheck; the full suite has not been rerun after this follow-up.
+
+### Gemini live-task reliability — 2026-11-22
+
+- Include bounded visible page text inside the planner's untrusted-data fence, so static prices and confirmations can be read alongside interactive controls.
+- Add a structured `goalAchieved` result. A planner that stops with an unmet goal now produces `EXECUTION_FAILED` and cannot save a successful replay.
+- Treat invalid Gemini keys and denied API access as actionable, non-retryable errors without exposing vendor response bodies in exception tracebacks.
+- Try configured Gemini backup models after transient provider unavailability, including HTTP 503; briefly skip the unavailable primary.
+- Make the local cab fixture show a visible selection confirmation, and explicitly request flight number and price in the live smoke test.
+- Regression checks: 1,566 non-browser unit/integration tests passed before the final HTTP-503 fallback adjustment; 237 focused tests then passed including the fallback regression. Live rechecks and CI results are recorded in the phase note.
