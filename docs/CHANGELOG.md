@@ -834,3 +834,26 @@ Added
 - `.gitignore`, `.editorconfig`, `.env.example`, and `.pre-commit-config.yaml` with ruff, ruff-format, end-of-file, trailing-whitespace and a gitleaks secret scanner.
 - `README.md` skeleton and this changelog.
 - Smoke tests so the suite runs and the async mode is proven.
+
+
+## Local reliability review — 2026-11-21
+
+- Fixed verification that treated unchanged pages as successful progress.
+- Serialized refresh-token rotation; handled competing registrations and long user-agent headers. Moved password hashing and verification off the event loop.
+- Committed request transactions before successful responses, with regression coverage for commit failures.
+- Cleaned resources after failed startup, validated provider configuration before accepting tasks, and enforced the configured per-user concurrency limit.
+- Added an optional default start URL for prompt-only frontend submissions; rejected malformed navigation URLs without server errors.
+- Reserved credits for replays, repaired special-character database credentials and Alembic URL escaping, and protected test/migration databases from application database overrides.
+- Updated eight vulnerable locked dependencies, fixed lint issues and browser-test markers, and added concurrency, lifecycle, URL and billing regression coverage.
+- Added a runnable API/WebSocket/browser smoke test and a local presentation guide.
+- Fixed macOS editor replacement shortcuts and missing-selector extraction failures; kept the current browser intact when a fallback cannot launch. Browser setup now installs Chromium and Firefox.
+- Updated multi-tab and overlay tests to check the current behavior, and exercised recovery with a real injected missing-element failure.
+- Pinned Playwright 1.65.2 and aligned the Docker image. The local Firefox profile-startup issue persists despite the upstream update and is documented explicitly.
+- Final full suite: 1,777 passed, one skipped (live provider credentials), one failed (local Firefox startup). All integration and chaos tests pass; the live Chromium demo passes. Added a direct browser diagnostic.
+
+### Input and scrolling follow-up
+
+- Fixed append semantics, partial-value acceptance, hidden input selection and unsafe keyboard fallback targets.
+- Scroll active autocomplete lists, focused panels and visible dialogs before the background page, using the same metrics for verification.
+- Added local cab-form regression coverage. Live Uber reproduction remains unverified pending the actual task and real-provider configuration; see `docs/phase-notes/input-and-scroll-reliability.md`.
+- Verified all 20 focused input/scroll cases across the focused run and corrected cab-form recheck; the full suite has not been rerun after this follow-up.

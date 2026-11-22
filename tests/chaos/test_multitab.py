@@ -2,8 +2,8 @@
 
 SkyFare's ``newtab`` chaos configuration puts ``target="_blank"`` on every
 Select link, which is how a real airline site behaves and the case the session
-manager exists for: the click opens a tab, the agent is still on the old one,
-and getting the detail means switching, reading, and switching back.
+manager exists for: the click opens and activates a tab, and the agent reads
+its detail before switching back to the original results.
 
 The planner here is deterministic and reads only the compact page summary, the
 same text a model would be shown. That is the point: if the ``Tabs:`` header
@@ -258,16 +258,18 @@ async def test_the_agent_reads_a_detail_tab_and_comes_back(
     )
 
     assert outcome.status is TaskStatus.COMPLETED, outcome.final_answer
-    assert planner.actions == ["click", "switch_tab", "extract", "switch_tab", "done"]
+    # The driver follows target=_blank automatically, so no redundant switch
+    # is required before reading the newly active detail page.
+    assert planner.actions == ["click", "extract", "switch_tab", "done"]
     assert "Rs" in (outcome.final_answer or "")
 
     uow = UnitOfWork(chaos_session)
     steps = await uow.task_steps.list_for_task(task.id)
 
-    # Every step passed its own check, the two switches included. Those are
+    # Every step passed its own check, the return switch included. Switches are
     # verified against the tab registry rather than the URL, which is the point:
     # switching tabs leaves the top-level URL of neither tab changed.
-    assert [step.status for step in steps] == [StepStatus.VERIFIED] * 5, [
+    assert [step.status for step in steps] == [StepStatus.VERIFIED] * 4, [
         (step.action.value, step.status.value) for step in steps
     ]
     # The step log distinguishes the tabs, so the activity feed can say where
@@ -307,6 +309,8 @@ async def test_the_tab_the_link_opened_is_named_in_the_header(
     # and the tab the link opened is named by the flight it shows.
     assert any(tabs.labelled(DESTINATION) for tabs in two_tabs), planner.tab_lines
     assert any(tabs.labelled("-") for tabs in two_tabs), planner.tab_lines
-    # A tab nobody has looked at yet is listed by id alone, which is honest:
-    # perception is the only thing that knows what a tab holds.
-    assert any(label == "" for tabs in two_tabs for _, label, _ in tabs.entries), planner.tab_lines
+    # Following the popup perceives it immediately. Its label must be present,
+    # and the active marker must move back to the results after extraction.
+    assert two_tabs[0].active == "t2"
+    assert all(label for _, label, _ in two_tabs[0].entries)
+    assert two_tabs[-1].active == "t1"

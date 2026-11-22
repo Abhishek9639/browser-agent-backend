@@ -751,8 +751,8 @@ async def test_typing_into_a_button_is_a_clear_failure_not_unknown(
 
     result = await driver.execute(TypeAction(selector="#swap", value="hello"))
 
-    # Nothing to fill, so the keyboard path runs; the button simply holds no text.
-    assert result.error_code is not ActionErrorCode.UNKNOWN
+    assert not result.ok
+    assert result.error_code is ActionErrorCode.NOT_INTERACTABLE
 
 
 async def test_a_page_that_scrolls_an_inner_panel_can_be_scrolled_and_measured(
@@ -1016,3 +1016,126 @@ async def test_inserting_a_program_replaces_what_the_editor_held(
     await driver.execute(TypeAction(selector="#editor", value="x = 1\ny = 2", clear_first=True))
 
     assert await driver.page.input_value("#editor") == "x = 1\ny = 2"
+
+
+async def test_unavailable_fallback_preserves_existing_page(
+    driver: PlaywrightDriver,
+    html_server: str,
+) -> None:
+    await goto(driver, html_server, "buttons.html")
+    original_page = driver.page
+    await driver.page.evaluate("window.savedState = 'preserved'")
+    assert not await driver._switch_browser("not-an-installed-browser")
+    assert driver.page is original_page
+    assert await driver.page.evaluate("window.savedState") == "preserved"
+    assert await driver.page.title() == "Buttons"
+
+
+@pytest.mark.parametrize("initial,value", [("New ", "Delhi"), ("", ""), ("दिल्ली", " स्टेशन")])
+async def test_input_appends_without_erasing_existing_text(
+    driver: PlaywrightDriver, initial: str, value: str
+) -> None:
+    await driver.page.set_content('<input id="address">')
+    await driver.page.fill("#address", initial)
+    result = await driver.execute(TypeAction(selector="#address", value=value, clear_first=False))
+    assert result.ok, result.error_message
+    assert await driver.page.input_value("#address") == initial + value
+
+
+async def test_input_truncation_is_reported_before_enter(driver: PlaywrightDriver) -> None:
+    await driver.page.set_content(
+        '<input id="address" maxlength="3" onkeydown="if(event.key===\'Enter\') window.sent=true">'
+    )
+    result = await driver.execute(
+        TypeAction(selector="#address", value="New Delhi", press_enter=True)
+    )
+    assert not result.ok
+    assert result.error_code is ActionErrorCode.NOT_INTERACTABLE
+    assert not await driver.page.evaluate("!!window.sent")
+
+
+async def test_wrapper_ignores_hidden_input_clones(driver: PlaywrightDriver) -> None:
+    await driver.page.set_content(
+        '<div id="wrapper"><input style="display:none"><input id="visible"></div>'
+    )
+    result = await driver.execute(TypeAction(selector="#wrapper", value="Delhi"))
+    assert result.ok, result.error_message
+    assert await driver.page.input_value("#visible") == "Delhi"
+
+
+async def test_noneditable_click_does_not_erase_an_unrelated_field(
+    driver: PlaywrightDriver,
+) -> None:
+    await driver.page.set_content('<input id="keep" value="Keep me"><div id="map">Map</div>')
+    await driver.page.focus("#keep")
+    result = await driver.execute(TypeAction(selector="#map", value="New Delhi"))
+    assert not result.ok
+    assert await driver.page.input_value("#keep") == "Keep me"
+
+
+async def test_scroll_uses_small_focused_panel_even_with_scrollable_page(
+    driver: PlaywrightDriver,
+) -> None:
+    await driver.page.set_content(
+        '<body style="height:3000px"><div id="rides" style="height:180px;width:250px;'
+        'overflow:auto"><input id="pickup"><div style="height:1500px">Rides</div></div>'
+    )
+    await driver.page.focus("#pickup")
+    result = await driver.execute(ScrollAction(pixels=400))
+    assert result.ok
+    assert await driver.page.evaluate("document.querySelector('#rides').scrollTop") == 400
+    assert await driver.page.evaluate("window.scrollY") == 0
+    assert (await driver.capture_state()).scroll_y == 400
+
+
+async def test_scroll_uses_dialog_instead_of_background(driver: PlaywrightDriver) -> None:
+    await driver.page.set_content(
+        '<body style="height:3000px"><div role="dialog" id="dialog" style="position:fixed;'
+        'top:40px;left:40px;width:250px;height:180px;overflow:auto;background:white">'
+        '<div style="height:1500px">Options</div></div>'
+    )
+    result = await driver.execute(ScrollAction(pixels=400))
+    assert result.ok
+    assert await driver.page.evaluate("document.querySelector('#dialog').scrollTop") == 400
+    assert await driver.page.evaluate("window.scrollY") == 0
+    assert (await driver.capture_state()).scroll_y == 400
+
+
+async def test_scroll_uses_autocomplete_popup_controlled_by_focused_field(
+    driver: PlaywrightDriver,
+) -> None:
+    await driver.page.set_content(
+        '<body style="height:3000px"><input id="address" aria-expanded="true" '
+        'aria-controls="suggestions"><div id="suggestions" role="listbox" '
+        'style="width:250px;height:180px;overflow:auto"><div style="height:1500px">'
+        "Address suggestions</div></div>"
+    )
+    await driver.page.focus("#address")
+    result = await driver.execute(ScrollAction(pixels=400))
+    assert result.ok
+    assert await driver.page.evaluate("document.querySelector('#suggestions').scrollTop") == 400
+    assert await driver.page.evaluate("window.scrollY") == 0
+
+
+async def test_cab_details_and_ride_options_without_booking(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    await goto(driver, html_server, "cab_form.html")
+    result = await driver.execute(TypeAction(selector="#pickup", value="New Delhi Railway Station"))
+    assert result.ok, result.error_message
+    assert (await driver.execute(ClickAction(selector="#suggestion"))).ok
+    assert await driver.page.input_value("#pickup") == "New Delhi Railway Station"
+    result = await driver.execute(TypeAction(selector="#dropoff", value="India Gate"))
+    assert result.ok, result.error_message
+    assert (await driver.execute(ClickAction(selector="#see-rides"))).ok
+    max_scroll = await driver.page.locator("#rides").evaluate(
+        "el => el.scrollHeight - el.clientHeight"
+    )
+    assert max_scroll > 0
+    result = await driver.execute(ScrollAction(pixels=600))
+    assert result.ok, result.error_message
+    assert (await driver.capture_state()).scroll_y == min(600, max_scroll)
+    assert await driver.page.evaluate("window.scrollY") == 0
+    assert (await driver.execute(ClickAction(selector="#ride-option"))).ok
+    assert await driver.page.evaluate("window.selectedRide") == "Demo ride"
+    assert not await driver.page.evaluate("!!window.booked")

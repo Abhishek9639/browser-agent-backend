@@ -68,3 +68,36 @@ def test_env_example_documents_every_setting() -> None:
 
     assert declared - documented == set(), "undocumented settings"
     assert documented - declared == set(), "stale entries in .env.example"
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "AGENT_MAX_CONCURRENT_TASKS",
+        "AGENT_MAX_CONCURRENT_TASKS_PER_USER",
+        "AGENT_MAX_STEPS",
+        "AGENT_MAX_TASK_SECONDS",
+        "AGENT_MAX_TABS",
+    ],
+)
+def test_zero_agent_limits_are_rejected(field: str) -> None:
+    with pytest.raises(ValueError):
+        Settings(**{field: 0})
+
+
+def test_test_database_cannot_point_at_application_database() -> None:
+    with pytest.raises(ValueError, match="must differ"):
+        _ = Settings(POSTGRES_TEST_DB="agent_core").test_database_url
+    with pytest.raises(ValueError, match="must differ"):
+        _ = Settings(
+            DATABASE_URL="postgresql+asyncpg://user:pass@localhost/agent_core_test"
+        ).test_database_url
+
+
+def test_database_credentials_round_trip_with_spaces_and_percent() -> None:
+    from sqlalchemy.engine import make_url
+
+    configured = Settings(POSTGRES_USER="local user", POSTGRES_PASSWORD="a b%/c@d")
+    parsed = make_url(configured.database_url)
+    assert parsed.username == "local user"
+    assert parsed.password == "a b%/c@d"

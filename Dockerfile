@@ -11,7 +11,7 @@
 # Microsoft has already done.
 
 # ----------------------------------------------------------------- base
-FROM mcr.microsoft.com/playwright/python:v1.63.0-noble AS base
+FROM mcr.microsoft.com/playwright/python:v1.65.2-noble AS base
 
 # Bytecode on import is wasted work in a container that is replaced rather than
 # restarted; unbuffered output is what makes `docker logs` useful during a hang.

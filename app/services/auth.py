@@ -5,7 +5,10 @@ forbids logging or storing a password, so nothing here ever puts the plaintext
 into a log line, an audit row, or an exception message.
 """
 
+import asyncio
 from datetime import UTC, datetime, timedelta
+
+from sqlalchemy.exc import IntegrityError
 
 from app.core.config import Settings
 from app.core.errors import Conflict, InvalidCredentials, RefreshTokenReuse, Unauthorized
@@ -59,14 +62,20 @@ class AuthService:
         if await self._uow.users.email_exists(email):
             raise Conflict("That email is already registered.")
 
-        user = await self._uow.users.add(
-            User(
-                name=name,
-                email=email,
-                password_hash=hash_password(password),
-                role=UserRole.TASK_SUBMITTER,
+        try:
+            user = await self._uow.users.add(
+                User(
+                    name=name,
+                    email=email,
+                    password_hash=await asyncio.to_thread(hash_password, password),
+                    role=UserRole.TASK_SUBMITTER,
+                )
             )
-        )
+        except IntegrityError as exc:
+            # A competing registration may win after email_exists returned false.
+            if getattr(exc.orig, "sqlstate", None) == "23505":
+                raise Conflict("That email is already registered.") from None
+            raise
 
         # Queued in this transaction, not called. Registration must not fail
         # because payments is restarting: the account exists either way and the
@@ -92,11 +101,11 @@ class AuthService:
         user = await self._uow.users.get_by_email(email)
 
         if user is None:
-            verify_password(password, DUMMY_HASH)
+            await asyncio.to_thread(verify_password, password, DUMMY_HASH)
             await self._audit_failed_login(email, reason="unknown_email")
             raise InvalidCredentials
 
-        if not verify_password(password, user.password_hash):
+        if not await asyncio.to_thread(verify_password, password, user.password_hash):
             await self._audit_failed_login(email, reason="bad_password", user_id=str(user.id))
             raise InvalidCredentials
 
@@ -128,8 +137,8 @@ class AuthService:
                 user_id=user.id,
                 token_hash=hash_refresh_token(raw),
                 expires_at=datetime.now(UTC) + self._settings.refresh_token_ttl,
-                user_agent=(user_agent or None),
-                ip=(ip or None),
+                user_agent=(user_agent[:512] if user_agent else None),
+                ip=(ip[:45] if ip else None),
             )
         )
         return raw
@@ -180,8 +189,8 @@ class AuthService:
                 user_id=user.id,
                 token_hash=hash_refresh_token(raw),
                 expires_at=datetime.now(UTC) + self._settings.refresh_token_ttl,
-                user_agent=(user_agent or None),
-                ip=(ip or None),
+                user_agent=(user_agent[:512] if user_agent else None),
+                ip=(ip[:45] if ip else None),
             )
         )
         await self._uow.refresh_tokens.revoke(presented, replaced_by=replacement)

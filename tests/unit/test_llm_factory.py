@@ -1,6 +1,7 @@
 """B12: building the configured client."""
 
 import pytest
+from pydantic import SecretStr
 
 from app.agent.llm.base import FallbackLLM, LLMClient, RetryingLLM
 from app.agent.llm.factory import (
@@ -129,3 +130,19 @@ def test_a_mock_in_production_refuses_to_start() -> None:
 @pytest.mark.parametrize("env", [AppEnv.DEV, AppEnv.TEST])
 def test_the_mock_is_fine_outside_production(env: AppEnv) -> None:
     assert build_llm(Settings(APP_ENV=env, LLM_PROVIDER="mock")).provider == "mock"
+
+
+def test_mock_fallback_is_refused_in_production(settings):
+    from app.agent.llm.factory import MockInProductionError, validate_llm_settings
+    from app.core.config import AppEnv
+
+    configured = settings.model_copy(
+        update={
+            "APP_ENV": AppEnv.PROD,
+            "LLM_PROVIDER": "openai",
+            "OPENAI_API_KEY": SecretStr("test-key"),
+            "LLM_FALLBACK_PROVIDER": "mock",
+        }
+    )
+    with pytest.raises(MockInProductionError):
+        validate_llm_settings(configured)

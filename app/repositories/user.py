@@ -34,7 +34,14 @@ class RefreshTokenRepository(BaseRepository[RefreshToken]):
 
     async def get_by_token_hash(self, token_hash: str) -> RefreshToken | None:
         """The stored record for a presented cookie. Only hashes are stored."""
-        stmt = select(RefreshToken).where(RefreshToken.token_hash == token_hash)
+        # Rotation and logout must serialize on the same row. Without a lock,
+        # two requests can both observe an unused token and mint successors.
+        stmt = (
+            select(RefreshToken)
+            .where(RefreshToken.token_hash == token_hash)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
         token: RefreshToken | None = await self.session.scalar(stmt)
         return token
 

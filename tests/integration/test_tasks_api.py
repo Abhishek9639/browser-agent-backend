@@ -890,3 +890,28 @@ async def test_the_decision_is_audited(
         .all()
     )
     assert any(row.action == "APPROVAL_GRANTED" for row in rows)
+
+
+async def test_prompt_only_submission_uses_configured_demo_page(
+    client: AsyncClient,
+    auth: dict[str, str],
+    tasks_app: FastAPI,
+) -> None:
+    tasks_app.state.settings = tasks_app.state.settings.model_copy(
+        update={"AGENT_DEFAULT_START_URL": "http://localhost:8200/"}
+    )
+    response = await create(client, auth)
+    assert response.status_code == 201, response.text
+    assert response.json()["startUrl"] == "http://localhost:8200/"
+
+
+@pytest.mark.parametrize(
+    "url", ["http://localhost:bad/", "http://[broken/", "http://localhost:99999/"]
+)
+async def test_malformed_start_url_is_a_client_error(
+    client: AsyncClient,
+    auth: dict[str, str],
+    url: str,
+) -> None:
+    response = await create(client, auth, startUrl=url)
+    assert response.status_code == 400, response.text

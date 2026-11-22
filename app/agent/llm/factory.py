@@ -138,6 +138,30 @@ def _build_bare(name: str, settings: Settings) -> LLMClient:
     return _paced(normalised, _BUILDERS[normalised](settings), settings)
 
 
+def validate_llm_settings(settings: Settings, *, provider: str | None = None) -> None:
+    """Reject unusable provider configuration before accepting work; no API calls."""
+    names = [provider or settings.LLM_PROVIDER, settings.LLM_FALLBACK_PROVIDER or ""]
+    for index, raw in enumerate(names):
+        name = raw.strip().lower()
+        if not name and index == 1:
+            continue
+        if name not in KNOWN_PROVIDERS:
+            raise UnknownProviderError(
+                f"{raw!r} is not a known LLM provider. Choose one of: {', '.join(KNOWN_PROVIDERS)}."
+            )
+        if settings.is_prod and name == "mock":
+            raise MockInProductionError("The mock provider cannot be used when APP_ENV is 'prod'.")
+        key_names = {
+            "anthropic": "ANTHROPIC_API_KEY",
+            "openai": "OPENAI_API_KEY",
+            "gemini": "GOOGLE_API_KEY",
+            "groq": "GROQ_API_KEY",
+        }
+        if name in key_names:
+            env_var = key_names[name]
+            _require_key(name, getattr(settings, env_var), env_var)
+
+
 def build_llm(settings: Settings, *, provider: str | None = None) -> LLMClient:
     """The client the planner should use.
 
@@ -146,6 +170,7 @@ def build_llm(settings: Settings, *, provider: str | None = None) -> LLMClient:
     tried only when the first is unreachable, never when the model simply
     answered badly.
     """
+    validate_llm_settings(settings, provider=provider)
     name = (provider or settings.LLM_PROVIDER).strip().lower()
     fallback = (settings.LLM_FALLBACK_PROVIDER or "").strip().lower()
     has_fallback = bool(fallback) and fallback != name
@@ -156,16 +181,6 @@ def build_llm(settings: Settings, *, provider: str | None = None) -> LLMClient:
         retry_rate_limits=True,
         max_retry_wait_s=15.0 if has_fallback else 90.0,
     )
-
-    if settings.is_prod and name == "mock":
-        # Fatal, not a warning. An agent running on the mock accepts tasks,
-        # streams steps and reports success while making no real decisions,
-        # which is far worse than a service that refuses to start.
-        raise MockInProductionError(
-            "LLM_PROVIDER is 'mock' but APP_ENV is 'prod'. "
-            "The agent would appear to work while making no real decisions. "
-            "Set a real provider, or set APP_ENV to dev or test."
-        )
 
     if has_fallback:
         client = FallbackLLM(client, RetryingLLM(_build_bare(fallback, settings)))

@@ -85,7 +85,8 @@ class CreateTaskRequest(CamelModel):
             max_length=MAX_START_URL_LENGTH,
             description=(
                 "Where to begin. Must be http or https and inside the "
-                "configured domain allow-list. Omit to start from a blank page."
+                "configured domain allow-list. Omit to use the configured default start URL, "
+                "or a blank page."
             ),
             examples=["https://skyfare.localhost:8200/"],
         ),

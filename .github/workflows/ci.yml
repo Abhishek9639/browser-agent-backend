@@ -85,17 +85,17 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+          key: playwright-chromium-firefox-${{ runner.os }}-${{ steps.playwright.outputs.version }}
 
-      - name: Install Chromium
+      - name: Install Chromium and Firefox
         # --with-deps on a miss only: the system libraries are outside the cached
         # directory, so they are installed either way, but the browser download
         # is the slow half.
         run: |
           if [ "${{ steps.browser-cache.outputs.cache-hit }}" = "true" ]; then
-            uv run playwright install-deps chromium
+            uv run playwright install-deps chromium firefox
           else
-            uv run playwright install --with-deps chromium
+            uv run playwright install --with-deps chromium firefox
           fi
 
       - name: Run the unit suite
@@ -189,14 +189,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+          key: playwright-chromium-firefox-${{ runner.os }}-${{ steps.playwright.outputs.version }}
 
-      - name: Install Chromium
+      - name: Install Chromium and Firefox
         run: |
           if [ "${{ steps.browser-cache.outputs.cache-hit }}" = "true" ]; then
-            uv run playwright install-deps chromium
+            uv run playwright install-deps chromium firefox
           else
-            uv run playwright install --with-deps chromium
+            uv run playwright install --with-deps chromium firefox
           fi
 
       - name: Run the integration suite
@@ -269,14 +269,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+          key: playwright-chromium-firefox-${{ runner.os }}-${{ steps.playwright.outputs.version }}
 
-      - name: Install Chromium
+      - name: Install Chromium and Firefox
         run: |
           if [ "${{ steps.browser-cache.outputs.cache-hit }}" = "true" ]; then
-            uv run playwright install-deps chromium
+            uv run playwright install-deps chromium firefox
           else
-            uv run playwright install --with-deps chromium
+            uv run playwright install --with-deps chromium firefox
           fi
 
       # The mock provider is rule-based and offline, so this costs nothing and

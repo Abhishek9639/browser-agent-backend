@@ -25,7 +25,7 @@ from app.agent.perception.perceive import perceive
 from app.agent.perception.state import PageState
 from app.core.config import Settings
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.browser]
 
 
 @pytest.fixture

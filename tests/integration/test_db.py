@@ -16,14 +16,21 @@ async def test_session_executes_sql(db_session: AsyncSession) -> None:
     assert await db_session.scalar(text("SELECT 1")) == 1
 
 
-async def test_connects_to_the_test_database_not_the_live_one(db_session: AsyncSession) -> None:
+async def test_connects_to_the_test_database_not_the_live_one(
+    db_session: AsyncSession, integration_settings: Settings
+) -> None:
     """A suite that drops tables must never point at agent_core."""
-    assert await db_session.scalar(text("SELECT current_database()")) == "agent_core_test"
+    assert (
+        await db_session.scalar(text("SELECT current_database()"))
+        == integration_settings.POSTGRES_TEST_DB
+    )
+    assert integration_settings.POSTGRES_TEST_DB != integration_settings.POSTGRES_DB
 
 
-async def test_server_is_postgres_16(db_session: AsyncSession) -> None:
-    version = await db_session.scalar(text("SHOW server_version"))
-    assert str(version).startswith("16.")
+async def test_server_supports_required_postgres_features(db_session: AsyncSession) -> None:
+    # PostgreSQL 14 (Homebrew) and 16 (Docker) both support the schema and queries.
+    version = await db_session.scalar(text("SHOW server_version_num"))
+    assert int(str(version)) >= 140000
 
 
 async def test_orm_round_trip_fills_defaults(db_session: AsyncSession) -> None:

@@ -22,6 +22,7 @@ from app.services.task_runner import TaskRunner, interrupted_reason, shutdown_re
 
 @dataclass
 class FakeTask:
+    created_by: uuid.UUID = field(default_factory=uuid.uuid4)
     id: uuid.UUID = field(default_factory=uuid.uuid4)
     instruction: str = "find a flight"
     status: TaskStatus = TaskStatus.SUBMITTED
@@ -370,3 +371,22 @@ async def test_a_driver_that_will_not_launch_fails_the_task(rig: Rig) -> None:
     # EXECUTION_FAILED. Without that edge it would sit live forever.
     assert rig.store.tasks[task_id].status is TaskStatus.EXECUTION_FAILED
     assert rig.store.tasks[task_id].failure_reason == "The task could not be started."
+
+
+async def test_user_limit_leaves_capacity_for_other_users(rig: Rig) -> None:
+    rig.runner._settings = rig.runner._settings.model_copy(
+        update={"AGENT_MAX_CONCURRENT_TASKS_PER_USER": 1}
+    )
+    owner = uuid.uuid4()
+    first = rig.store.add(created_by=owner)
+    second = rig.store.add(created_by=owner)
+    other = rig.store.add()
+    for task in (first, second, other):
+        rig.runner.submit(task.id)
+    await settle()
+    assert f"start:{first.id}" in rig.log
+    assert f"start:{other.id}" in rig.log
+    assert f"start:{second.id}" not in rig.log
+    await finish(rig)
+    assert f"start:{second.id}" in rig.log
+    assert rig.runner._user_slots == {}

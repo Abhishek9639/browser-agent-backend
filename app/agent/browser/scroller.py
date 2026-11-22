@@ -13,32 +13,63 @@ from typing import Final
 
 __all__ = ["METRICS_JS", "SCROLLER_JS", "scroll_by_js"]
 
-# Defines `scroller()`: the document if it can scroll, else the largest visible
-# panel that can. Cheap on an ordinary page: the document check returns first,
-# and only a page whose window cannot scroll pays for the search.
+# Prefer the active widget or dialog over its background document. Keep the
+# same selection rule for actions and perception so verification measures the
+# panel the driver actually moved.
 SCROLLER_JS: Final = r"""
 const scroller = () => {
   const root = document.scrollingElement || document.documentElement;
-  if (root.scrollHeight - root.clientHeight > 4) return root;
-  let best = null;
-  let bestArea = 0;
-  const floor = innerWidth * innerHeight * 0.3;
-  const nodes = document.body ? document.body.querySelectorAll('*') : [];
-  const limit = Math.min(nodes.length, 4000);
-  for (let i = 0; i < limit; i++) {
-    const el = nodes[i];
-    if (el.scrollHeight - el.clientHeight < 50) continue;
-    const overflow = getComputedStyle(el).overflowY;
-    if (overflow !== 'auto' && overflow !== 'scroll') continue;
+  const area = el => {
+    const style = getComputedStyle(el);
+    if (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0')
+      return 0;
     const r = el.getBoundingClientRect();
-    const visibleHeight = Math.min(r.bottom, innerHeight) - Math.max(r.top, 0);
-    const area = Math.max(0, r.width) * Math.max(0, visibleHeight);
-    if (area > bestArea && area > floor) {
-      best = el;
-      bestArea = area;
+    const left = Math.max(0, r.left), right = Math.min(innerWidth, r.right);
+    const top = Math.max(0, r.top), bottom = Math.min(innerHeight, r.bottom);
+    if (right <= left || bottom <= top) return 0;
+    const hit = document.elementFromPoint((left + right) / 2, (top + bottom) / 2);
+    return hit && (el === hit || el.contains(hit)) ? (right - left) * (bottom - top) : 0;
+  };
+  const scrollable = el => el.scrollHeight - el.clientHeight > 4 &&
+    ['auto', 'scroll'].includes(getComputedStyle(el).overflowY) && area(el) > 0;
+  const largest = scope => {
+    let best = scrollable(scope) ? scope : null;
+    let bestArea = best ? area(best) : 0;
+    const nodes = scope.querySelectorAll('*');
+    for (let i = 0; i < Math.min(nodes.length, 4000); i++) {
+      const el = nodes[i];
+      if (!scrollable(el)) continue;
+      const size = area(el);
+      if (size > bestArea) { best = el; bestArea = size; }
+    }
+    return best;
+  };
+  const dialogs = [...document.querySelectorAll(
+    'dialog[open], [role="dialog"], [aria-modal="true"]')];
+  const modal = dialogs.reverse().find(el => area(el) > 0);
+  let active = document.activeElement;
+  while (active && active.shadowRoot && active.shadowRoot.activeElement)
+    active = active.shadowRoot.activeElement;
+  // Autocomplete options can live outside the field's own container.
+  if (active && active.getAttribute('aria-expanded') === 'true') {
+    const ids = (active.getAttribute('aria-controls') || '').split(/\s+/);
+    for (const id of ids) {
+      const popup = document.getElementById(id);
+      if (popup && (!modal || modal.contains(popup))) {
+        const target = largest(popup);
+        if (target) return target;
+      }
     }
   }
-  return best || root;
+  for (let el = active; el && el !== root && el !== document.body;
+       el = el.parentElement || el.getRootNode().host) {
+    if ((!modal || modal.contains(el)) && scrollable(el)) return el;
+  }
+  if (modal) return largest(modal) || modal;
+  const rootUnlocked = !['hidden', 'clip'].includes(getComputedStyle(root).overflowY) &&
+    (!document.body || !['hidden', 'clip'].includes(getComputedStyle(document.body).overflowY));
+  if (rootUnlocked && root.scrollHeight - root.clientHeight > 4) return root;
+  return document.body ? (largest(document.body) || root) : root;
 };
 const isRoot = (el) => el === document.scrollingElement || el === document.documentElement;
 """

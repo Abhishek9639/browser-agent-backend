@@ -1,0 +1,32 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Local cab form regression</title>
+<style>
+body {height:3000px}
+[role=dialog] {position:fixed;top:60px;left:60px;background:white;border:1px solid;padding:16px}
+#rides {height:220px;width:280px;overflow:auto}
+</style>
+<h1>Local cab form — no real booking</h1>
+<input id="pickup" role="combobox" readonly placeholder="Pickup">
+<input id="dropoff" placeholder="Drop-off">
+<button id="see-rides">See ride options</button>
+<div id="address-dialog" role="dialog" hidden>
+<input id="search" placeholder="Search pickup"><button id="suggestion">Select address</button>
+</div>
+<div id="rides" role="dialog" hidden><div style="height:550px">Ride options</div>
+<button id="ride-option" onclick="window.selectedRide='Demo ride'">Demo ride</button><div style="height:100px"></div></div>
+<script>
+const pickup = document.querySelector('#pickup');
+const addressDialog = document.querySelector('#address-dialog');
+const search = document.querySelector('#search');
+let keyboardInput = false;
+pickup.onclick = () => { addressDialog.hidden = false; setTimeout(() => search.focus(), 150); };
+search.onkeydown = () => keyboardInput = true;
+search.oninput = () => { if (!keyboardInput) search.value = ''; };
+document.querySelector('#suggestion').onclick = () => {
+  pickup.value = search.value; addressDialog.hidden = true;
+};
+document.querySelector('#see-rides').onclick = () => {
+  document.querySelector('#rides').hidden = false;
+};
+</script>

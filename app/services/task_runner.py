@@ -16,8 +16,8 @@ properties a real queue buys, and the point at which this should become one.
 
 import asyncio
 import uuid
-from collections.abc import Callable
-from contextlib import suppress
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from typing import Final
 
@@ -114,6 +114,7 @@ class TaskRunner:
         slots = 1 if settings.AGENT_CDP_URL else settings.AGENT_MAX_CONCURRENT_TASKS
         self._semaphore = asyncio.Semaphore(slots)
         self._tasks: dict[uuid.UUID, asyncio.Task[None]] = {}
+        self._user_slots: dict[uuid.UUID, tuple[asyncio.Semaphore, int]] = {}
         self._cancellations: dict[uuid.UUID, _Cancellation] = {}
         self._drivers: dict[uuid.UUID, PlaywrightDriver] = {}
         self._closing: set[asyncio.Task[None]] = set()
@@ -172,7 +173,7 @@ class TaskRunner:
         here instead, because a row left `ACTING` is the exact state the next
         startup has to guess about.
         """
-        if not self._started:
+        if not self._started and self._playwright is None and self._browser is None:
             return
         self._started = False
 
@@ -295,7 +296,9 @@ class TaskRunner:
         metrics.queued_tasks.inc()
         acquired = False
         try:
-            async with self._semaphore:
+            # Wait for this user's capacity before taking global capacity, so
+            # one user's queue cannot prevent other users from running.
+            async with self._user_slot(task_id), self._semaphore:
                 metrics.queued_tasks.dec()
                 acquired = True
                 metrics.active_tasks.inc()
@@ -303,12 +306,35 @@ class TaskRunner:
                     await self._run_with_slot(task_id)
                 finally:
                     metrics.active_tasks.dec()
+        except Exception:
+            logger.exception("task_scheduling_failed", task_id=str(task_id))
+            await self._force_terminal(
+                task_id, TaskStatus.EXECUTION_FAILED, "The task could not be scheduled."
+            )
         finally:
             # A task cancelled while still queued never reaches the slot, so the
             # decrement above never runs and the gauge would drift upward for
             # the life of the process.
             if not acquired:
                 metrics.queued_tasks.dec()
+
+    @asynccontextmanager
+    async def _user_slot(self, task_id: uuid.UUID) -> AsyncIterator[None]:
+        async with self._open_unit_of_work() as uow:
+            owner = (await uow.tasks.get_or_404(task_id)).created_by
+        semaphore, users = self._user_slots.get(
+            owner, (asyncio.Semaphore(self._settings.AGENT_MAX_CONCURRENT_TASKS_PER_USER), 0)
+        )
+        self._user_slots[owner] = (semaphore, users + 1)
+        try:
+            async with semaphore:
+                yield
+        finally:
+            _, users = self._user_slots[owner]
+            if users == 1:
+                del self._user_slots[owner]
+            else:
+                self._user_slots[owner] = (semaphore, users - 1)
 
     async def _run_with_slot(self, task_id: uuid.UUID) -> None:
         """The run itself, once a concurrency slot is held."""
