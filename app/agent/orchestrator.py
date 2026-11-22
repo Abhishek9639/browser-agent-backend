@@ -626,14 +626,7 @@ class Orchestrator:
                     result.ok
                     and decision.action in _FORECAST_ACTIONS
                     and missed_forecasts < MAX_MISSED_FORECASTS
-                    and (
-                        page_changed(state, after)
-                        or decision.expected_outcome.type
-                        in (
-                            VerificationMethod.TEXT_PRESENT,
-                            VerificationMethod.URL_CONTAINS,
-                        )
-                    )
+                    and page_changed(state, after)
                 )
                 verdict, after, attempts, tried = await self._verify(
                     task_id,

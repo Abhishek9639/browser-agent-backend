@@ -14,10 +14,11 @@ from datetime import timedelta
 from enum import StrEnum
 from functools import lru_cache
 from typing import Annotated
-from urllib.parse import quote_plus
+from urllib.parse import quote
 
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+from sqlalchemy.engine import make_url
 
 __all__ = ["AppEnv", "LogLevel", "Settings", "get_settings"]
 
@@ -179,10 +180,10 @@ class Settings(BaseSettings):
     PLANNER_PROMPT_VERSION: str = "v2"
 
     # ---------------------------------------------------------------- agent (B19 onwards)
-    AGENT_MAX_STEPS: int = 25
-    AGENT_MAX_TASK_SECONDS: int = 300
+    AGENT_MAX_STEPS: int = Field(default=25, ge=1)
+    AGENT_MAX_TASK_SECONDS: int = Field(default=300, ge=1)
     AGENT_MAX_RETRIES_PER_STEP: int = 3
-    AGENT_MAX_TABS: int = 5
+    AGENT_MAX_TABS: int = Field(default=5, ge=1)
     # Spec section 4.12. A flow below this rate is not replayed, and after
     # at least three runs it is deleted.
     CACHE_ENABLED: bool = True
@@ -199,8 +200,8 @@ class Settings(BaseSettings):
     # to ask would otherwise be unable to finish a booking at all; set it false
     # where approvals are meant to be a second pair of eyes.
     APPROVAL_OWNER_CAN_APPROVE: bool = True
-    AGENT_MAX_CONCURRENT_TASKS: int = 3
-    AGENT_MAX_CONCURRENT_TASKS_PER_USER: int = 2
+    AGENT_MAX_CONCURRENT_TASKS: int = Field(default=3, ge=1)
+    AGENT_MAX_CONCURRENT_TASKS_PER_USER: int = Field(default=2, ge=1)
     AGENT_DOM_TOKEN_BUDGET: int = 3000
     # Spec section 4.13. A bare host matches any port on that host; add a port
     # to pin one. SkyFare on :8200 is listed explicitly even though the bare
@@ -214,6 +215,8 @@ class Settings(BaseSettings):
             "127.0.0.1:8200",
         ]
     )
+    # Optional demo landing page for clients that only submit an instruction.
+    AGENT_DEFAULT_START_URL: str | None = None
     AGENT_HEADLESS: bool = True
     # How long a task waits for a person to sign in or sign up when a site asks
     # for it. Longer than an ordinary approval, because signing up means email
@@ -346,8 +349,8 @@ class Settings(BaseSettings):
 
     def dsn_for(self, database: str) -> str:
         """Assemble an asyncpg DSN for one database on the configured server."""
-        user = quote_plus(self.POSTGRES_USER)
-        password = quote_plus(self.POSTGRES_PASSWORD.get_secret_value())
+        user = quote(self.POSTGRES_USER, safe="")
+        password = quote(self.POSTGRES_PASSWORD.get_secret_value(), safe="")
         return (
             f"postgresql+asyncpg://{user}:{password}"
             f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{database}"
@@ -361,6 +364,8 @@ class Settings(BaseSettings):
     @property
     def test_database_url(self) -> str:
         """The DSN the integration suite runs against. Never the live database."""
+        if self.POSTGRES_TEST_DB in {self.POSTGRES_DB, make_url(self.database_url).database}:
+            raise ValueError("POSTGRES_TEST_DB must differ from the application database.")
         return self.dsn_for(self.POSTGRES_TEST_DB)
 
     @property

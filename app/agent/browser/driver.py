@@ -24,6 +24,7 @@ from urllib.parse import urlsplit
 from playwright.async_api import (
     Browser,
     BrowserContext,
+    ElementHandle,
     Locator,
     Page,
     Playwright,
@@ -188,19 +189,29 @@ def host_is_allowed(url: str, allowed: tuple[str, ...]) -> bool:
     """
     if not allowed:
         return False
+    try:
+        parts = urlsplit(url)
+        hostname = (parts.hostname or "").lower()
+        port = parts.port
+    except ValueError:
+        return False
+    if (
+        parts.scheme.lower() not in {"http", "https"}
+        or not hostname
+        or parts.username is not None
+        or parts.password is not None
+        or any(character.isspace() for character in hostname)
+    ):
+        return False
     if "*" in allowed:
         return True
 
-    parts = urlsplit(url)
-    hostname = (parts.hostname or "").lower()
-    if not hostname:
-        return False
-
-    port = parts.port
     candidates = {hostname}
-    if port is not None:
-        candidates.add(f"{hostname}:{port}")
-
+    effective_port = port or (443 if parts.scheme.lower() == "https" else 80)
+    candidates.add(f"{hostname}:{effective_port}")
+    # IPv6 addresses with a port use bracket notation in the allow-list.
+    if ":" in hostname:
+        candidates.add(f"[{hostname}]:{effective_port}")
     return any(entry.strip().lower() in candidates for entry in allowed)
 
 
@@ -687,44 +698,43 @@ class PlaywrightDriver:
         return self._fallbacks_left.pop(0) if self._fallbacks_left else None
 
     async def _switch_browser(self, name: str) -> bool:
-        """Carry on in a different browser. False when it is not installed.
+        """Switch only after the replacement browser is ready.
 
-        The old window is closed first, so two do not sit on the screen. If the
-        new one will not start, the old configuration is brought back rather
-        than leaving the task with no browser at all.
+        A missing fallback must leave the existing page, cookies and tabs intact.
+        The runner's shared browser is never closed by a per-task driver.
         """
-        original = self._config
         config = replace(
-            original,
+            self._config,
             channel="" if name == "firefox" else name,
             engine="firefox" if name == "firefox" else "chromium",
         )
-        await self._sessions.close_all()
-        await self._close_context()
-        await self._close_browser()
-        if not self._owns_browser:
-            # The shared browser belongs to the runner. Leave it, and run on one
-            # of this driver's own from here.
-            self._browser = None
-            self._owns_browser = True
+        replacement = PlaywrightDriver(self._settings)
+        replacement._indicator_mode = self._indicator_mode
         try:
-            await self.launch(config)
+            await replacement.launch(config)
         except PlaywrightError as exc:
+            await replacement.close()
             logger.warning("fallback_browser_unavailable", browser=name, error=type(exc).__name__)
-            self._browser = None
-            await self.launch(original)
             return False
+        except BaseException:
+            await replacement.close()
+            raise
+
+        await self.close()
+        self._config = replacement._config
+        self._browser = replacement._browser
+        self._playwright = replacement._playwright
+        self._context = replacement._context
+        self._sessions = replacement._sessions
+        self._owns_browser = replacement._owns_browser
+        self._owns_context = replacement._owns_context
+        self._shared_browser = None
+        self._indicated = replacement._indicated
         logger.info("switched_browser", browser=name)
         return True
 
     async def _type(self, action: TypeAction) -> None:
-        """Put text into whatever the selector found, however the page built it.
-
-        A plain field takes ``fill``. A custom widget (a date picker, an
-        autocomplete, a masked input) may ignore it, or the selector may land
-        on the wrapper around the real field, so each of those is handled
-        rather than failing the step.
-        """
+        """Enter and verify complete text before allowing the next action."""
         locator = await self._locate(action.selector)
         await self._clear_obstruction(locator)
         await self._glide_to(locator)
@@ -732,79 +742,128 @@ class PlaywrightDriver:
             await self._insert_block(locator, action)
             return
         field = await self._editable_in(locator)
-
         if field is None:
-            # Nothing editable to fill: focus it and type at the keyboard, which
-            # is what a custom widget listens for.
             await self._type_at_keyboard(locator, action)
             return
 
+        previous = await self._field_value(field)
+        wanted = action.value if action.clear_first else previous + action.value
         try:
-            if action.clear_first:
-                await field.fill("")
-            await field.fill(action.value)
-            if not await self._holds(field, action.value):
-                # The widget threw the value away, which is what a mask or an
-                # autocomplete that watches key events does to a programmatic fill.
-                # Type it the way a person would.
-                await field.click()
-                await field.fill("")
-                await field.press_sequentially(action.value, delay=TYPE_DELAY_MS)
-            if action.press_enter:
-                await field.press("Enter")
+            await field.fill(wanted)
         except PlaywrightError as exc:
-            # A combobox like a flight search's "Where to?" hands focus to a
-            # separate popup input on click, so the element that was located is
-            # no longer fillable. Whatever has focus now is what to type into.
             logger.info("type_fell_back_to_keyboard", error_type=type(exc).__name__)
             await self._type_at_keyboard(locator, action)
+            return
+        # Give controlled inputs one render turn to accept or reject the value.
+        await asyncio.sleep(0.05)
+        if not await self._holds(field, wanted):
+            await field.click()
+            await field.press("ControlOrMeta+A")
+            await field.press("Backspace")
+            await field.press_sequentially(wanted, delay=TYPE_DELAY_MS)
+            await asyncio.sleep(0.05)
+        if not await self._holds(field, wanted):
+            raise PlaywrightError("Input is not editable: it did not retain the complete value")
+        if action.press_enter:
+            await field.press("Enter")
+
+    async def _keyboard_field(self, locator: Locator) -> ElementHandle:
+        """Wait for the clicked widget to focus an actual editable control.
+
+        Never send select-all/backspace to a button, the document, or an unrelated
+        field that was already focused before a non-focusable wrapper was clicked.
+        The owner document also handles widgets inside iframes and shadow roots.
+        """
+        active_js = """(el) => {
+          let active = el.ownerDocument.activeElement;
+          while (active && active.shadowRoot && active.shadowRoot.activeElement)
+            active = active.shadowRoot.activeElement;
+          return active;
+        }"""
+        before = await locator.evaluate_handle(active_js)
+        try:
+            await locator.click()
+            deadline = time.monotonic() + min(2.0, self._config.action_timeout_ms / 1000)
+            while True:
+                handle = await locator.evaluate_handle(active_js)
+                field = handle.as_element()
+                if (
+                    field is not None
+                    and await field.evaluate("(el, sel) => el.matches(sel)", EDITABLE_SELECTOR)
+                    and await field.is_visible()
+                    and await field.is_editable()
+                ):
+                    same = await field.evaluate("(el, old) => el === old", before)
+                    related = await locator.evaluate(
+                        "(el, active) => el === active || el.contains(active)", field
+                    )
+                    if not same or related:
+                        return field
+                await handle.dispose()
+                if time.monotonic() >= deadline:
+                    raise PlaywrightError("Target is not editable: no input received focus")
+                await asyncio.sleep(0.05)
+        finally:
+            await before.dispose()
 
     async def _type_at_keyboard(self, locator: Locator, action: TypeAction) -> None:
-        """Click the target, then type into whatever the click focused."""
-        await locator.click()
-        # Let a widget that swaps in its own input finish doing so.
-        await asyncio.sleep(OBSTRUCTION_SETTLE_S)
-        if action.clear_first:
-            await self.page.keyboard.press("Control+A")
-            await self.page.keyboard.press("Backspace")
-        await self.page.keyboard.type(action.value, delay=TYPE_DELAY_MS)
-        if action.press_enter:
-            await self.page.keyboard.press("Enter")
+        await self._keyboard_entry(locator, action, block=False)
 
     async def _insert_block(self, locator: Locator, action: TypeAction) -> None:
-        """Put a multi-line text (a program) into an editor in one piece.
+        # Insert as one block so code editors cannot auto-indent each newline.
+        await self._keyboard_entry(locator, action, block=True)
 
-        Typing code key by key goes wrong in every code editor: Enter
-        auto-indents, an opening bracket brings its closing one with it, and the
-        result is a program that no longer parses. Inserting the text at once
-        sends it to the editor as a paste would, with none of that. The editor's
-        contents are replaced, because a half-edited program is never the goal.
-        """
-        await locator.click()
-        if action.clear_first:
-            await self.page.keyboard.press("Control+A")
-            await self.page.keyboard.press("Delete")
-        await self.page.keyboard.insert_text(action.value)
-        if action.press_enter:
-            await self.page.keyboard.press("Enter")
+    async def _keyboard_entry(self, locator: Locator, action: TypeAction, *, block: bool) -> None:
+        field = await self._keyboard_field(locator)
+        try:
+            previous = await self._field_value(field)
+            wanted = action.value if action.clear_first else previous + action.value
+            if action.clear_first:
+                await field.press("ControlOrMeta+A")
+                await field.press("Backspace")
+            else:
+                await field.press("ControlOrMeta+End")
+            if block:
+                await self.page.keyboard.insert_text(action.value)
+            else:
+                await field.type(action.value, delay=TYPE_DELAY_MS)
+            await asyncio.sleep(0.05)
+            if not await self._holds(field, wanted):
+                raise PlaywrightError("Input is not editable: it did not retain the complete value")
+            if action.press_enter:
+                await field.press("Enter")
+        finally:
+            await field.dispose()
 
     async def _editable_in(self, locator: Locator) -> Locator | None:
-        """The locator itself if it is a field, else a field inside it, else None."""
         if await locator.evaluate("(el, sel) => el.matches(sel)", EDITABLE_SELECTOR):
-            return locator
-        inner = locator.locator(EDITABLE_SELECTOR).first
-        return inner if await inner.count() else None
+            if await locator.is_visible() and await locator.is_editable():
+                return locator
+            return None
+        candidates = locator.locator(EDITABLE_SELECTOR)
+        for i in range(await candidates.count()):
+            field = candidates.nth(i)
+            if await field.is_visible() and await field.is_editable():
+                return field
+        return None
 
     @staticmethod
-    async def _holds(field: Locator, wanted: str) -> bool:
-        """Does the field still hold what was put in it, give or take formatting?"""
-        try:
-            held = await field.input_value()
-        except PlaywrightError:
-            return True  # not a form control (contenteditable): nothing to compare
-        squash = re.compile(r"[^a-z0-9]+")
-        have, want = squash.sub("", held.casefold()), squash.sub("", wanted.casefold())
-        return bool(want) and bool(have) and (want in have or have in want)
+    async def _field_value(field: Locator | ElementHandle) -> str:
+        return str(
+            await field.evaluate(
+                "el => 'value' in el ? el.value : (el.innerText || el.textContent || '')"
+            )
+        )
+
+    @staticmethod
+    async def _holds(field: Locator | ElementHandle, wanted: str) -> bool:
+        """Allow formatting changes, never partial or truncated text."""
+        held = await PlaywrightDriver._field_value(field)
+        if held == wanted:
+            return True
+        have = "".join(c for c in held.casefold() if c.isalnum())
+        want = "".join(c for c in wanted.casefold() if c.isalnum())
+        return bool(want) and have == want
 
     @staticmethod
     async def _opens_new_tab(locator: Locator) -> bool:
@@ -963,13 +1022,10 @@ class PlaywrightDriver:
 
     async def _extract(self, action: ExtractAction) -> str:
         if action.selector:
-            try:
-                locator = await self._locate(action.selector)
-                text = await locator.inner_text()
-                if text and text.strip():
-                    return text.strip()
-            except Exception:
-                pass
+            # A missing requested element is a failed extraction. Silently
+            # reading the whole page instead hides stale selectors from recovery.
+            locator = await self._locate(action.selector)
+            return (await locator.inner_text()).strip()
         return await self._all_text()
 
     async def _locate(self, selector: str) -> Locator:

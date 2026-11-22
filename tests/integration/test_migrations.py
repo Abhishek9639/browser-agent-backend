@@ -9,6 +9,7 @@ exercises the same code path ``make migrate`` uses.
 import os
 import subprocess
 import sys
+import uuid
 from collections.abc import AsyncIterator
 
 import asyncpg
@@ -16,7 +17,7 @@ import pytest
 
 from app.core.config import Settings
 
-SCRATCH_DB = "agent_core_migration_check"
+SCRATCH_DB = f"agent_core_migration_{uuid.uuid4().hex[:12]}"
 
 
 async def _admin_connection(settings: Settings) -> asyncpg.Connection:
@@ -49,9 +50,11 @@ async def scratch_database(integration_settings: Settings) -> AsyncIterator[str]
             await admin.close()
 
 
-def run_alembic(*args: str, database: str) -> None:
+def run_alembic(*args: str, database: str, settings: Settings) -> None:
     """Invoke alembic against `database`, as a subprocess with its own settings."""
-    env = {**os.environ, "POSTGRES_DB": database}
+    # Override DATABASE_URL too: a developer's managed URL must never redirect
+    # this destructive round-trip to the application database.
+    env = {**os.environ, "POSTGRES_DB": database, "DATABASE_URL": settings.dsn_for(database)}
     result = subprocess.run(  # noqa: S603
         [sys.executable, "-m", "alembic", *args],
         capture_output=True,
@@ -92,7 +95,7 @@ async def test_upgrade_downgrade_upgrade(
     integration_settings: Settings, scratch_database: str
 ) -> None:
     """The cycle autogenerate gets wrong: enum types survive a drop_table."""
-    run_alembic("upgrade", "head", database=scratch_database)
+    run_alembic("upgrade", "head", database=scratch_database, settings=integration_settings)
 
     after_upgrade = await inspect_schema(integration_settings, scratch_database)
     assert "tasks" in after_upgrade["tables"]
@@ -101,7 +104,7 @@ async def test_upgrade_downgrade_upgrade(
     assert "task_status" in after_upgrade["types"]
     assert "task_number_seq" in after_upgrade["sequences"]
 
-    run_alembic("downgrade", "base", database=scratch_database)
+    run_alembic("downgrade", "base", database=scratch_database, settings=integration_settings)
 
     after_downgrade = await inspect_schema(integration_settings, scratch_database)
     # alembic_version is created by alembic itself and legitimately remains.
@@ -110,7 +113,7 @@ async def test_upgrade_downgrade_upgrade(
     assert after_downgrade["sequences"] == [], "sequence outlived downgrade"
 
     # The real point: this only works because downgrade dropped the types.
-    run_alembic("upgrade", "head", database=scratch_database)
+    run_alembic("upgrade", "head", database=scratch_database, settings=integration_settings)
 
     after_reupgrade = await inspect_schema(integration_settings, scratch_database)
     assert after_reupgrade["tables"] == after_upgrade["tables"]
@@ -121,7 +124,7 @@ async def test_every_spec_table_is_created_by_the_migration(
     integration_settings: Settings, scratch_database: str
 ) -> None:
     """Not just by metadata.create_all, which is what the other tests use."""
-    run_alembic("upgrade", "head", database=scratch_database)
+    run_alembic("upgrade", "head", database=scratch_database, settings=integration_settings)
 
     schema = await inspect_schema(integration_settings, scratch_database)
 

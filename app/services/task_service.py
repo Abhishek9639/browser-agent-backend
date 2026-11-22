@@ -105,7 +105,7 @@ class TaskService:
         if not text:
             raise ValidationFailed("An instruction cannot be blank.")
 
-        url = self._check_start_url(start_url)
+        url = self._check_start_url(start_url or self._settings.AGENT_DEFAULT_START_URL)
 
         duplicate = await self._uow.tasks.find_active_duplicate(user.id, text)
         if duplicate is not None:
@@ -192,6 +192,10 @@ class TaskService:
                 cache_flow_id=flow.id,
             )
         )
+        reservation = await self._billing.reserve_for_task(user.id, task.id)
+        if reservation is not None:
+            task.credits_reservation_id = reservation.reservation_id
+
         await self._audit.record(
             AuditAction.TASK_CREATED,
             actor_id=user.id,

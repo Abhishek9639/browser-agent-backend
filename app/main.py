@@ -1,10 +1,3 @@
-import asyncio
-import sys
-
-# Windows: the default SelectorEventLoop cannot spawn subprocesses,
-# which Playwright needs. Switch to ProactorEventLoop before anything else.
-if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 """Application factory.
 
 ``create_app`` builds a fully wired FastAPI instance. Everything it needs comes
@@ -13,11 +6,12 @@ build their own app without touching module-level state.
 """
 
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.agent.llm.factory import validate_llm_settings
 from app.agent.orchestrator import database_unit_of_work
 from app.api.ops import router as ops_router
 from app.api.v1.router import api_router
@@ -58,60 +52,56 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         env=settings.APP_ENV.value,
     )
 
-    database = Database(settings)
-    application.state.db = database
-    logger.info("database_configured", database=settings.POSTGRES_DB)
+    validate_llm_settings(settings)
+    async with AsyncExitStack() as cleanup:
+        database = Database(settings)
+        cleanup.push_async_callback(database.dispose)
+        application.state.db = database
+        logger.info("database_configured", database=settings.POSTGRES_DB)
 
-    # Loaded once at startup, and loudly: a service that boots without its
-    # signing key would accept registrations and then fail every login.
-    application.state.jwt_keys = load_key_pair(settings)
-    logger.info("signing_keys_loaded", kid=settings.JWT_KID)
+        # Loaded once at startup, and loudly: a service that boots without its
+        # signing key would accept registrations and then fail every login.
+        application.state.jwt_keys = load_key_pair(settings)
+        logger.info("signing_keys_loaded", kid=settings.JWT_KID)
 
-    # Per process. See the note in app/core/rate_limit.py before scaling out.
-    application.state.rate_limiter = InMemoryRateLimiter()
+        # Per process. See the note in app/core/rate_limit.py before scaling out.
+        application.state.rate_limiter = InMemoryRateLimiter()
 
-    # One bus per process. A client connected to another worker will not see
-    # these events; see the note in app/services/events.py.
-    application.state.event_bus = InMemoryEventBus()
-    application.state.screenshot_storage = LocalFileStorage(settings)
-    # Shared between the runner, which waits on approvals, and the API, which
-    # answers them. Both have to be looking at the same one.
-    application.state.approval_registry = ApprovalRegistry()
+        # One bus per process. A client connected to another worker will not see
+        # these events; see the note in app/services/events.py.
+        application.state.event_bus = InMemoryEventBus()
+        application.state.screenshot_storage = LocalFileStorage(settings)
+        # Shared between the runner, which waits on approvals, and the API, which
+        # answers them. Both have to be looking at the same one.
+        application.state.approval_registry = ApprovalRegistry()
 
-    runner = TaskRunner(
-        settings,
-        database,
-        events=application.state.event_bus,
-        storage=application.state.screenshot_storage,
-        approvals=application.state.approval_registry,
-    )
-    application.state.task_runner = runner
+        runner = TaskRunner(
+            settings,
+            database,
+            events=application.state.event_bus,
+            storage=application.state.screenshot_storage,
+            approvals=application.state.approval_registry,
+        )
+        application.state.task_runner = runner
 
-    # Delivers the billing outbox. Started even when the backlog is empty,
-    # because a backlog left by the last process is the case it exists for; it
-    # does nothing at all when billing is disabled.
-    billing_client = BillingClient(settings)
-    application.state.billing_client = billing_client
-    outbox = OutboxWorker(database_unit_of_work(database), settings, billing_client)
-    application.state.billing_outbox_worker = outbox
+        # Delivers the billing outbox. Started even when the backlog is empty,
+        # because a backlog left by the last process is the case it exists for; it
+        # does nothing at all when billing is disabled.
+        billing_client = BillingClient(settings)
+        cleanup.push_async_callback(billing_client.aclose)
+        application.state.billing_client = billing_client
+        outbox = OutboxWorker(database_unit_of_work(database), settings, billing_client)
+        application.state.billing_outbox_worker = outbox
 
-    # Chromium takes a second or so to launch, and a failure here should stop
-    # the process rather than surface as every task failing one by one.
-    await runner.start()
-    await outbox.start()
-
-    try:
+        # Register cleanup before startup so partial failures release resources too.
+        cleanup.push_async_callback(outbox.stop)
+        cleanup.push_async_callback(runner.stop)
+        if not await database.healthcheck():
+            raise RuntimeError("Cannot connect to PostgreSQL. Check the database settings in .env.")
+        await runner.start()
+        await outbox.start()
         yield
-    finally:
-        # Torn down in reverse order of startup. The outbox goes before the
-        # database, because it needs the database to record what it delivered,
-        # and after the runner, so a task finishing during shutdown still gets
-        # its settle queued.
-        await runner.stop()
-        await outbox.stop()
-        await billing_client.aclose()
-        await database.dispose()
-        logger.info("shutdown", app=settings.APP_NAME)
+    logger.info("shutdown", app=settings.APP_NAME)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:

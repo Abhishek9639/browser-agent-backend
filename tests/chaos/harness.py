@@ -163,6 +163,7 @@ class RunReport:
     expected_price: int = 0
     wall_ms: int = 0
     final_url: str = ""
+    consent_choices: list[str] = field(default_factory=list)
 
     @property
     def completed(self) -> bool:
@@ -279,6 +280,15 @@ async def run_once(
     started = time.monotonic()
 
     try:
+        # Observe real consent clicks across navigation; proactive dismissal is
+        # successful handling even when no recovery ladder was needed.
+        await driver.page.add_init_script("""document.addEventListener('click', event => {
+            const button = event.target.closest('[data-consent]');
+            if (!button) return;
+            const choices = JSON.parse(sessionStorage.getItem('__test_consent_choices') || '[]');
+            choices.push(button.dataset.consent);
+            sessionStorage.setItem('__test_consent_choices', JSON.stringify(choices));
+        }, true);""")
         await driver.page.goto(f"{base_url}/{query}")
 
         browser = DriverBrowser(driver, settings)
@@ -307,6 +317,9 @@ async def run_once(
 
         outcome = await orchestrator.run(task.id)
         final_url = driver.page.url
+        consent_choices = await driver.page.evaluate(
+            "JSON.parse(sessionStorage.getItem('__test_consent_choices') || '[]')"
+        )
     finally:
         await driver.close()
 
@@ -349,6 +362,7 @@ async def run_once(
         expected_price=int(cheapest_fare(base_url, on)["price"]),
         wall_ms=wall_ms,
         final_url=final_url,
+        consent_choices=consent_choices,
     )
 
 

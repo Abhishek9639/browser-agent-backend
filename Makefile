@@ -18,18 +18,18 @@ help:  ## show this help
 
 install:  ## install all dependencies, browsers and the git hooks
 	$(UV) sync
-	$(UV) run playwright install chromium
+	$(UV) run playwright install chromium firefox
 	$(UV) run pre-commit install
 
-browsers:  ## install the Chromium build Playwright drives
-	$(UV) run playwright install chromium
+browsers:  ## install the Chromium and Firefox builds Playwright drives
+	$(UV) run playwright install chromium firefox
 
 dev:  ## run the API with autoreload
 	@if [ ! -f app/main.py ]; then \
 		echo "app/main.py does not exist yet - the FastAPI entrypoint arrives in a later part."; \
 		exit 1; \
 	fi
-	$(UV) run uvicorn app.main:app --reload --port 8000
+	$(UV) run python run.py
 
 test:  ## run the whole suite with coverage
 	$(UV) run pytest --cov --cov-report=term-missing

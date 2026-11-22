@@ -498,3 +498,34 @@ async def test_registering_queues_the_grant_in_the_same_transaction(
     assert row.done_at is None
     # Queued, not called: registration does not wait on payments.
     assert "grant" not in payments.paths
+
+
+@pytest.mark.parametrize("available,expected", [(500, 201), (0, 402)])
+async def test_replay_reserves_credits(
+    api: httpx.AsyncClient,
+    payments: FakePayments,
+    db_session: AsyncSession,
+    available: int,
+    expected: int,
+) -> None:
+    from app.agent.cache.signature import task_signature
+    from app.domain.enums import TaskStatus
+
+    auth = await sign_in(api, "replay-billing@example.test")
+    response = await api.post("/api/v1/tasks", json={"instruction": INSTRUCTION}, headers=auth)
+    task_id = uuid.UUID(response.json()["id"])
+    uow = UnitOfWork(db_session)
+    task = await uow.tasks.get_or_404(task_id)
+    task.status = TaskStatus.COMPLETED
+    await uow.cached_flows.upsert(task_signature(INSTRUCTION), [], success_rate=1.0, run_count=1)
+    await db_session.flush()
+    payments.calls.clear()
+    payments.available = available
+
+    replay = await api.post(f"/api/v1/tasks/{task_id}/replay", headers=auth)
+
+    assert replay.status_code == expected, replay.text
+    assert payments.paths == ["reserve"]
+    if expected == 201:
+        replayed = await uow.tasks.get_or_404(uuid.UUID(replay.json()["id"]))
+        assert replayed.credits_reservation_id == RESERVATION_ID

@@ -142,4 +142,6 @@ async def get_session(
 
 AfterCommitDep = Annotated[list[Callable[[], None]], Depends(after_commit_hooks)]
 DatabaseDep = Annotated[Database, Depends(get_database)]
-SessionDep = Annotated[AsyncSession, Depends(get_session)]
+# Commit before sending a successful HTTP response. A failed commit must still
+# be able to return an error, and the runner must see the row before it starts.
+SessionDep = Annotated[AsyncSession, Depends(get_session, scope="function")]

@@ -1,4 +1,4 @@
-# browser-agent-backend
+# Browser Automation Agent — backend
 
 A supervised autonomous browser agent. A user writes a task in plain language; a
 server-side Chromium reads the page, a language model proposes one structured
@@ -54,6 +54,8 @@ machine and deployment — are in **[docs/architecture.md](docs/architecture.md)
 | **Billing** | Reserve synchronously, settle through a transactional outbox, against a payments service that is a separate repository |
 
 ## Quick start
+
+For the repaired local setup and presentation steps, see **[Local demo guide](docs/LOCAL_DEMO.md)**.
 
 ### With Docker (nothing to install but Docker)
 
@@ -153,7 +155,7 @@ it does show the degradation path working.
 ## Configuration
 
 Everything is environment variables through pydantic-settings; `.env.example`
-lists all 94 with comments. The ones that matter:
+lists the settings with comments. The ones that matter:
 
 | Variable | Default | What it does |
 |---|---|---|
@@ -186,7 +188,7 @@ lists all 94 with comments. The ones that matter:
 | Repository | What it is | State |
 |---|---|---|
 | **browser-agent-backend** | This one. Agent, API, identity, demo sites | **Built** |
-| browser-agent-frontend | Next.js: task form, live view, history, wallet | Not built |
+| [Browser-Automation-Agent](https://github.com/ishaan-khandelwal/Browser-Automation-Agent) | Next.js frontend maintained separately | See linked repository |
 | browser-agent-payments | Credits wallet, Razorpay TEST mode, internal API | Not built |
 
 They meet at two documented interfaces and nowhere else: this service calls

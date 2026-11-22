@@ -93,7 +93,7 @@ async def test_the_straightforward_configurations_all_succeed(
 
 
 @pytest.mark.parametrize("chaos", ["cookie", "cookie,popup,shuffle"])
-async def test_an_obstructed_page_is_recovered_from(
+async def test_an_obstructed_page_is_dismissed_without_accepting_cookies(
     chaos: str,
     skyfare: str,
     chaos_session: AsyncSession,
@@ -110,11 +110,10 @@ async def test_an_obstructed_page_is_recovered_from(
     """
     report = await execute(chaos, skyfare, chaos_session, chaos_settings, llm, tmp_path)
 
-    assert report.attempts, f"[{report.chaos}] nothing blocked the agent, which is suspicious"
-    assert report.recovered, (
-        f"[{report.chaos}] recovery never succeeded: "
-        f"{[(a.strategy_used, a.outcome.value) for a in report.attempts]}"
-    )
+    # Proactive dismissal avoids failing a step in the first place. Observe
+    # the real click instead of requiring a recovery attempt that wasn't needed.
+    assert "reject" in report.consent_choices
+    assert "accept" not in report.consent_choices
     assert report.completed and report.correct
 
 
@@ -204,11 +203,32 @@ async def test_recovery_attempts_are_recorded_with_their_outcome(
     chaos_settings: Settings,
     llm: LLMClient,
     tmp_path: object,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from app.agent.browser.actions import TypeAction
+    from app.agent.browser.agent_browser import DriverBrowser
+
+    # Force a real stale-selector failure after perception. Banner cleanup now
+    # happens proactively, so a banner alone no longer exercises the ladder.
+    execute_action = DriverBrowser.execute
+    injected = False
+
+    async def stale_once(browser, action):
+        nonlocal injected
+        if isinstance(action, TypeAction) and not injected:
+            injected = True
+            action = action.model_copy(update={"selector": "#missing-after-rerender"})
+        return await execute_action(browser, action)
+
+    monkeypatch.setattr(DriverBrowser, "execute", stale_once)
+    chaos_settings = chaos_settings.model_copy(update={"BROWSER_ACTION_TIMEOUT_MS": 1_000})
     report = await execute(
         "cookie,popup,shuffle", skyfare, chaos_session, chaos_settings, llm, tmp_path
     )
 
+    assert injected
+    assert report.completed and report.correct
+    assert report.recovered
     assert report.attempts
     for attempt in report.attempts:
         assert attempt.strategy_used
