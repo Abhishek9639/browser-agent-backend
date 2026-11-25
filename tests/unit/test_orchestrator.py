@@ -2549,3 +2549,14 @@ async def test_a_blocked_done_is_failed_and_never_cached_as_success(settings: Se
     assert final.type == "final"
     assert final.status is TaskStatus.EXECUTION_FAILED
     assert final.failure_reason == blocker
+
+
+def test_uber_ride_options_login_prompt_is_detected_without_a_model() -> None:
+    from app.agent.orchestrator import _login_wall
+
+    state = page(
+        element(0, name="Continue").model_copy(update={"tag": "button"}),
+        url="https://m.uber.com/go/product-selection",
+    ).model_copy(update={"text": "Log in to see ride options"})
+    assert _login_wall(state, "show ride options from PST hostel to Polaris School of Technology")
+    assert _login_wall(state, "Show ride options. Do not enter credentials or passwords.")

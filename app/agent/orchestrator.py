@@ -1930,14 +1930,15 @@ _LOGIN_PATH: Final = re.compile(r"/(log-?in|sign-?in|sign-?up|register|accounts?
 # The page says outright that it wants a sign-in before it will go on. Phrases,
 # not the bare word "login": nearly every site has a Login button in its header.
 _LOGIN_WORDING: Final = re.compile(
-    r"(log ?in|sign ?in) (is )?(required|to continue|to proceed|to book|to view|first)"
+    r"(log ?in|sign ?in) (is )?(required|to continue|to proceed|to book|to view|to see|first)"
     r"|(please|you (must|need to|have to)) (log ?in|sign ?in)"
     r"|(session|login) (has )?(expired|timed out)"
     r"|(log ?in|sign ?in) to (your account|continue)",
     re.IGNORECASE,
 )
-# A goal that mentions credentials is a goal about signing in; do not second-guess it.
-_GOAL_IS_LOGIN: Final = re.compile(r"password|credential|log ?in with|sign ?in with", re.I)
+# Only an explicit sign-in request opts out. Merely mentioning credentials
+# (including "do not enter credentials") must not bypass the login handoff.
+_GOAL_IS_LOGIN: Final = re.compile(r"\b(?:log ?in|sign ?in) with\b", re.I)
 
 
 def _login_wall(state: PageState, instruction: str) -> bool:

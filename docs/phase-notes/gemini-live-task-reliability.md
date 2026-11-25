@@ -96,3 +96,21 @@ The CI run on `b56000b` passed all jobs except one new fixture assertion: it
 looked up a combobox wrapper with the same label as its input. The regression
 now explicitly checks the input. 221 focused verifier/orchestrator/planner tests
 passed after the fix. A final full CI and live pre-booking recheck follow.
+
+## Final pre-booking observation and login gate
+
+Live task `3daf9f98-1c5f-4f1c-873d-e19d6d4f77a3` entered both addresses,
+selected the corresponding places and clicked Search. Its screenshot shows
+Choose a ride for the correct route, overlaid with “Log in to see ride options”.
+No real booking or payment was attempted. The run then failed on Gemini rate
+limiting, so it is not recorded as a fully successful end-to-end Uber task.
+A pickup-label forecast and the expected ride-options result remained
+unverified; the browser still advanced to the correct route and login gate.
+
+The login gate now recognizes “Log in to see…”. Merely mentioning credentials,
+including “do not enter credentials”, no longer opts out of that gate. Only an
+explicit sign-in-with request does. 99 orchestrator tests passed. A live local
+fixture carrying the observed login message emitted the approval-required
+WebSocket event without a model call; the test cancelled at that handoff.
+A separate direct Uber-page recheck timed out and was cancelled, so the updated
+handoff is verified on the local fixture, not claimed as reverified on Uber.

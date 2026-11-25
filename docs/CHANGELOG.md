@@ -886,3 +886,10 @@ Added
 - Verify a disappearing autocomplete option against its declared result instead of requiring its vanished selected-state flag. Unchanged checkbox/disclosure checks still fail correctly.
 - Guide the planner to use accessible labels, rather than invented CSS selectors, for visibility expectations.
 - Correct the auto-sized-input regression to distinguish the native input from its identically named combobox wrapper. Added positive/negative selected-result verification tests; 221 focused tests pass.
+
+### Login handoff verification
+
+- Recognize Uber's “Log in to see ride options” message before calling the planner.
+- Do not treat any mention of passwords/credentials as permission to automate sign-in; explicit sign-in intent is required to bypass the manual login gate.
+- Passed 99 orchestrator tests and a real local API/Chromium/WebSocket handoff test using the observed login message, with no model calls or typed credentials.
+- The final real Uber probe reached Choose a ride for the correct route, then displayed a login requirement. Its next model call was rate-limited. Actual fares, account login and booking remain unverified.
