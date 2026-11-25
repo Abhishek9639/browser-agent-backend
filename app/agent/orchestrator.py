@@ -66,6 +66,7 @@ from app.agent.perception.state import PageState
 from app.agent.planner.clarify import with_answers
 from app.agent.planner.outline import MAX_STEP_CHARS
 from app.agent.planner.planner import (
+    PAGE_STUCK_LIMIT,
     Planner,
     PlannerOutputError,
     PlannerResult,
@@ -455,6 +456,11 @@ class Orchestrator:
         # rather than two.
         state: PageState | None = None
         hint: CachedHint | None = None
+        # Track how many consecutive steps have been taken on the same DOM
+        # hash. When the page does not change for PAGE_STUCK_LIMIT steps in a
+        # row, the planner is told it is stuck and asked to try something else.
+        _last_dom_hash: str = ""
+        _same_page_steps: int = 0
 
         if plan is not None:
             # Replay what worked before, then let the planner take over from
@@ -477,6 +483,15 @@ class Orchestrator:
             self._stop_if_cancelled()
 
             state = await self._clear_overlays(state)
+
+            # Count how many consecutive steps happen on the same DOM hash.
+            # A fresh state (state was None → just perceived) always resets
+            # the counter, so login/payment pauses don't accumulate.
+            if state.dom_hash == _last_dom_hash:
+                _same_page_steps += 1
+            else:
+                _same_page_steps = 0
+                _last_dom_hash = state.dom_hash
 
             if _login_wall(state, instruction):
                 # The agent does not create accounts or guess credentials. It
@@ -519,7 +534,8 @@ class Orchestrator:
 
             try:
                 planned = await self._planner.decide(
-                    instruction, state, history, _hint_text(hint), outline, plan_at
+                    instruction, state, history, _hint_text(hint), outline, plan_at,
+                    same_page_steps=_same_page_steps,
                 )
             except PlannerOutputError:
                 if planner_retries >= MAX_PLANNER_RETRIES:
@@ -622,18 +638,18 @@ class Orchestrator:
                 # and often a ten-second timeout each, and a second click can
                 # close the dropdown the first one opened. The planner, which
                 # will see the page as it now is, gets the step back instead.
+                #
+                # For TEXT_PRESENT and URL_CONTAINS outcomes the verifier looks
+                # at page text, which can appear without changing the DOM hash.
+                # However, that only applies when the page actually changed:
+                # if the page did NOT change at all, the action genuinely failed
+                # and the forecast-miss path would incorrectly let it continue.
+                _page_moved = page_changed(state, after)
                 forecast_only = (
                     result.ok
                     and decision.action in _FORECAST_ACTIONS
                     and missed_forecasts < MAX_MISSED_FORECASTS
-                    and (
-                        page_changed(state, after)
-                        or decision.expected_outcome.type
-                        in (
-                            VerificationMethod.TEXT_PRESENT,
-                            VerificationMethod.URL_CONTAINS,
-                        )
-                    )
+                    and _page_moved
                 )
                 verdict, after, attempts, tried = await self._verify(
                     task_id,
@@ -777,6 +793,10 @@ class Orchestrator:
             idle_extracts = 0
             missed_forecasts = 0
             planner_retries = 0
+            # A verified step that changed the page resets the stuck counter.
+            if after.dom_hash != _last_dom_hash:
+                _same_page_steps = 0
+                _last_dom_hash = after.dom_hash
             if decision.action is ActionType.DONE:
                 raise _Stop(TaskStatus.COMPLETED, final_answer=decision.final_answer)
 

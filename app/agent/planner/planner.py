@@ -50,11 +50,13 @@ from app.domain.enums import ActionType
 
 __all__ = [
     "HISTORY_WINDOW",
+    "PAGE_STUCK_LIMIT",
     "Planner",
     "PlannerOutputError",
     "PlannerResult",
     "StepSummary",
     "compress_history",
+    "page_stuck_warning",
 ]
 
 logger = get_logger(__name__)
@@ -65,6 +67,9 @@ logger = get_logger(__name__)
 HISTORY_WINDOW: Final = 8
 # The same action on the same target this many times in a row is a loop.
 REPEAT_LIMIT: Final = 3
+# If the agent has taken this many steps without the page DOM changing, it is
+# cycling on the same page and needs a stronger nudge.
+PAGE_STUCK_LIMIT: Final = 5
 
 # A goal about solving a problem on a judge site: the platforms by name, and the
 # way people phrase it.
@@ -280,6 +285,25 @@ def repeated_action(steps: Sequence[StepSummary], limit: int = REPEAT_LIMIT) -> 
     return None
 
 
+def page_stuck_warning(same_page_steps: int, limit: int = PAGE_STUCK_LIMIT) -> str | None:
+    """Return a warning string when the agent has been on the same DOM hash for too long.
+
+    Unlike ``repeated_action``, this fires even when the agent is clicking
+    *different* elements on the same page — the DOM has not changed, so the
+    actions are not making progress toward a new page state.
+    """
+    if same_page_steps < limit:
+        return None
+    return (
+        f"WARNING: the page DOM has not changed for {same_page_steps} steps in a row. "
+        "You are cycling on the same page without making progress. "
+        "Try a completely different approach: scroll to find the element you need, "
+        "use `needsVision: true` to look at the page visually, navigate back and "
+        "choose a different path, or use `done` to report that the task cannot be "
+        "completed on this page."
+    )
+
+
 def compress_history(steps: Sequence[StepSummary], *, window: int = HISTORY_WINDOW) -> str:
     """Render history under a token budget.
 
@@ -328,6 +352,7 @@ class Planner:
         cached_hint: str | None,
         plan: Sequence[str] = (),
         plan_at: int | None = None,
+        same_page_steps: int = 0,
     ) -> list[LLMMessage]:
         """Assemble the conversation.
 
@@ -362,6 +387,10 @@ class Planner:
                 "not working. Do something different: another element, another approach, "
                 "or scroll to find what you need."
             )
+
+        page_stuck = page_stuck_warning(same_page_steps)
+        if page_stuck:
+            parts.append(page_stuck)
 
         if cached_hint:
             parts.append(
@@ -401,13 +430,16 @@ class Planner:
         cached_hint: str | None = None,
         plan: Sequence[str] = (),
         plan_at: int | None = None,
+        same_page_steps: int = 0,
     ) -> PlannerResult:
         """Choose the next action.
 
         Raises :class:`PlannerOutputError` if the model cannot produce a valid,
         grounded decision within its repair budget.
         """
-        messages = self._build_turn(goal, page_state, history, cached_hint, plan, plan_at)
+        messages = self._build_turn(
+            goal, page_state, history, cached_hint, plan, plan_at, same_page_steps
+        )
         last_problem = ""
 
         for attempt in range(1, MAX_ATTEMPTS + 1):

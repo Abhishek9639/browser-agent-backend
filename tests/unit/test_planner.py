@@ -600,3 +600,15 @@ def test_a_coding_goal_gets_the_coding_guide() -> None:
     assert "CODING TASK GUIDE" in text
     assert "COMPLETE solution" in text
     assert "CODING TASK GUIDE" not in _turn(goal="find internships in Delhi")
+
+
+def test_page_stuck_warning_is_included_after_threshold() -> None:
+    from app.agent.planner.planner import PAGE_STUCK_LIMIT
+
+    planner = Planner(MockLLM(script=[valid()]))
+    below = planner._build_turn(GOAL, page(0), (), None, (), same_page_steps=PAGE_STUCK_LIMIT - 1)[0].text
+    at_limit = planner._build_turn(GOAL, page(0), (), None, (), same_page_steps=PAGE_STUCK_LIMIT)[0].text
+
+    assert "page DOM has not changed" not in below
+    assert "page DOM has not changed" in at_limit
+    assert "needsVision: true" in at_limit
