@@ -28,7 +28,23 @@ handle transient unavailability, with a short cooldown for the failed model.
 - Real Gemini text generation passed with the user's locally configured key.
 - 1,566 non-browser unit/integration tests passed before the final 503 fallback adjustment.
 - 237 focused tests passed after that adjustment; lint, formatting and mypy passed.
-- Local fixture and SkyFare live rechecks, followed by GitHub CI, are in progress.
+- Real Gemini cab fixture passed: both addresses and Demo ride were reported
+  from the visible confirmation in six steps. The backup model handled a 503
+  from the primary. One click forecast was unverified; the next reading of the
+  confirmation let the planner recover and answer correctly.
+- Real Gemini SkyFare smoke passed: QP-654 at INR 5,740 matched the oracle,
+  with auth/refresh, WebSocket, persisted steps, protected screenshots, history,
+  stats, JWKS, logout and refresh revocation all checked.
+- CI on `6992996`: lint, unit tests, integration tests and Docker smoke passed.
+  Audit flagged a historic dummy token; only that exact placeholder is now
+  allow-listed. The chaos recovery case repeated typing until its step budget.
+- Random shuffled IDs can contain secret-like substrings (such as `pwd`), which
+  conservatively mask ordinary fields. The offline mock now honors verified
+  typing history for masked fields. A deterministic browser regression forces
+  that ID pattern; masking itself is retained. This reproduces a possible cause
+  of the CI loop; the original random ID was not captured.
+- 135 mock/orchestrator tests pass after this follow-up. The full CI recheck
+  and live Uber pre-booking probe are pending.
 - No real ride has been requested and no payment has been made.
 
 ## Viva questions

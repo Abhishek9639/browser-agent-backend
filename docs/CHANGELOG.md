@@ -866,3 +866,10 @@ Added
 - Try configured Gemini backup models after transient provider unavailability, including HTTP 503; briefly skip the unavailable primary.
 - Make the local cab fixture show a visible selection confirmation, and explicitly request flight number and price in the live smoke test.
 - Regression checks: 1,566 non-browser unit/integration tests passed before the final HTTP-503 fallback adjustment; 237 focused tests then passed including the fallback regression. Live rechecks and CI results are recorded in the phase note.
+
+### Verification follow-up — 2026-11-25
+
+- Passed real Gemini cab-form confirmation and full SkyFare API/browser smoke tests.
+- Allow-list only the exact historical DOM-test dummy token in the secret audit.
+- Prevent the offline mock from endlessly retyping a masked field after a verified write; add deterministic coverage for randomly generated IDs containing secret-like substrings.
+- Preserve field masking and all other secret-scanning rules.

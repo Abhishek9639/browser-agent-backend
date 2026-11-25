@@ -26,6 +26,8 @@ regexes = [
   # Test passphrases. Long enough to pass the password policy, which is exactly
   # what makes them look like credentials to a scanner.
   '''a-long-passphrase''',
+  # Literal dummy token in the DOM redaction test, including repository history.
+  '''^sk-live-abc123$''',
   '''a-long-internal-scrape-token''',
   '''hunter2[a-z-]*''',
   # The argon2 placeholder the fixtures store instead of a real hash.

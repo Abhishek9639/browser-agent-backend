@@ -35,6 +35,7 @@ from app.agent.llm.base import (
     MessageRole,
     elapsed_ms,
 )
+from app.agent.perception.dom_extractor import MASK
 from app.core.logging import get_logger
 
 __all__ = ["MockLLM", "RecordedCall", "SummaryLine", "parse_summary"]
@@ -263,7 +264,7 @@ class MockLLM:
         """
         goal = _first_user_text(messages)
         summary = _last_user_text(messages)
-        history = " ".join(message.text for message in messages)
+        history = "\n".join(message.text for message in messages)
         elements = parse_summary(summary)
         url = _url_of(summary)
 
@@ -279,6 +280,13 @@ class MockLLM:
         # and the answer would be right for a question nobody asked.
         for line in elements:
             if not line.is_field:
+                continue
+            # Shuffled IDs can conservatively trigger secret masking. A masked
+            # value cannot equal plaintext; trust a verified write in history
+            # rather than typing it again until the task budget is exhausted.
+            if line.value == MASK and re.search(
+                rf"^\d+\. type {re.escape(line.label)} -> verified$", history, re.MULTILINE
+            ):
                 continue
             wanted = _value_for(line, goal)
             if wanted and line.value.strip().casefold() != wanted.casefold():
