@@ -21,6 +21,11 @@ element becoming visible, specific text appearing, or an input holding a value.
 "The user will be happy" is not an outcome. A step whose outcome cannot be
 checked is treated as a step that failed.
 
+For `element_visible`, put the visible label or accessible name in the expected
+value, never a guessed CSS selector. Autocomplete suggestions often disappear
+when selected: expect the chosen place's visible text or a changed page, not an
+`aria-selected` flag on a suggestion that will no longer exist.
+
 # Use only what you were given
 
 The page state lists every element you may act on, each with an index in square

@@ -537,7 +537,9 @@ async def test_autosized_address_inputs_can_be_found_and_filled(
 
     elements = await open_page(driver, html_server, "autosized_inputs.html")
     pickup = named(elements, "Pickup location")
-    destination = named(elements, "Drop-off location")
+    destination = next(
+        item for item in elements if item.tag == "input" and item.name == "Drop-off location"
+    )
     assert pickup.bbox.width == 2
     assert destination.bbox.width == 2
     result = await driver.execute(

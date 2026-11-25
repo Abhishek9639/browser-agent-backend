@@ -785,3 +785,33 @@ async def test_code_typed_into_an_editor_is_verified_by_seeing_it_on_the_page() 
 
     assert seen.ok is True
     assert missing.ok is False
+
+
+@pytest.mark.parametrize("confirmed", [True, False])
+async def test_disappearing_autocomplete_option_checks_the_selected_result(confirmed: bool) -> None:
+    before = page(
+        element(
+            0,
+            tag="li",
+            role="option",
+            name="Polaris School of Technology",
+            selected=False,
+            css_path="#suggestion",
+        )
+    )
+    after = page(
+        element(
+            3,
+            name="Drop-off location",
+            value="Polaris School of Technology" if confirmed else "",
+            css_path="#destination",
+        ),
+        summary='Drop-off location value="Polaris School of Technology"'
+        if confirmed
+        else "Drop-off location",
+    )
+    verdict = await verify(
+        decision(outcome="text_present", value="Polaris School of Technology"), before, after
+    )
+    assert verdict.ok is confirmed
+    assert verdict.actual["check"] == Check.TEXT_PRESENT.value

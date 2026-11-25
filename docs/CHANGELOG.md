@@ -879,3 +879,10 @@ Added
 - A real Uber pre-booking probe exposed native address inputs only 2px wide inside full-size select widgets. The collector's minimum-size filter hid them from the planner.
 - Retain non-zero text/search inputs inside visible Base Web select or ARIA combobox wrappers, including inputs that also carry a combobox role. Keep hidden, zero-size and unrelated tiny controls excluded.
 - Add a browser regression that finds and fills this layout and checks the exclusion rules.
+
+### Autocomplete verification
+
+- Real Uber now accepts both pickup and destination input. The successful pre-booking run selected PST hostel and Polaris School of Technology without requesting a ride.
+- Verify a disappearing autocomplete option against its declared result instead of requiring its vanished selected-state flag. Unchanged checkbox/disclosure checks still fail correctly.
+- Guide the planner to use accessible labels, rather than invented CSS selectors, for visibility expectations.
+- Correct the auto-sized-input regression to distinguish the native input from its identically named combobox wrapper. Added positive/negative selected-result verification tests; 221 focused tests pass.

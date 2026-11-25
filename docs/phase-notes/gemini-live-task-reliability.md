@@ -76,3 +76,23 @@ role must not hide its enclosing widget during the ancestor lookup. A fixture
 covers lookup, actual typing, zero-size, aria-hidden, transparent and unrelated
 tiny controls. This follow-up's live and full CI results are recorded below
 when complete. No real ride was requested.
+
+## Uber selection and verifier follow-up
+
+Live task `e7ccc484-3e2a-43e0-af88-c4d407bbb234` completed in five steps:
+both address inputs were typed and the matching PST hostel and Polaris School
+of Technology locations in Brookefield, Bengaluru were selected. No booking
+was requested. Two selection steps were marked unverified because the old
+verifier insisted on reading a selected flag from an option that had already
+left the page. The planner recovered from the resulting page and completed.
+
+The verifier now falls back to the declared outcome for a disappearing ARIA
+option. Tests check both an observed selection result and a missing result;
+a missing result does not pass. Ordinary checkbox/disclosure state checks
+remain intact. Prompt guidance also prevents CSS selectors being substituted
+for accessible labels in `element_visible` expectations.
+
+The CI run on `b56000b` passed all jobs except one new fixture assertion: it
+looked up a combobox wrapper with the same label as its input. The regression
+now explicitly checks the input. 221 focused verifier/orchestrator/planner tests
+passed after the fix. A final full CI and live pre-booking recheck follow.
