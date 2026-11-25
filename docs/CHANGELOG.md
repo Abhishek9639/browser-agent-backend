@@ -873,3 +873,9 @@ Added
 - Allow-list only the exact historical DOM-test dummy token in the secret audit.
 - Prevent the offline mock from endlessly retyping a masked field after a verified write; add deterministic coverage for randomly generated IDs containing secret-like substrings.
 - Preserve field masking and all other secret-scanning rules.
+
+### Auto-sizing address inputs
+
+- A real Uber pre-booking probe exposed native address inputs only 2px wide inside full-size select widgets. The collector's minimum-size filter hid them from the planner.
+- Retain non-zero text/search inputs inside visible Base Web select or ARIA combobox wrappers, including inputs that also carry a combobox role. Keep hidden, zero-size and unrelated tiny controls excluded.
+- Add a browser regression that finds and fills this layout and checks the exclusion rules.

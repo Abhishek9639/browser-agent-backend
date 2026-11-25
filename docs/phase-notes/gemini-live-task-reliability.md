@@ -55,3 +55,24 @@ handle transient unavailability, with a short cooldown for the failed model.
    goal are different outcomes; parsing English failure phrases is unreliable.
 3. Why suppress provider exception context? Vendor errors can echo request
    content or credentials; a translated error should expose only safe guidance.
+
+## Full CI and the live Uber finding
+
+[CI on d41952c](https://github.com/Abhishek9639/browser-agent-backend/actions/runs/45617652798)
+passed all jobs: 1,428 unit tests (one intentional live-provider skip),
+348 integration tests and 24 chaos tests. Lint, type checking, dependency/secret
+audit, benchmark and Docker build/smoke passed too. Firefox tests pass in Linux;
+this does not resolve the previously observed local macOS Firefox issue.
+
+The actual Uber browser probe then showed a separate input-perception problem:
+the two native address inputs were 2px wide and 20px high inside full-size
+Base Web select widgets. Both were excluded as too small. A temporary local
+geometry-only diagnostic established this; it recorded no values or page text
+and was removed from the code afterward.
+
+The collector now recognizes this specific auto-sizing input pattern while
+retaining the other hidden-control exclusions. A native input's own combobox
+role must not hide its enclosing widget during the ancestor lookup. A fixture
+covers lookup, actual typing, zero-size, aria-hidden, transparent and unrelated
+tiny controls. This follow-up's live and full CI results are recorded below
+when complete. No real ride was requested.

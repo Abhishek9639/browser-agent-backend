@@ -528,3 +528,22 @@ async def test_an_ordinary_value_is_not_treated_as_a_secret(
 
     assert element.is_masked is False
     assert element.value == value
+
+
+async def test_autosized_address_inputs_can_be_found_and_filled(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    from app.agent.browser.actions import TypeAction
+
+    elements = await open_page(driver, html_server, "autosized_inputs.html")
+    pickup = named(elements, "Pickup location")
+    destination = named(elements, "Drop-off location")
+    assert pickup.bbox.width == 2
+    assert destination.bbox.width == 2
+    result = await driver.execute(
+        TypeAction(selector=f'[data-agent-idx="{pickup.index}"]', value="PST Hostel")
+    )
+    assert result.ok
+    assert await driver.page.locator("#pickup").input_value() == "PST Hostel"
+    for element_id in ("hidden-aria", "hidden-opacity", "zero", "unrelated-tiny"):
+        assert await driver.page.get_attribute(f"#{element_id}", "data-agent-idx") is None
