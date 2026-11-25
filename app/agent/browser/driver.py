@@ -318,26 +318,8 @@ def indicator_script(mode: str) -> str:
 
 
 def launch_args(fullscreen: bool, headless: bool) -> list[str]:
-    """Chromium flags for the launch.
-
-    Stealth flags strip the automation fingerprints that Google and other sites
-    use to detect Playwright/Selenium and block sign-in with the
-    "This browser or app may not be secure" message.
-    """
-    args = [
-        # Remove the CDP / DevTools automation fingerprint.
-        "--disable-blink-features=AutomationControlled",
-        # Drop the yellow "Chrome is being controlled…" infobars.
-        "--disable-infobars",
-        # Skip first-run / "set as default" dialogs.
-        "--no-first-run",
-        "--no-default-browser-check",
-        # Suppress the enable-automation switch that Playwright adds by default.
-        "--disable-features=ChromeWhatsNewUI",
-    ]
-    if fullscreen and not headless:
-        args.append("--start-maximized")
-    return args
+    """Chromium flags for the launch."""
+    return ["--start-maximized"] if fullscreen and not headless else []
 
 
 class PlaywrightDriver:
@@ -391,7 +373,7 @@ class PlaywrightDriver:
             self._context = contexts[0] if contexts else await self._browser.new_context()
         else:
             self._owns_context = True
-            self._context = await self._browser.new_context(
+            context_kwargs: dict = dict(
                 # A maximised window has no fixed size: let the page fill it.
                 no_viewport=self.fills_window,
                 viewport=None
@@ -404,8 +386,13 @@ class PlaywrightDriver:
                 timezone_id=self._config.timezone,
                 # Spec section 4.13: the agent never writes to the host disk.
                 accept_downloads=False,
-                user_agent=self._config.user_agent,
             )
+            # Only force a custom User-Agent for Chromium.  For Firefox (and
+            # any other non-Chromium fallback) let Playwright use the engine's
+            # native UA so sites that gate on a real Firefox UA let us through.
+            if self._config.engine in ("chromium", ""):
+                context_kwargs["user_agent"] = self._config.user_agent
+            self._context = await self._browser.new_context(**context_kwargs)
         self._context.set_default_timeout(self._config.action_timeout_ms)
         self._context.set_default_navigation_timeout(self._config.navigation_timeout_ms)
 
@@ -466,11 +453,22 @@ class PlaywrightDriver:
             return await playwright.firefox.launch(
                 headless=self._config.headless, slow_mo=self._config.slow_mo_ms
             )
+        args = launch_args(self._config.fullscreen, self._config.headless)
+        if self._config.headless:
+            # Headless: strip automation fingerprints so anti-bot checks pass.
+            args = [
+                "--disable-blink-features=AutomationControlled",
+                "--disable-infobars",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-features=ChromeWhatsNewUI",
+                *args,
+            ]
         return await playwright.chromium.launch(
             headless=self._config.headless,
             slow_mo=self._config.slow_mo_ms,
             channel=self._config.channel or None,
-            args=launch_args(self._config.fullscreen, self._config.headless),
+            args=args,
         )
 
     async def close(self) -> None:
@@ -603,6 +601,10 @@ class PlaywrightDriver:
             # A sandbox breach is not a page problem, so it is raised rather
             # than reported: the orchestrator must not retry it.
             raise
+        except BrowserClosedError:
+            # The user closed the window or tab while the task was running.
+            # Propagate so the orchestrator can tell them rather than retrying.
+            raise
         except TabLimitReached as exc:
             # Recoverable by closing a tab, so this comes back as a failed
             # action the ladder can work with rather than as an exception.
@@ -635,21 +637,36 @@ class PlaywrightDriver:
                 tabs_before = set(self._sessions.tab_ids)
                 opens_tab = await self._opens_new_tab(locator)
                 try:
-                    await locator.click()
+                    await locator.click(timeout=5_000)
                 except PlaywrightTimeoutError:
-                    # The element is covered or behind a CSS transition.
-                    # A forced click bypasses actionability checks and lands
-                    # directly on the element's coordinates, which is the best
-                    # we can do when something invisible is in the way.
+                    # The element timed out. It might be covered by an overlay
+                    # (use force=True to click through it) OR it might be
+                    # disabled/hidden (in which case force is wrong — we should
+                    # let the timeout propagate as a failure).
+                    # Check disabled / aria-disabled before forcing.
+                    disabled = False
+                    try:
+                        disabled = bool(
+                            await locator.evaluate(
+                                "(el) => el.disabled === true || "
+                                "el.getAttribute('aria-disabled') === 'true' || "
+                                "el.hasAttribute('disabled')"
+                            )
+                        )
+                    except Exception:
+                        pass
+                    if disabled:
+                        # Re-raise so _run_action records TIMEOUT / NOT_INTERACTABLE.
+                        raise
                     logger.info("click_forced_through_cover")
-                    await locator.click(force=True)
+                    await locator.click(force=True, timeout=5_000)
                 await self._follow_new_tab(tabs_before, opens_tab)
             case TypeAction():
                 await self._type(action)
             case ScrollAction():
                 await self._scroll(action)
             case SelectAction():
-                await (await self._locate(action.selector)).select_option(action.value)
+                await self._select(action)
             case ExtractAction():
                 return await self._extract(action)
             case WaitAction():
@@ -817,7 +834,11 @@ class PlaywrightDriver:
 
     async def _type_at_keyboard(self, locator: Locator, action: TypeAction) -> None:
         """Click the target, then type into whatever the click focused."""
-        await locator.click()
+        try:
+            await locator.click(timeout=3_000)
+        except PlaywrightTimeoutError:
+            # Covered or transitioning — force click to focus it.
+            await locator.click(force=True, timeout=2_000)
         # Let a widget that swaps in its own input finish doing so.
         await asyncio.sleep(OBSTRUCTION_SETTLE_S)
         if action.clear_first:
@@ -834,6 +855,93 @@ class PlaywrightDriver:
         await asyncio.sleep(0.2)
         if action.press_enter:
             await self.page.keyboard.press("Enter")
+
+    async def _select(self, action: SelectAction) -> None:
+        """Select an option from a native <select> or a custom dropdown widget."""
+        locator = await self._locate(action.selector)
+        await self._clear_obstruction(locator)
+        await self._glide_to(locator)
+
+        tag = ""
+        try:
+            tag = await locator.evaluate("el => el.tagName ? el.tagName.toLowerCase() : ''")
+        except Exception:
+            pass
+
+        if tag == "select":
+            try:
+                await locator.select_option(action.value, timeout=3_000)
+                return
+            except Exception:
+                try:
+                    await locator.select_option(label=action.value, timeout=3_000)
+                    return
+                except Exception:
+                    pass
+
+        # If not a native <select> or select_option failed, it is a custom dropdown widget
+        # 1. Click the trigger to open the options list
+        try:
+            await locator.click(timeout=3_000)
+        except Exception:
+            try:
+                await locator.click(force=True, timeout=2_000)
+            except Exception:
+                try:
+                    await locator.evaluate("el => el.click()")
+                except Exception:
+                    pass
+
+        await asyncio.sleep(0.3)
+        val = action.value.strip()
+
+        # 2. Try clicking option by text
+        try:
+            opt = self.page.locator(f"text={val}").first
+            if await opt.is_visible():
+                await opt.click(timeout=3_000)
+                return
+        except Exception:
+            pass
+
+        # 3. Try get_by_role("option", name=val)
+        try:
+            role_opt = self.page.get_by_role("option", name=val).first
+            if await role_opt.is_visible():
+                await role_opt.click(timeout=3_000)
+                return
+        except Exception:
+            pass
+
+        # 4. Search matching element in DOM and click
+        try:
+            clicked = await self.page.evaluate(
+                """(val) => {
+                    const norm = val.toLowerCase().trim();
+                    const candidates = Array.from(document.querySelectorAll('li, div, span, button, [role="option"], a'));
+                    for (const el of candidates) {
+                        if (el.offsetParent !== null && el.textContent.trim().toLowerCase() === norm) {
+                            el.click();
+                            return true;
+                        }
+                    }
+                    for (const el of candidates) {
+                        if (el.offsetParent !== null && el.textContent.trim().toLowerCase().includes(norm)) {
+                            el.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }""",
+                val,
+            )
+            if clicked:
+                return
+        except Exception:
+            pass
+
+        # 5. Fallback to direct select_option
+        await locator.select_option(action.value)
 
     async def _insert_block(self, locator: Locator, action: TypeAction) -> None:
         """Put a multi-line text (a program) into an editor in one piece.
@@ -1024,7 +1132,11 @@ class PlaywrightDriver:
         await self.page.evaluate(scroll_by_js("smooth" if smooth else "instant"), delta)
         # Also try scrolling with the mouse wheel over the viewport centre for
         # sites that intercept wheel events but ignore programmatic scrollBy.
-        if not can_move or not smooth:
+        # Only do this for a visible (non-headless) browser where the wheel
+        # listener is active; in headless mode scrollBy("instant") is reliable
+        # and an extra wheel event can land on a random element and scroll it
+        # in the wrong direction.
+        if smooth and not can_move:
             # Fire a synthetic wheel event at the viewport centre so event-driven
             # scroll containers (Flipkart, Amazon sidebars) also advance.
             try:
@@ -1063,13 +1175,18 @@ class PlaywrightDriver:
 
     async def _extract(self, action: ExtractAction) -> str:
         if action.selector:
-            try:
-                locator = await self._locate(action.selector)
-                text = await locator.inner_text()
-                if text and text.strip():
-                    return text.strip()
-            except Exception:
-                pass
+            # When an explicit selector is given, honour it strictly: locate the
+            # element and read its text. If the selector matches nothing the
+            # Playwright timeout propagates up to _run_action which maps it to
+            # TIMEOUT, satisfying "no Playwright exception escapes" while still
+            # returning ok=False for a missing element. Only fall back to the
+            # full page when the element exists but its text is empty.
+            locator = await self._locate(action.selector)
+            # This line raises PlaywrightTimeoutError when the element is absent,
+            # which is correct — the caller asked for a specific element.
+            text = await locator.inner_text()
+            if text and text.strip():
+                return text.strip()
         return await self._all_text()
 
     async def _locate(self, selector: str) -> Locator:

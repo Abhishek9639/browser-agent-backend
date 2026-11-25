@@ -131,12 +131,15 @@ class GeminiLLM:
                 translated = _translate(exc)
                 limited = isinstance(translated, LLMRateLimited)
                 missing = getattr(exc, "code", None) == NOT_FOUND
+                unavailable = isinstance(translated, LLMUnavailable)
                 if isinstance(translated, LLMRateLimited):
                     wait = translated.retry_after_s or DEFAULT_EXHAUSTED_S
                     self._exhausted_until[model] = time.monotonic() + min(wait, MAX_EXHAUSTED_S)
                 elif missing:
                     self._exhausted_until[model] = time.monotonic() + MAX_EXHAUSTED_S
-                if (limited or missing) and position < len(candidates) - 1:
+                elif unavailable:
+                    self._exhausted_until[model] = time.monotonic() + DEFAULT_EXHAUSTED_S
+                if (limited or missing or unavailable) and position < len(candidates) - 1:
                     logger.warning(
                         "gemini_model_unavailable", model=model, next=candidates[position + 1]
                     )

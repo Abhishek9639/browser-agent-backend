@@ -430,6 +430,8 @@ class FallbackLLM:
             if isinstance(error, LLMRateLimited):
                 wait = error.retry_after_s if error.retry_after_s else self._cooldown_s
                 self._primary_blocked_until = self._clock() + min(wait, MAX_RATE_LIMIT_COOLDOWN_S)
+            elif isinstance(error, LLMUnavailable):
+                self._primary_blocked_until = self._clock() + self._cooldown_s
             if isinstance(error, LLMBadOutput):
                 # The provider is healthy and the model answered badly. Asking
                 # a different model the same question hides a prompt problem.

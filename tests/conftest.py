@@ -325,3 +325,37 @@ async def driver(browser_settings: Settings) -> AsyncIterator[object]:
         yield instance
     finally:
         await instance.close()
+
+
+# ------------------------------------------------------------------ firefox
+
+
+def _firefox_available() -> bool:
+    """Return True when Playwright's Firefox binary can actually launch."""
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as p:
+            browser = p.firefox.launch(headless=True)
+            browser.close()
+        return True
+    except Exception:
+        return False
+
+
+# Evaluated once per session; the result is cached so the launch only
+# happens once even when the marker is applied to many tests.
+_FIREFOX_AVAILABLE: bool | None = None
+
+
+def firefox_available() -> bool:
+    global _FIREFOX_AVAILABLE
+    if _FIREFOX_AVAILABLE is None:
+        _FIREFOX_AVAILABLE = _firefox_available()
+    return _FIREFOX_AVAILABLE
+
+
+requires_firefox = pytest.mark.skipif(
+    not firefox_available(),
+    reason="Firefox is not available or cannot launch on this machine",
+)

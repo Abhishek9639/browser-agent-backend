@@ -36,6 +36,7 @@ from app.agent.browser.errors import (
 )
 from app.agent.perception.perceive import perceive
 from app.core.config import Settings
+from tests.conftest import requires_firefox
 
 pytestmark = pytest.mark.browser
 
@@ -867,6 +868,7 @@ async def test_a_window_closed_under_the_task_is_reported_as_closed_not_unlaunch
 # ------------------------------------------------------- a site that says no
 
 
+@requires_firefox
 async def test_a_site_that_refuses_this_browser_is_tried_in_another(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -135,7 +135,7 @@ class GroqLLM:
             except Exception as exc:
                 translated = _translate(exc)
                 has_next = position < len(models) - 1
-                if isinstance(translated, LLMRateLimited) and has_next:
+                if isinstance(translated, (LLMRateLimited, LLMUnavailable)) and has_next:
                     logger.warning(
                         "groq_model_rate_limited", model=model, next=models[position + 1]
                     )
