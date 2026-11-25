@@ -461,6 +461,11 @@ class Orchestrator:
         # row, the planner is told it is stuck and asked to try something else.
         _last_dom_hash: str = ""
         _same_page_steps: int = 0
+        # Only auto-dismiss overlays on fresh page loads / navigations, not
+        # immediately after a click/type on the same URL — otherwise a dialog
+        # the agent deliberately opened (such as "Select language and format")
+        # gets closed before the planner ever sees it.
+        clear_overlays = True
 
         if plan is not None:
             # Replay what worked before, then let the planner take over from
@@ -480,9 +485,12 @@ class Orchestrator:
 
             if state is None:
                 state = await self._browser.perceive()
+                clear_overlays = True
             self._stop_if_cancelled()
 
-            state = await self._clear_overlays(state)
+            if clear_overlays:
+                state = await self._clear_overlays(state)
+                clear_overlays = False
 
             # Count how many consecutive steps happen on the same DOM hash.
             # A fresh state (state was None → just perceived) always resets
@@ -725,6 +733,7 @@ class Orchestrator:
                 # The step stays recorded as unverified, so the planner is told
                 # it moved nothing, and it picks something else to do.
                 idle_scrolls += 1
+                clear_overlays = after.url != state.url
                 state = after
                 await self._return_to_planning(task_id)
                 continue
@@ -739,6 +748,7 @@ class Orchestrator:
                 # it used to end the task: a planner that could not find a date
                 # in a calendar waited "to see the page" and the run was over.
                 idle_waits += 1
+                clear_overlays = after.url != state.url
                 state = after
                 await self._return_to_planning(task_id)
                 continue
@@ -751,6 +761,7 @@ class Orchestrator:
                 # The extracted element had no text. Tell the planner rather than
                 # failing the task, so it can try another element or the whole page.
                 idle_extracts += 1
+                clear_overlays = after.url != state.url
                 state = after
                 await self._return_to_planning(task_id)
                 continue
@@ -779,6 +790,7 @@ class Orchestrator:
                 # the page as it really is, decides what to do from there.
                 missed_forecasts += 1
                 logger.info("forecast_missed", step=step_number, action=decision.action.value)
+                clear_overlays = decision.action in _NAVIGATION_ACTIONS or after.url != state.url
                 state = after
                 await self._return_to_planning(task_id)
                 continue
@@ -812,6 +824,7 @@ class Orchestrator:
                 )
 
             # The page as it is now is what the next step plans against.
+            clear_overlays = decision.action in _NAVIGATION_ACTIONS or after.url != state.url
             state = after
             await self._set_status(task_id, TaskStatus.PLANNING)
 
@@ -1939,6 +1952,9 @@ MAX_MISSED_FORECASTS: Final = 3
 _FORECAST_ACTIONS: Final = frozenset({ActionType.CLICK, ActionType.TYPE, ActionType.SELECT})
 # Actions with an element on the page to find, which is all grounding does.
 _GROUNDED_ACTIONS: Final = frozenset({ActionType.CLICK, ActionType.TYPE, ActionType.SELECT})
+_NAVIGATION_ACTIONS: Final = frozenset(
+    {ActionType.NAVIGATE, ActionType.NEW_TAB, ActionType.SWITCH_TAB, ActionType.CLOSE_TAB}
+)
 
 
 def _history_note(
