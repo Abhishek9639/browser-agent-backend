@@ -674,6 +674,34 @@ async def test_the_failure_reason_never_quotes_the_exception(settings: Settings)
     assert outcome.failure_reason == "The task stopped after an internal error (RuntimeError)."
 
 
+async def test_blocked_navigation_explains_configuration_without_leaking_url(
+    settings: Settings,
+) -> None:
+    from app.agent.browser.errors import DomainNotAllowedError
+
+    private_url = "https://example.test/?token=private-query-value"
+
+    class RestrictedBrowser(FakeBrowser):
+        async def execute(self, action: Any) -> ActionResult:
+            raise DomainNotAllowedError(f"{private_url} is outside the allowed domains.")
+
+    rig = build(
+        script=[decision_payload()],
+        browser=RestrictedBrowser(),
+        settings=settings,
+    )
+
+    outcome = await rig.orchestrator.run(TASK_ID)
+
+    assert outcome.status is TaskStatus.EXECUTION_FAILED
+    assert "AGENT_ALLOWED_DOMAINS" in (outcome.failure_reason or "")
+    assert rig.store.task.failure_reason == outcome.failure_reason
+    assert rig.bus.published[-1].failure_reason == outcome.failure_reason
+    assert private_url not in repr(rig.bus.published)
+    assert private_url not in (outcome.failure_reason or "")
+    assert rig.store.steps == []
+
+
 async def test_a_final_event_goes_out_even_when_the_database_is_gone(
     settings: Settings,
 ) -> None:

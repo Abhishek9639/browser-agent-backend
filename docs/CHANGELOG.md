@@ -4,6 +4,13 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### General web task configuration and failure reporting — 2026-11-26
+
+- Diagnose the GSoC task's first-navigation blocker: the local demo configuration only allowed localhost and Uber. Configure the user's local instance for the requested general web browsing; retain restricted repository defaults.
+- Report a website allow-list rejection as an actionable configuration error instead of a generic browser failure. Preserve the domain boundary and omit the attempted URL from the error log.
+- Add a regression proving the reason reaches the stored task and final WebSocket event without exposing a query token.
+- The exact GSoC prompt completed twice in live Gemini/Chromium tests. Research guidance now distinguishes older-year candidates from confirmed future participation. Final CI passed all jobs with 1,808 tests passing and one live-provider test skipped.
+
 ### B45 - A planner that keeps to its plan, and code problems
 
 Changed
