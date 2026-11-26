@@ -899,3 +899,4 @@ Added
 - Wake a task's approval wait on cancellation instead of leaving it alive until the human-response timeout. Expire the pending approval and release waiters.
 - Give cancellation priority over a simultaneous approval, so the action cannot execute after cancel and the client receives a cancelled final outcome.
 - Added regression coverage for cancellation while waiting, cancellation before registration, and an approval/cancel race. All 128 focused approval, runner and orchestrator tests passed.
+- Make the browser integration fixture's scripted sign-in intent explicit. Its password field otherwise correctly triggers the manual-login handoff before the persistence/action assertions can run; password writes still require action approval and remain redacted.

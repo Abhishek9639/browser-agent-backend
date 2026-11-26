@@ -99,7 +99,10 @@ async def rig(
     task = await make_task(
         db_session,
         user,
-        instruction="Fill the form, including the password, and search for a flight from Delhi",
+        # This fixture deliberately exposes a password field to exercise masking.
+        # Authorize its scripted login explicitly so these loop/persistence tests
+        # do not stop at the separate manual-login handoff.
+        instruction="Log in with the test credentials and search for a flight from Delhi",
     )
     await db_session.commit()
 

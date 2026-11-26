@@ -127,3 +127,16 @@ accepting an approval, including when approval and cancel race.
 128 focused tests passed, covering active waits, a signal set before the wait,
 and a simultaneous approval/cancel that must execute no browser action and
 publish a cancelled final event. Full verification follows this change.
+
+The live API/Chromium/WebSocket recheck cancelled a pending login handoff in
+226 ms, executed no steps, charged no credits, and left its approval expired.
+The local non-browser unit/integration run passed 1,575 tests (209 browser/live
+cases deselected).
+
+CI on `7a9fc48` passed unit, chaos, Docker smoke, audit, lint and type checks.
+Eight browser integration tests shared a form fixture with a password field
+but no explicit sign-in instruction. The new login guard correctly stopped
+that fixture before the unrelated action/persistence assertions. The fixture
+now explicitly requests sign-in with test credentials; production login
+detection, action approval and password redaction are unchanged. Full CI is
+being rerun to verify the browser integration behavior.
