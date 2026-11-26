@@ -109,9 +109,8 @@ async def perceive(
         scroll=ScrollState(y=metrics["scrollY"], max_y=metrics["maxScrollY"]),
         elements=elements,
         summary_text=summary,
-        # Not sent to the model, which gets the compact summary. This is for
-        # the section 4.7 text_present check, which has to see ordinary page
-        # text and not only the interactive elements.
+        # Also included in bounded, untrusted planner context so static
+        # confirmations and result prices can inform the next decision.
         text=metrics.get("text", ""),
         dom_hash=compute_dom_hash(metrics["url"], elements),
     )

@@ -210,7 +210,19 @@ class DeterministicVerifier:
             # Clicking a disclosure flips aria-expanded and nothing else, and
             # `expanded` is not part of the DOM hash, so dom_changed would call
             # a working click a failure.
-            return _element_state(decision, before, after, expectation.value)
+            state_change = _element_state(decision, before, after, expectation.value)
+            original = before.element_at(decision.target_index)  # type: ignore[arg-type]
+            # Autocomplete options often disappear when selected. Their
+            # aria-selected flag cannot be read afterwards; check the declared
+            # result on the resulting page instead. A checkbox or disclosure
+            # that remains unchanged must still fail its state check.
+            vanished_option = (
+                original is not None
+                and original.role == "option"
+                and _same_element(decision, before, after) is None
+            )
+            if state_change.ok or not vanished_option:
+                return state_change
 
         check = _as_check(expectation.type)
         if check is Check.URL_CONTAINS and not expectation.value.strip():

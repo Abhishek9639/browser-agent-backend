@@ -14,7 +14,8 @@ body {height:3000px}
 <input id="search" placeholder="Search pickup"><button id="suggestion">Select address</button>
 </div>
 <div id="rides" role="dialog" hidden><div style="height:550px">Ride options</div>
-<button id="ride-option" onclick="window.selectedRide='Demo ride'">Demo ride</button><div style="height:100px"></div></div>
+<button id="ride-option">Demo ride</button><div style="height:100px"></div></div>
+<p id="selection-summary" aria-live="polite"></p>
 <script>
 const pickup = document.querySelector('#pickup');
 const addressDialog = document.querySelector('#address-dialog');
@@ -28,5 +29,11 @@ document.querySelector('#suggestion').onclick = () => {
 };
 document.querySelector('#see-rides').onclick = () => {
   document.querySelector('#rides').hidden = false;
+};
+document.querySelector('#ride-option').onclick = () => {
+  window.selectedRide = 'Demo ride';
+  document.querySelector('#selection-summary').textContent =
+    'Selected Demo ride from ' + pickup.value + ' to ' + document.querySelector('#dropoff').value;
+  document.querySelector('#rides').hidden = true;
 };
 </script>

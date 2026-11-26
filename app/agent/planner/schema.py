@@ -84,6 +84,8 @@ class Decision(BaseModel):
     requires_approval: bool = False
     needs_vision: bool = False
     final_answer: str | None = None
+    # Old recorded decisions remain readable; provider schema requires an explicit value.
+    goal_achieved: bool = Field(default=True, strict=True)
     # Which item of the plan, numbered as the planner was shown it, this action
     # works on. Unchecked here: a number off the end is clamped by the loop,
     # because a slip in bookkeeping is no reason to refuse a sound action.
@@ -182,6 +184,7 @@ def decision_json_schema() -> dict[str, Any]:
             "requiresApproval",
             "needsVision",
             "finalAnswer",
+            "goalAchieved",
             "planStep",
             "addPlanSteps",
         ],
@@ -261,6 +264,13 @@ def decision_json_schema() -> dict[str, Any]:
             "finalAnswer": {
                 "type": ["string", "null"],
                 "description": "The answer to the goal. Required for done, null otherwise.",
+            },
+            "goalAchieved": {
+                "type": "boolean",
+                "description": (
+                    "For done: true only when the requested goal is achieved, false if blocked "
+                    "or incomplete. Explain the result or blocker in finalAnswer. False otherwise."
+                ),
             },
             "planStep": {
                 "type": ["integer", "null"],

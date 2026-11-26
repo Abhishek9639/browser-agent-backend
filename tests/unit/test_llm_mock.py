@@ -330,3 +330,13 @@ async def test_an_unknown_page_still_produces_a_valid_action() -> None:
 )
 def test_a_fare_needs_a_currency_token_of_its_own(text: str, expected: list[str]) -> None:
     assert _PRICE.findall(text) == expected
+
+
+@pytest.mark.parametrize("verified", [True, False])
+async def test_masked_fields_advance_only_after_a_verified_write(verified: bool) -> None:
+    from app.agent.perception.dom_extractor import MASK
+
+    filled = SEARCH_PAGE.replace('placeholder="Departure city"', f'value="{MASK}"')
+    history = f"1. type From -> {'verified' if verified else 'failed'}\n"
+    decision = await decide(MockLLM(), GOAL, history + filled)
+    assert decision["target"] == ("To" if verified else "From")

@@ -2517,3 +2517,75 @@ async def test_asking_for_details_again_and_again_ends_the_task(settings: Settin
 
     assert outcome.status is TaskStatus.EXECUTION_FAILED
     assert len(gate.requests) == MAX_DETAIL_PAUSES
+
+
+def test_provider_access_failure_explains_key_configuration_without_echoing_secrets() -> None:
+    from app.agent.llm.base import LLMAccessDenied
+    from app.agent.orchestrator import _safe_reason
+
+    reason = _safe_reason(LLMAccessDenied("private-provider-response"))
+    assert "API key" in reason
+    assert "private-provider-response" not in reason
+    assert "internal error" not in reason
+
+
+async def test_a_blocked_done_is_failed_and_never_cached_as_success(settings: Settings) -> None:
+    cache = RecordingCache()
+    blocker = "The selected ride confirmation is missing."
+    rig = build(
+        script=[decision_payload(), done_payload(blocker) | {"goalAchieved": False}],
+        settings=settings,
+        cache=cache,
+    )
+    outcome = await rig.orchestrator.run(TASK_ID)
+    assert outcome.status is TaskStatus.EXECUTION_FAILED
+    assert outcome.final_answer is None
+    assert outcome.failure_reason == blocker
+    assert rig.store.task.status is TaskStatus.EXECUTION_FAILED
+    assert rig.store.task.final_answer is None
+    assert rig.store.task.failure_reason == blocker
+    assert cache.saved is None
+    final = rig.bus.published[-1]
+    assert final.type == "final"
+    assert final.status is TaskStatus.EXECUTION_FAILED
+    assert final.failure_reason == blocker
+
+
+def test_uber_ride_options_login_prompt_is_detected_without_a_model() -> None:
+    from app.agent.orchestrator import _login_wall
+
+    state = page(
+        element(0, name="Continue").model_copy(update={"tag": "button"}),
+        url="https://m.uber.com/go/product-selection",
+    ).model_copy(update={"text": "Log in to see ride options"})
+    assert _login_wall(state, "show ride options from PST hostel to Polaris School of Technology")
+    assert _login_wall(state, "Show ride options. Do not enter credentials or passwords.")
+
+
+async def test_cancel_wins_over_an_approval_and_publishes_the_final_event(
+    settings: Settings,
+) -> None:
+    class Signal:
+        cancelled = False
+
+        def is_cancelled(self) -> bool:
+            return self.cancelled
+
+    signal = Signal()
+
+    class RacingApproval:
+        async def request(self, **kwargs: Any) -> ApprovalOutcome:
+            signal.cancelled = True
+            return ApprovalOutcome(approved=True, approval_id=uuid.uuid4())
+
+    rig = build(
+        script=[decision_payload(requiresApproval=True)],
+        settings=settings,
+        cancel_signal=signal,
+        approvals=RacingApproval(),
+    )
+    outcome = await rig.orchestrator.run(TASK_ID)
+    assert outcome.status is TaskStatus.CANCELLED
+    assert rig.browser.executed == []
+    assert rig.bus.published[-1].type is EventType.FINAL
+    assert rig.bus.published[-1].status is TaskStatus.CANCELLED

@@ -552,3 +552,65 @@ async def test_gemini_moves_to_the_next_model_when_one_is_used_up() -> None:
     # The used-up model is remembered, so the second call does not retry it.
     assert seen == ["test-model", "second-model", "second-model"]
     assert second.model_name == "second-model"
+
+
+@pytest.mark.parametrize(
+    ("code", "reason"),
+    [
+        (400, "API_KEY_INVALID"),
+        (400, "API_KEY_EXPIRED"),
+        (401, ""),
+        (403, "API_KEY_SERVICE_BLOCKED"),
+    ],
+)
+async def test_gemini_access_errors_are_actionable_and_hide_sdk_payload(
+    code: int,
+    reason: str,
+) -> None:
+    import traceback
+
+    from google.genai import errors as genai_errors
+
+    from app.agent.llm.base import LLMAccessDenied, is_retryable
+
+    secret = "example-secret-that-must-not-appear-in-a-traceback"
+    error = genai_errors.ClientError(
+        code,
+        {
+            "error": {
+                "code": code,
+                "message": secret,
+                "details": [{"reason": reason, "metadata": {"credential": secret}}],
+            }
+        },
+    )
+    client = GeminiLLM(settings_with(), client=FakeGemini(raises=error))
+    with pytest.raises(LLMAccessDenied) as caught:
+        await client.generate_json("s", [user("go")], SCHEMA)
+    assert "GOOGLE_API_KEY" in str(caught.value)
+    assert not is_retryable(caught.value)
+    assert secret not in "".join(traceback.format_exception(caught.value))
+
+
+async def test_gemini_uses_backup_when_primary_is_overloaded() -> None:
+    from google.genai import errors as genai_errors
+
+    seen: list[str] = []
+
+    class Overloaded(FakeGemini):
+        def __init__(self) -> None:
+            super().__init__()
+            original = self.aio.models.generate_content
+
+            async def generate_content(**kwargs: Any) -> Any:
+                seen.append(kwargs["model"])
+                if kwargs["model"] == "test-model":
+                    raise genai_errors.ServerError(503, {"error": {"message": "Overloaded"}})
+                return await original(**kwargs)
+
+            self.aio.models.generate_content = generate_content
+
+    client = GeminiLLM(settings_with(GEMINI_FALLBACK_MODELS="backup"), client=Overloaded())
+    assert (await client.generate_json("s", [user("go")], SCHEMA)).model_name == "backup"
+    assert (await client.generate_json("s", [user("go")], SCHEMA)).model_name == "backup"
+    assert seen == ["test-model", "backup", "backup"]

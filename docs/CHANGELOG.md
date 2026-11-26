@@ -857,3 +857,52 @@ Added
 - Scroll active autocomplete lists, focused panels and visible dialogs before the background page, using the same metrics for verification.
 - Added local cab-form regression coverage. Live Uber reproduction remains unverified pending the actual task and real-provider configuration; see `docs/phase-notes/input-and-scroll-reliability.md`.
 - Verified all 20 focused input/scroll cases across the focused run and corrected cab-form recheck; the full suite has not been rerun after this follow-up.
+
+### Gemini live-task reliability — 2026-11-22
+
+- Include bounded visible page text inside the planner's untrusted-data fence, so static prices and confirmations can be read alongside interactive controls.
+- Add a structured `goalAchieved` result. A planner that stops with an unmet goal now produces `EXECUTION_FAILED` and cannot save a successful replay.
+- Treat invalid Gemini keys and denied API access as actionable, non-retryable errors without exposing vendor response bodies in exception tracebacks.
+- Try configured Gemini backup models after transient provider unavailability, including HTTP 503; briefly skip the unavailable primary.
+- Make the local cab fixture show a visible selection confirmation, and explicitly request flight number and price in the live smoke test.
+- Regression checks: 1,566 non-browser unit/integration tests passed before the final HTTP-503 fallback adjustment; 237 focused tests then passed including the fallback regression. Live rechecks and CI results are recorded in the phase note.
+
+### Verification follow-up — 2026-11-25
+
+- Passed real Gemini cab-form confirmation and full SkyFare API/browser smoke tests.
+- Allow-list only the exact historical DOM-test dummy token in the secret audit.
+- Prevent the offline mock from endlessly retyping a masked field after a verified write; add deterministic coverage for randomly generated IDs containing secret-like substrings.
+- Preserve field masking and all other secret-scanning rules.
+
+### Auto-sizing address inputs
+
+- A real Uber pre-booking probe exposed native address inputs only 2px wide inside full-size select widgets. The collector's minimum-size filter hid them from the planner.
+- Retain non-zero text/search inputs inside visible Base Web select or ARIA combobox wrappers, including inputs that also carry a combobox role. Keep hidden, zero-size and unrelated tiny controls excluded.
+- Add a browser regression that finds and fills this layout and checks the exclusion rules.
+
+### Autocomplete verification
+
+- Real Uber now accepts both pickup and destination input. The successful pre-booking run selected PST hostel and Polaris School of Technology without requesting a ride.
+- Verify a disappearing autocomplete option against its declared result instead of requiring its vanished selected-state flag. Unchanged checkbox/disclosure checks still fail correctly.
+- Guide the planner to use accessible labels, rather than invented CSS selectors, for visibility expectations.
+- Correct the auto-sized-input regression to distinguish the native input from its identically named combobox wrapper. Added positive/negative selected-result verification tests; 221 focused tests pass.
+
+### Login handoff verification
+
+- Recognize Uber's “Log in to see ride options” message before calling the planner.
+- Do not treat any mention of passwords/credentials as permission to automate sign-in; explicit sign-in intent is required to bypass the manual login gate.
+- Passed 99 orchestrator tests and a real local API/Chromium/WebSocket handoff test using the observed login message, with no model calls or typed credentials.
+- The final real Uber probe reached Choose a ride for the correct route, then displayed a login requirement. Its next model call was rate-limited. Actual fares, account login and booking remain unverified.
+
+### Cancellation during human handoff — 2026-11-26
+
+- Wake a task's approval wait on cancellation instead of leaving it alive until the human-response timeout. Expire the pending approval and release waiters.
+- Give cancellation priority over a simultaneous approval, so the action cannot execute after cancel and the client receives a cancelled final outcome.
+- Added regression coverage for cancellation while waiting, cancellation before registration, and an approval/cancel race. All 128 focused approval, runner and orchestrator tests passed.
+- Make the browser integration fixture's scripted sign-in intent explicit. Its password field otherwise correctly triggers the manual-login handoff before the persistence/action assertions can run; password writes still require action approval and remain redacted.
+
+### Presentation handoff documentation
+
+- Update the local run guide for the verified Gemini setup, manual login browser, explicit demo URLs and existing-server reuse after an address-in-use error.
+- Mark the earlier input/scroll report as historical and distinguish successful fixture/API tests from the real Uber login/quota limit.
+- Final CI on `cd31dc8`: all jobs passed; 1,435 unit, 348 integration and 24 chaos tests passed (1,807 total), with one live-provider test intentionally skipped. Benchmark, Docker smoke, lint/typecheck and audits passed.

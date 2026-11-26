@@ -1,0 +1,16 @@
+<!doctype html>
+<title>Auto-sized address inputs</title>
+<style>
+.widget {width:310px;height:44px;border:1px solid;display:flex;align-items:center;gap:10px}
+input {box-sizing:content-box;width:2px;height:20px;padding:0;border:0}
+</style>
+<div class="widget" data-baseweb="select">
+  <label for="pickup">Pickup location</label><div><input id="pickup" role="combobox" aria-label="Pickup location"></div>
+</div>
+<div class="widget" role="combobox">
+  <label for="dropoff">Drop-off location</label><input id="dropoff" type="search" aria-label="Drop-off location">
+</div>
+<div class="widget" data-baseweb="select" aria-hidden="true"><input id="hidden-aria"></div>
+<div class="widget" data-baseweb="select" style="opacity:0"><input id="hidden-opacity"></div>
+<div class="widget" data-baseweb="select"><input id="zero" style="width:0"></div>
+<input id="unrelated-tiny" aria-label="Unrelated tiny input">

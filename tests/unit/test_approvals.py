@@ -206,3 +206,37 @@ def test_resolving_something_nobody_waits_on_is_not_an_error() -> None:
 
 def _only_pending(registry: ApprovalRegistry) -> uuid.UUID:
     return next(iter(registry._waiting))
+
+
+async def test_cancellation_wakes_an_unanswered_gate_and_expires_the_row() -> None:
+    approvals = FakeApprovals()
+    registry = ApprovalRegistry()
+    bus = InMemoryEventBus()
+    cancel = asyncio.Event()
+    gate = DatabaseApprovalGate(
+        unit_of_work_for(approvals), registry, bus, timeout_seconds=600, cancel_event=cancel
+    )
+    subscription = bus.subscribe(TASK)
+    asking = asyncio.create_task(ask(gate))
+    await asyncio.wait_for(subscription.__anext__(), timeout=1)
+    cancel.set()
+    outcome = await asyncio.wait_for(asking, timeout=1)
+    assert not outcome.approved
+    assert outcome.reason == "The task was cancelled."
+    assert registry.waiting == 0
+    assert approvals.rows[0].approval_status is ApprovalStatus.EXPIRED
+    assert approvals.rows[0].decided_at is not None
+
+
+async def test_cancellation_already_set_before_waiting_is_not_lost() -> None:
+    approvals = FakeApprovals()
+    registry = ApprovalRegistry()
+    cancel = asyncio.Event()
+    cancel.set()
+    gate = DatabaseApprovalGate(
+        unit_of_work_for(approvals), registry, InMemoryEventBus(), cancel_event=cancel
+    )
+    outcome = await asyncio.wait_for(ask(gate), timeout=1)
+    assert not outcome.approved
+    assert registry.waiting == 0
+    assert approvals.rows[0].approval_status is ApprovalStatus.EXPIRED

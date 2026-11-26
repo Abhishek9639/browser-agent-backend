@@ -193,6 +193,23 @@
     return false;
   }
 
+  function isAutosizedInput(el, rect, win) {
+    // Base Web selects (including Uber's address fields) keep an empty native
+    // text input only 2px wide inside a full-size visible select box. It is
+    // editable, not an injected sliver. Require the real widget around it;
+    // ordinary tiny controls and zero-size inputs still stay excluded.
+    if (el.tagName !== "INPUT" || !["text", "search"].includes(el.type)) return false;
+    if (rect.width <= 0 || rect.height < MIN_INTERACTIVE_PX) return false;
+    const widget = el.parentElement?.closest('[data-baseweb="select"], [role="combobox"]');
+    if (!widget || widget === el) return false;
+    const style = win.getComputedStyle(widget);
+    if (style.display === "none" || style.visibility !== "visible" || parseFloat(style.opacity) === 0) return false;
+    const box = widget.getBoundingClientRect();
+    return box.width >= MIN_INTERACTIVE_PX && box.height >= MIN_INTERACTIVE_PX &&
+      rect.left >= box.left && rect.right <= box.right &&
+      rect.top >= box.top && rect.bottom <= box.bottom;
+  }
+
   function hiddenReason(el, win, doc) {
     const style = win.getComputedStyle(el);
     if (style.display === "none") return "display";
@@ -202,7 +219,8 @@
     if (el.hasAttribute("hidden")) return "hidden-attr";
 
     const rect = el.getBoundingClientRect();
-    if (rect.width < MIN_INTERACTIVE_PX || rect.height < MIN_INTERACTIVE_PX) {
+    if ((rect.width < MIN_INTERACTIVE_PX || rect.height < MIN_INTERACTIVE_PX) &&
+        !isAutosizedInput(el, rect, win)) {
       return "too-small";
     }
 

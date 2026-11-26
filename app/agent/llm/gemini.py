@@ -17,6 +17,7 @@ from google.genai import types as genai_types
 
 from app.agent.llm.base import (
     DEFAULT_TIMEOUT_S,
+    LLMAccessDenied,
     LLMError,
     LLMMessage,
     LLMRateLimited,
@@ -131,17 +132,21 @@ class GeminiLLM:
                 translated = _translate(exc)
                 limited = isinstance(translated, LLMRateLimited)
                 missing = getattr(exc, "code", None) == NOT_FOUND
+                unavailable = isinstance(translated, LLMUnavailable)
                 if isinstance(translated, LLMRateLimited):
                     wait = translated.retry_after_s or DEFAULT_EXHAUSTED_S
                     self._exhausted_until[model] = time.monotonic() + min(wait, MAX_EXHAUSTED_S)
                 elif missing:
                     self._exhausted_until[model] = time.monotonic() + MAX_EXHAUSTED_S
-                if (limited or missing) and position < len(candidates) - 1:
+                elif unavailable:
+                    self._exhausted_until[model] = time.monotonic() + DEFAULT_EXHAUSTED_S
+                if (limited or missing or unavailable) and position < len(candidates) - 1:
                     logger.warning(
                         "gemini_model_unavailable", model=model, next=candidates[position + 1]
                     )
                     continue
-                raise translated from exc
+                # SDK error bodies can echo credentials or request content.
+                raise translated from None
         self._last_model = model
 
         text = getattr(response, "text", "") or ""
@@ -188,6 +193,22 @@ def _translate(exc: Exception) -> Exception:
         return LLMUnavailable("Could not reach Gemini.")
     if isinstance(exc, genai_errors.APIError):
         code = getattr(exc, "code", None) or 0
+        payload = getattr(exc, "details", None)
+        error = payload.get("error", payload) if isinstance(payload, dict) else {}
+        details = error.get("details", []) if isinstance(error, dict) else []
+        reasons = (
+            {
+                item.get("reason", "")
+                for item in details
+                if isinstance(item, dict) and isinstance(item.get("reason", ""), str)
+            }
+            if isinstance(details, list)
+            else set()
+        )
+        if code in {401, 403} or any(reason.startswith("API_KEY_") for reason in reasons):
+            return LLMAccessDenied(
+                "Gemini rejected access. Check GOOGLE_API_KEY and its API/project permissions."
+            )
         if code == TOO_MANY_REQUESTS:
             return LLMRateLimited("Gemini rate limit.", retry_after_s=_retry_in(exc))
         if code >= SERVER_ERROR:

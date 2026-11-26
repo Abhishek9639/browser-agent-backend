@@ -236,3 +236,25 @@ async def test_recovery_attempts_are_recorded_with_their_outcome(
         # A failed attempt without a reason is a row nobody can learn from.
         if attempt.outcome is RecoveryOutcome.FAILED:
             assert attempt.error
+
+
+async def test_a_secret_like_shuffled_id_does_not_repeat_verified_typing(
+    skyfare: str,
+    chaos_session: AsyncSession,
+    chaos_settings: Settings,
+    llm: LLMClient,
+    tmp_path: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from demo_sites.skyfare.chaos import Names
+
+    original = Names.__call__
+
+    def secret_like_id(names: Names, logical: str) -> str:
+        # A random seven-character ID can contain "pwd". Keep masking intact
+        # and reproduce that case deterministically instead of depending on RNG.
+        return "xpwd1234" if logical == "from" else original(names, logical)
+
+    monkeypatch.setattr(Names, "__call__", secret_like_id)
+    report = await execute("shuffle", skyfare, chaos_session, chaos_settings, llm, tmp_path)
+    assert report.completed and report.correct, report.outcome.failure_reason

@@ -1,5 +1,9 @@
 # Input and scrolling reliability
 
+> Historical report from 22 November 2026. Subsequent Gemini and real Uber
+> pre-booking tests have now run. See `gemini-live-task-reliability.md`
+> for current results; the original observations below describe the earlier setup.
+
 The user reported Uber task failures during address entry and scrolling. The
 local database contains no Uber task trace, and this checkout is configured with
 the SkyFare mock provider and a localhost-only allow-list. These changes fix

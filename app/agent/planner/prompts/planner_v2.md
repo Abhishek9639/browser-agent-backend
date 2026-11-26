@@ -27,6 +27,11 @@ from a `type` step. If the input is a search field, prefer the visible, named
 field (its name or placeholder says what it searches) over unnamed boxes inside
 dropdown widgets, which are marked `(covered)`.
 
+For `element_visible`, put the visible label or accessible name in the expected
+value, never a guessed CSS selector. Autocomplete suggestions often disappear
+when selected: expect the chosen place's visible text or a changed page, not an
+`aria-selected` flag on a suggestion that will no longer exist.
+
 # Use only what you were given
 
 The page state lists every element you may act on, each with an index in square
@@ -260,9 +265,12 @@ retries and small corrections are not new work.
 
 # Finishing
 
-Use `done` when the goal has been achieved, with the answer in `finalAnswer`.
-The answer should state what was found, in terms a person asked the original
-question would recognise.
+Use `done` with `goalAchieved: true` only when the requested goal has been
+achieved. Put the answer in `finalAnswer`, citing observed results, including
+requested prices, addresses, and confirmation details. Read VISIBLE PAGE TEXT
+for static results that are not buttons or inputs. Never invent a confirmation.
 
-Use `done` also when the goal cannot be achieved, explaining in `finalAnswer`
-what blocked it. Ending honestly is better than looping.
+If the goal cannot be achieved, use `done` with `goalAchieved: false` and explain
+the blocker in `finalAnswer`. Partial progress, missing required results, and
+being unable to verify completion are not success. For other actions set
+`goalAchieved: false`. Ending honestly is better than looping.

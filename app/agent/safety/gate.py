@@ -56,11 +56,13 @@ class DatabaseApprovalGate:
         events: EventBus,
         *,
         timeout_seconds: int = 600,
+        cancel_event: asyncio.Event | None = None,
     ) -> None:
         self._unit_of_work = unit_of_work
         self._registry = registry
         self._events = events
         self._timeout = timeout_seconds
+        self._cancel_event = cancel_event
 
     async def request(
         self,
@@ -102,7 +104,13 @@ class DatabaseApprovalGate:
 
         try:
             async with asyncio.timeout(timeout_seconds or self._timeout):
-                await waiter.wait()
+                cancelled = await self._wait_for_answer(waiter)
+            if cancelled:
+                async with self._unit_of_work() as uow:
+                    await expire_pending(uow, task_id, "task cancelled")
+                return ApprovalOutcome(
+                    approved=False, approval_id=approval_id, reason="The task was cancelled."
+                )
         except TimeoutError:
             return await self._expire(task_id, approval_id)
         finally:
@@ -122,6 +130,21 @@ class DatabaseApprovalGate:
             approval_id=approval_id,
             reason=answer.reason,
         )
+
+    async def _wait_for_answer(self, waiter: asyncio.Event) -> bool:
+        """Wake on an answer or task cancellation; cancellation wins a race."""
+        if self._cancel_event is None:
+            await waiter.wait()
+            return False
+        answered = asyncio.create_task(waiter.wait())
+        cancelled = asyncio.create_task(self._cancel_event.wait())
+        try:
+            await asyncio.wait((answered, cancelled), return_when=asyncio.FIRST_COMPLETED)
+            return self._cancel_event.is_set()
+        finally:
+            for pending in (answered, cancelled):
+                pending.cancel()
+            await asyncio.gather(answered, cancelled, return_exceptions=True)
 
     async def _open(
         self,

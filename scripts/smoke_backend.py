@@ -1,7 +1,8 @@
-"""Exercise a running local backend and SkyFare without an LLM key.
+"""Exercise a running local backend and SkyFare with the configured planner.
 
 Run: uv run python scripts/smoke_backend.py
-Creates a uniquely named smoke-test user and task; prints no credentials.
+Works with the mock or a configured real provider. Creates a uniquely named
+smoke-test user and task; prints no credentials. A real provider uses API quota.
 """
 
 import argparse
@@ -43,7 +44,8 @@ async def run(base: str, site: str, *, use_default_start: bool = False) -> None:
             headers=headers,
             json={
                 "instruction": (
-                    f"Find the cheapest flight from Delhi to Bengaluru on {on} on SkyFare"
+                    f"Find the cheapest flight from Delhi to Bengaluru on {on} on SkyFare. "
+                    "Report its flight number and total price in INR."
                 ),
                 "startUrl": None if use_default_start else site,
             },
@@ -57,7 +59,7 @@ async def run(base: str, site: str, *, use_default_start: bool = False) -> None:
         ws_base = base.replace("http://", "ws://").replace("https://", "wss://")
         steps = []
         async with (
-            asyncio.timeout(180),
+            asyncio.timeout(360),
             connect(
                 f"{ws_base}{prefix}/stream?{urlencode({'ticket': ticket})}",
                 max_size=4_000_000,
