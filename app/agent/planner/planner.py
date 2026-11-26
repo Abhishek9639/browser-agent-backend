@@ -20,7 +20,7 @@ recoverable slip, and three is an expensive way to discover the prompt is wrong.
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import Any, Final
 
 from pydantic import ValidationError
@@ -56,6 +56,7 @@ __all__ = [
     "PlannerResult",
     "StepSummary",
     "compress_history",
+    "extract_goal_date",
     "page_stuck_warning",
 ]
 
@@ -70,6 +71,126 @@ REPEAT_LIMIT: Final = 3
 # If the agent has taken this many steps without the page DOM changing, it is
 # cycling on the same page and needs a stronger nudge.
 PAGE_STUCK_LIMIT: Final = 5
+
+# ---------------------------------------------------------------------------
+# Date extraction helpers
+# ---------------------------------------------------------------------------
+
+# Month names (full and 3-letter) → month number.
+_MONTH_NAMES: Final[dict[str, int]] = {
+    "january": 1, "jan": 1,
+    "february": 2, "feb": 2,
+    "march": 3, "mar": 3,
+    "april": 4, "apr": 4,
+    "may": 5,
+    "june": 6, "jun": 6,
+    "july": 7, "jul": 7,
+    "august": 8, "aug": 8,
+    "september": 9, "sep": 9, "sept": 9,
+    "october": 10, "oct": 10,
+    "november": 11, "nov": 11,
+    "december": 12, "dec": 12,
+}
+
+# Patterns that look like a user-specified date in natural language:
+#   "23 January", "23 January 2027", "January 23", "Jan 23 2027",
+#   "23rd Jan", "23/01/2027", "2027-01-23", "23-01-2027"
+_DATE_PATTERNS: Final = re.compile(
+    r"""
+    (?:
+        # Day-Month or Day-Month-Year: "23 January", "23rd Jan 2027"
+        (?P<day1>\d{1,2})(?:st|nd|rd|th)?\s+
+        (?P<month_name1>jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|
+            jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|
+            oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)
+        (?:\s+(?P<year1>\d{4}))?
+    |
+        # Month-Day or Month-Day-Year: "January 23", "Jan 23 2027"
+        (?P<month_name2>jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|
+            jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|
+            oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)
+        \s+(?P<day2>\d{1,2})(?:st|nd|rd|th)?
+        (?:\s+(?P<year2>\d{4}))?
+    |
+        # Numeric: "23/01/2027" or "23-01-2027"
+        (?P<day3>\d{1,2})[/\-](?P<month3>\d{1,2})[/\-](?P<year3>\d{4})
+    |
+        # ISO: "2027-01-23"
+        (?P<year4>\d{4})-(?P<month4>\d{1,2})-(?P<day4>\d{1,2})
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def extract_goal_date(goal: str, today: date | None = None) -> date | None:
+    """Return the first specific date mentioned in *goal*, or ``None``.
+
+    When only a day and month are given (no year), the nearest future occurrence
+    from *today* is returned — so "23 January" in November 2026 resolves to
+    23 January 2027.  If *today* is not supplied, ``date.today()`` is used.
+
+    Returns ``None`` when no date reference is found or when what was found is
+    not a valid calendar date.
+    """
+    today = today or date.today()
+
+    for m in _DATE_PATTERNS.finditer(goal):
+        try:
+            day: int
+            month: int
+            year: int | None = None
+
+            if m.group("day1"):
+                day = int(m.group("day1"))
+                month = _MONTH_NAMES[m.group("month_name1").lower()[:9]]
+                year = int(m.group("year1")) if m.group("year1") else None
+            elif m.group("month_name2"):
+                day = int(m.group("day2"))
+                month = _MONTH_NAMES[m.group("month_name2").lower()[:9]]
+                year = int(m.group("year2")) if m.group("year2") else None
+            elif m.group("day3"):
+                day = int(m.group("day3"))
+                month = int(m.group("month3"))
+                year = int(m.group("year3"))
+            else:
+                year = int(m.group("year4"))
+                month = int(m.group("month4"))
+                day = int(m.group("day4"))
+
+            if year is None:
+                # Nearest future occurrence of this day+month.
+                candidate = date(today.year, month, day)
+                if candidate <= today:
+                    candidate = date(today.year + 1, month, day)
+                return candidate
+
+            return date(year, month, day)
+
+        except (ValueError, KeyError):
+            # Invalid calendar date (e.g., 31 February) or unrecognised month;
+            # try the next match.
+            continue
+
+    return None
+
+
+def goal_date_note(goal: str, today: date | None = None) -> str | None:
+    """Human-readable reminder of the goal date to inject into the planner turn.
+
+    Returns ``None`` when no date is found in the goal so the caller can
+    decide whether to add anything to the prompt.
+    """
+    resolved = extract_goal_date(goal, today)
+    if resolved is None:
+        return None
+    return (
+        f"BOOKING DATE\n"
+        f"The goal specifies this date: {resolved:%A %d %B %Y}. "
+        f"You MUST use this date — not today's date ({(today or date.today()):%d %B %Y}). "
+        f"Before clicking any calendar cell, confirm in `reasoning` that its label "
+        f"matches {resolved:%d %B %Y}."
+    )
 
 # A goal about solving a problem on a judge site: the platforms by name, and the
 # way people phrase it.
@@ -365,6 +486,12 @@ class Planner:
         # cannot work out "this weekend", and it expects a calendar to show a
         # year that has already gone, which fails a click that worked.
         parts = [f"GOAL\n{goal.strip()}", f"TODAY\n{date.today():%A %d %B %Y}"]
+
+        # When the goal names a specific date, resolve it and repeat it
+        # prominently so the model never substitutes today's date by accident.
+        booking_note = goal_date_note(goal)
+        if booking_note:
+            parts.append(booking_note)
         if _CODING_GOAL.search(goal):
             parts.append(CODING_GUIDE)
         if plan:
