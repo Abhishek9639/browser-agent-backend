@@ -2560,3 +2560,32 @@ def test_uber_ride_options_login_prompt_is_detected_without_a_model() -> None:
     ).model_copy(update={"text": "Log in to see ride options"})
     assert _login_wall(state, "show ride options from PST hostel to Polaris School of Technology")
     assert _login_wall(state, "Show ride options. Do not enter credentials or passwords.")
+
+
+async def test_cancel_wins_over_an_approval_and_publishes_the_final_event(
+    settings: Settings,
+) -> None:
+    class Signal:
+        cancelled = False
+
+        def is_cancelled(self) -> bool:
+            return self.cancelled
+
+    signal = Signal()
+
+    class RacingApproval:
+        async def request(self, **kwargs: Any) -> ApprovalOutcome:
+            signal.cancelled = True
+            return ApprovalOutcome(approved=True, approval_id=uuid.uuid4())
+
+    rig = build(
+        script=[decision_payload(requiresApproval=True)],
+        settings=settings,
+        cancel_signal=signal,
+        approvals=RacingApproval(),
+    )
+    outcome = await rig.orchestrator.run(TASK_ID)
+    assert outcome.status is TaskStatus.CANCELLED
+    assert rig.browser.executed == []
+    assert rig.bus.published[-1].type is EventType.FINAL
+    assert rig.bus.published[-1].status is TaskStatus.CANCELLED

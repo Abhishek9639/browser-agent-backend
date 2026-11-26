@@ -57,19 +57,18 @@ shutdown_reason: Final = "server shutdown"
 class _Cancellation:
     """The flag one run watches.
 
-    A plain object rather than an `asyncio.Event` because the orchestrator only
-    ever reads it, and giving it something awaitable would invite a future
-    version to block the loop on it.
+    The orchestrator reads the flag between phases. Approval waits also await
+    the event so cancelling a task cannot leave it parked on a human.
     """
 
     def __init__(self) -> None:
-        self._cancelled = False
+        self.event = asyncio.Event()
 
     def cancel(self) -> None:
-        self._cancelled = True
+        self.event.set()
 
     def is_cancelled(self) -> bool:
-        return self._cancelled
+        return self.event.is_set()
 
 
 def _recovery_status(current: TaskStatus) -> TaskStatus:
@@ -433,6 +432,7 @@ class TaskRunner:
                 self._approvals,
                 self._events,
                 timeout_seconds=self._settings.AGENT_APPROVAL_TIMEOUT_SECONDS,
+                cancel_event=cancellation.event,
             ),
             recovery=RecoveryRunner(
                 max_attempts=self._settings.AGENT_MAX_RETRIES_PER_STEP,

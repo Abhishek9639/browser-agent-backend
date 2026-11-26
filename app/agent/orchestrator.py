@@ -1290,6 +1290,7 @@ class Orchestrator:
         # The person's time is not the agent's: take it out of the task clock.
         if self._running_budget is not None:
             self._running_budget.exclude(time.monotonic() - waited_from)
+        self._stop_if_cancelled()
         if answer.approved:
             return
 

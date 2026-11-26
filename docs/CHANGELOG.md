@@ -893,3 +893,9 @@ Added
 - Do not treat any mention of passwords/credentials as permission to automate sign-in; explicit sign-in intent is required to bypass the manual login gate.
 - Passed 99 orchestrator tests and a real local API/Chromium/WebSocket handoff test using the observed login message, with no model calls or typed credentials.
 - The final real Uber probe reached Choose a ride for the correct route, then displayed a login requirement. Its next model call was rate-limited. Actual fares, account login and booking remain unverified.
+
+### Cancellation during human handoff — 2026-11-26
+
+- Wake a task's approval wait on cancellation instead of leaving it alive until the human-response timeout. Expire the pending approval and release waiters.
+- Give cancellation priority over a simultaneous approval, so the action cannot execute after cancel and the client receives a cancelled final outcome.
+- Added regression coverage for cancellation while waiting, cancellation before registration, and an approval/cancel race. All 128 focused approval, runner and orchestrator tests passed.

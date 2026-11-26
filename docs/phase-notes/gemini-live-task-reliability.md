@@ -114,3 +114,16 @@ fixture carrying the observed login message emitted the approval-required
 WebSocket event without a model call; the test cancelled at that handoff.
 A separate direct Uber-page recheck timed out and was cancelled, so the updated
 handoff is verified on the local fixture, not claimed as reverified on Uber.
+
+## Cancellation while waiting for a person
+
+The live login fixture exposed another lifecycle issue: cancelling closed the
+browser but left the approval waiter alive until its timeout. The runner now
+shares its cancellation event with the database approval gate. The gate waits
+for either an answer or cancellation, expires the pending row on cancellation,
+and cleans both waiter tasks. The orchestrator checks cancellation again before
+accepting an approval, including when approval and cancel race.
+
+128 focused tests passed, covering active waits, a signal set before the wait,
+and a simultaneous approval/cancel that must execute no browser action and
+publish a cancelled final event. Full verification follows this change.
