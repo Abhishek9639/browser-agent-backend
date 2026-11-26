@@ -22,8 +22,12 @@ prints `Address already in use`, check the existing health endpoint before
 starting another copy; an already running backend can be reused.
 
 There is no forced SkyFare landing page for prompt-only tasks. For predictable
-demos, pass `startUrl` explicitly. Local hosts and the Uber hosts used in testing
-are allowed; add other intended websites through `AGENT_ALLOWED_DOMAINS`.
+demos, pass `startUrl` explicitly. The local configuration now uses
+`AGENT_ALLOWED_DOMAINS=*` for the requested general web browsing. Previously it
+only allowed local hosts and Uber, which blocked the first GSoC navigation.
+The example configuration keeps its demo-only allow-list; configure intended
+hosts explicitly for a restricted deployment. Only HTTP(S) navigation without
+credentials in the URL is accepted, including in wildcard mode.
 
 ## Start the backend
 

@@ -33,7 +33,12 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from app.agent.browser.action_builder import build_action, selector_for
 from app.agent.browser.actions import ClickAction
 from app.agent.browser.driver import ActionResult
-from app.agent.browser.errors import ActionErrorCode, BrowserClosedError, BrowserError
+from app.agent.browser.errors import (
+    ActionErrorCode,
+    BrowserClosedError,
+    BrowserError,
+    DomainNotAllowedError,
+)
 from app.agent.browser.screenshots import Screenshot, to_base64
 from app.agent.budget import BudgetExceeded, BudgetReason, TaskBudget
 from app.agent.cache.flow import Locator, ReplayStep, hint_for
@@ -127,6 +132,12 @@ _SAFE_REASONS: Final[tuple[tuple[type[BaseException], str], ...]] = (
         BrowserClosedError,
         "The browser window was closed while the task was running. "
         "Run it again and leave the window open.",
+    ),
+    (
+        DomainNotAllowedError,
+        "Navigation was blocked by the website allow-list. "
+        "Ask the operator to add the intended website to AGENT_ALLOWED_DOMAINS, "
+        "then retry the task.",
     ),
     (BrowserError, "The browser could not carry out the planned action."),
     # A page, or a browser that was slow to start, did not answer in time. Both
@@ -390,7 +401,12 @@ class Orchestrator:
                 failure_reason = _safe_reason(exc)
             # The detail stays here, where it is useful and nobody untrusted
             # reads it. Only the sanitised sentence above reaches the client.
-            logger.exception("task_failed", error=type(exc).__name__)
+            if isinstance(exc, DomainNotAllowedError):
+                # Its message contains the attempted URL, potentially with a
+                # query token. The error type is enough to diagnose the policy.
+                logger.warning("task_failed", error=type(exc).__name__)
+            else:
+                logger.exception("task_failed", error=type(exc).__name__)
 
         duration_ms = int((time.monotonic() - started) * 1000)
         usage = Usage(

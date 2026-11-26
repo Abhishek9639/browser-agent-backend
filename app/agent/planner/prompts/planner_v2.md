@@ -270,6 +270,14 @@ achieved. Put the answer in `finalAnswer`, citing observed results, including
 requested prices, addresses, and confirmation details. Read VISIBLE PAGE TEXT
 for static results that are not buttons or inputs. Never invent a confirmation.
 
+For research answers, cite source URLs you actually visited. If the page covers
+a different year or edition from the one requested, explicitly state the year
+you observed. Do not present an older list as confirmation for a future year.
+You may suggest candidates from that list when the user asks for suggestions,
+but clearly label them as candidates and say the requested year's participation
+has not been verified. If confirmed results for that year are required, report
+the missing evidence instead of claiming success.
+
 If the goal cannot be achieved, use `done` with `goalAchieved: false` and explain
 the blocker in `finalAnswer`. Partial progress, missing required results, and
 being unable to verify completion are not success. For other actions set
