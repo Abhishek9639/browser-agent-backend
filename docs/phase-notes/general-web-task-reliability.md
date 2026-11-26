@@ -41,8 +41,19 @@ of the domain policy by model output.
   steps in 162 seconds: navigate to GSoC, open the 2026 organizations list,
   dismiss cookies and finish with three suggestions. It used a configured
   fallback model for the initial call and the primary for later calls.
-- A second live run is checking the final year/source guidance. Full browser
-  CI is being rerun. Results will be recorded after completion.
+- Final live task `7d1f8eab-4ade-42f8-bcea-5fe2c5519f87` completed four verified
+  steps in 131 seconds. Three cached browser actions replayed successfully,
+  and a fresh Gemini answer explicitly described 2026 candidates and said
+  2027 participation must be checked again. Apache Software Foundation,
+  PostgreSQL and Blender Foundation were independently confirmed in the
+  official 2026 organizations listing.
+- The history display fix is pushed to the frontend branch
+  `codex/show-task-failure-reasons` (commit `52f6ce7`).
+- [CI on ab49d4e](https://github.com/Abhishek9639/browser-agent-backend/actions/runs/45784044352) passed every job: 1,808 tests (1,436 unit, 348 integration, 24 chaos), with one live-provider test intentionally skipped. Benchmark, Docker build/smoke, lint, formatting, mypy, dependency audit and secret scan all passed. The subsequent handoff commit changes documentation only.
+- After the backend process stopped, the user restarted it in normal Terminal.
+  The frontend was restarted with Webpack polling to avoid this Mac's file
+  watcher limit. Its page returned HTTP 200 and its proxied backend health
+  check reported application/database `ok`.
 
 No result here guarantees that arbitrary tasks will complete: provider quotas,
 site access controls, account login and task feasibility remain constraints.

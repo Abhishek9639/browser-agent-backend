@@ -94,7 +94,8 @@ Neither fixture is evidence that a real Uber ride was booked.
 
 ## Frontend connection
 
-Frontend code was not modified. Its backend URL should be
+The companion frontend now displays backend failure reasons in session history.
+Its backend URL should be
 `BACKEND_URL=http://127.0.0.1:8000`; its WebSocket URL should be
 `NEXT_PUBLIC_BACKEND_WS_URL=ws://localhost:8000`. Restart Next.js after changing
 its environment. The frontend's hardcoded Chrome connection card is not a
