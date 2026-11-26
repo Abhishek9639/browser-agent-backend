@@ -128,8 +128,9 @@ accepting an approval, including when approval and cancel race.
 and a simultaneous approval/cancel that must execute no browser action and
 publish a cancelled final event. Full verification follows this change.
 
-The live API/Chromium/WebSocket recheck cancelled a pending login handoff in
-226 ms, executed no steps, charged no credits, and left its approval expired.
+The live API/Chromium/WebSocket recheck returned `CANCELLED` for a pending
+login handoff, reported a 226 ms task duration, executed no steps, charged no
+credits, and left its approval expired.
 The local non-browser unit/integration run passed 1,575 tests (209 browser/live
 cases deselected).
 
@@ -138,5 +139,25 @@ Eight browser integration tests shared a form fixture with a password field
 but no explicit sign-in instruction. The new login guard correctly stopped
 that fixture before the unrelated action/persistence assertions. The fixture
 now explicitly requests sign-in with test credentials; production login
-detection, action approval and password redaction are unchanged. Full CI is
-being rerun to verify the browser integration behavior.
+detection, action approval and password redaction are unchanged.
+
+## Final verification — 26 November 2026
+
+[CI on cd31dc8](https://github.com/Abhishek9639/browser-agent-backend/actions/runs/45748085798)
+passed every job: **1,807 tests** (1,435 unit, 348 integration, 24 chaos), with
+one live-provider test intentionally skipped in offline CI. The benchmark,
+Docker build/smoke, lint/formatting, strict mypy, dependency audit and secret
+scan also passed. Unit coverage was 84%. The eight shared-fixture failures
+from the preceding run are resolved; no test was removed or skipped to do so.
+The subsequent handoff commit changes documentation only.
+
+The local health endpoint returned application `ok` and database `ok` after
+these checks. An address-in-use message when launching another server means
+the existing instance should be reused. `docs/LOCAL_DEMO.md` now matches the
+current Gemini setup and gives the tested presentation flow.
+
+Remaining limits: actual Uber login/OTP, fares and booking/payment are not
+verified; the real pre-booking probe reached the login requirement and later
+hit Gemini rate limiting. The updated login handoff/cancellation is verified
+on a local browser fixture. Linux Firefox passes CI, but the previously
+observed local macOS Firefox profile-startup issue remains unresolved.

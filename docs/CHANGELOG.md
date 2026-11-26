@@ -900,3 +900,9 @@ Added
 - Give cancellation priority over a simultaneous approval, so the action cannot execute after cancel and the client receives a cancelled final outcome.
 - Added regression coverage for cancellation while waiting, cancellation before registration, and an approval/cancel race. All 128 focused approval, runner and orchestrator tests passed.
 - Make the browser integration fixture's scripted sign-in intent explicit. Its password field otherwise correctly triggers the manual-login handoff before the persistence/action assertions can run; password writes still require action approval and remain redacted.
+
+### Presentation handoff documentation
+
+- Update the local run guide for the verified Gemini setup, manual login browser, explicit demo URLs and existing-server reuse after an address-in-use error.
+- Mark the earlier input/scroll report as historical and distinguish successful fixture/API tests from the real Uber login/quota limit.
+- Final CI on `cd31dc8`: all jobs passed; 1,435 unit, 348 integration and 24 chaos tests passed (1,807 total), with one live-provider test intentionally skipped. Benchmark, Docker smoke, lint/typecheck and audits passed.
