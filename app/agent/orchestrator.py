@@ -1919,7 +1919,7 @@ MAX_PAYMENT_PAUSES: Final = 2
 MAX_DETAIL_PAUSES: Final = 2
 # Pages read for questions in one task. Each costs a model call, and a task that
 # has wandered through this many forms is not short of questions.
-MAX_PAGE_SURVEYS: Final = 5
+MAX_PAGE_SURVEYS: Final = 8
 # Steps after which the outline is made even if no page has been the task's
 # form, so a lookup that never meets one still gets a plan.
 PLAN_BY_STEP: Final = 3
@@ -2040,12 +2040,27 @@ def _page_key(state: PageState) -> str:
 
 
 def _has_fields(state: PageState) -> bool:
-    """Does the page have anything to fill in or choose? Nothing to ask otherwise."""
-    return any(
-        not element.disabled
-        and (element.tag in {"input", "select", "textarea"} or (element.role or "") in _FILL_ROLES)
-        for element in state.elements
+    """Does the page have anything to fill in or choose?
+
+    Covers traditional form inputs (input/select/textarea), ARIA-role equivalents
+    (combobox, textbox, searchbox, radio, listbox, spinbutton), and dashboard-style
+    interactive controls (checkboxes, radio groups, tab panels) that some booking
+    sites use instead of plain HTML forms.  Nothing to ask if none are present.
+    """
+    _FILLABLE_ROLES: frozenset[str] = frozenset(
+        {"combobox", "textbox", "searchbox", "radio", "listbox", "spinbutton",
+         "checkbox", "menuitemradio", "menuitemcheckbox", "option", "tab", "switch"}
     )
+    _FILLABLE_TAGS: frozenset[str] = frozenset({"input", "select", "textarea"})
+    for element in state.elements:
+        if element.disabled:
+            continue
+        if element.tag in _FILLABLE_TAGS:
+            return True
+        role = (element.role or "").lower()
+        if role in _FILLABLE_ROLES:
+            return True
+    return False
 
 
 # Second-level labels a country code sits under: irctc.co.in, bbc.co.uk.
