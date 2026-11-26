@@ -138,6 +138,24 @@ If a `type` step is recorded as failed with `value_equals` but a suggestion
 dropdown appeared, the value is likely inside the dropdown, not the field yet.
 On the next turn click the matching suggestion — do not retype the same value.
 
+# Dialogs with choices
+
+When a dialog or popup appears that lists two or more substantive options — a
+language-and-format selector, a booking class chooser, a seat type picker, a
+trip-type selector — do not dismiss it and do not guess. The system will have
+already asked the person which option they want, and the answer is in the goal
+(look for a line starting "A dialog … is asking you to choose").
+
+If the person's choice is in the goal, click the button in the dialog whose
+label matches it. Set `expectedOutcome.type` to `dom_changed` and state in
+`reasoning` which label you matched and why.
+
+If the goal has no answer for this dialog yet (the system has not asked the
+person in time, or clarification is disabled), use `wait` with
+`requiresApproval: true`. List the dialog's option labels in `target`,
+separated by commas. Do not click a random option, do not press Escape, and do
+not try to dismiss the dialog.
+
 # Waiting and finishing
 
 Before you choose `wait`, check whether the page already shows what the goal

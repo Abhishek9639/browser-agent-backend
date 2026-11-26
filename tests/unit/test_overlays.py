@@ -102,3 +102,74 @@ def test_a_control_matches_on_its_text_when_its_name_is_garbled() -> None:
     )
 
     assert [e.index for e in safe_closers(state(*covered_page(), garbled))] == [3]
+
+
+# ---------------------------------------------------------------------------
+# choice_buttons / is_choice_modal — BookMyShow "Select language and format"
+# ---------------------------------------------------------------------------
+from app.agent.perception.overlays import choice_buttons, is_choice_modal  # noqa: E402
+
+
+def bms_format_modal() -> list[ElementInfo]:
+    """Simulated BookMyShow 'Select language and format' popup."""
+    return [
+        # The choices — real labels from the screenshot
+        el(10, tag="button", name="DOLBY CINEMA 2D", x=220, y=379),
+        el(11, tag="button", name="MS InfVsn ICE 3D", x=430, y=379),
+        el(12, tag="button", name="MS-Infinity Vsn 3d", x=220, y=436),
+        el(13, tag="button", name="MS - Inf Vsn 4DX 3D", x=430, y=436),
+        el(14, tag="button", name="MS - Infinity Vision", x=220, y=493),
+        el(15, tag="button", name="MS InVsn 3D Screen X", x=430, y=493),
+        el(16, tag="button", name="Select all", x=270, y=550),
+        # The close icon (×)
+        el(17, tag="button", name="×", x=620, y=229),
+    ]
+
+
+def test_format_modal_is_detected_as_choice_modal() -> None:
+    """The BookMyShow format picker must be treated as a choice modal."""
+    s = state(*covered_page(), *bms_format_modal())
+    assert is_choice_modal(s)
+
+
+def test_choice_buttons_excludes_close_labels() -> None:
+    """× and 'Select all' (dismiss-style) must not appear in choice_buttons."""
+    s = state(*covered_page(), *bms_format_modal())
+    names = {(b.name or b.text).strip() for b in choice_buttons(s)}
+    # Close / dismiss labels must be absent
+    assert "×" not in names
+    # Substantive format choices must be present
+    assert "DOLBY CINEMA 2D" in names
+    assert "MS InfVsn ICE 3D" in names
+
+
+def test_choice_buttons_returns_empty_when_not_blocked() -> None:
+    """No buttons in a choice modal on an un-blocked page."""
+    close = el(5, tag="button", name="DOLBY CINEMA 2D", x=500, y=600)
+    assert choice_buttons(state(close)) == []
+
+
+def test_cookie_banner_is_not_a_choice_modal() -> None:
+    """A cookie/promo banner with only close/dismiss controls is not a choice modal."""
+    banner = [
+        el(5, tag="button", name="No thanks", x=500, y=600),
+        el(6, tag="button", name="Close", x=550, y=600),
+    ]
+    s = state(*covered_page(), *banner)
+    assert not is_choice_modal(s)
+
+
+def test_safe_closers_still_works_on_non_choice_modal() -> None:
+    """safe_closers should still find the × on a plain dismiss-only popup that
+    has no substantive choices (only close/dismiss controls)."""
+    dismiss_popup = [
+        el(5, tag="button", name="No thanks", x=300, y=600),
+        el(6, tag="button", name="×", x=620, y=229),
+        # Covered background elements that push is_blocked() True
+    ]
+    s = state(*covered_page(), *dismiss_popup)
+    # Only close labels — not a choice modal
+    assert not is_choice_modal(s)
+    # Both dismiss controls are found
+    closers = safe_closers(s)
+    assert any((c.name or "").strip().casefold() in {"no thanks", "×"} for c in closers)

@@ -14,7 +14,15 @@ from typing import Final
 from app.agent.perception.dom_extractor import ElementInfo
 from app.agent.perception.state import PageState
 
-__all__ = ["BLOCKED_COVERED_COUNT", "CLOSE_LABELS", "icon_closers", "is_blocked", "safe_closers"]
+__all__ = [
+    "BLOCKED_COVERED_COUNT",
+    "CLOSE_LABELS",
+    "choice_buttons",
+    "icon_closers",
+    "is_blocked",
+    "is_choice_modal",
+    "safe_closers",
+]
 
 # This many covered elements means something is sitting on top of the page. A
 # sticky header or a floating chat button covers a few; a modal covers dozens.
@@ -108,3 +116,44 @@ def safe_closers(state: PageState) -> list[ElementInfo]:
     labelled.sort(key=lambda pair: pair[0])
 
     return [element for _, element in labelled] + icon_closers(state)
+
+
+# Minimum number of distinct substantive choices in a modal before we consider
+# it a "choice modal" rather than a simple blocking banner.
+MIN_CHOICE_BUTTONS: Final = 2
+
+
+def choice_buttons(state: PageState) -> list[ElementInfo]:
+    """Return the substantive choice buttons inside a blocking modal, if any.
+
+    A *choice modal* is a dialog that presents several options the person must
+    pick from (e.g., language/format, seat type, booking class).  Its buttons
+    are NOT close/dismiss labels — they are real choices.  Detecting them lets
+    the orchestrator ask the person before the agent blindly picks one.
+
+    Returns an empty list when the page is not blocked or when the visible
+    buttons are only close/dismiss controls.
+    """
+    if not is_blocked(state):
+        return []
+
+    choices: list[ElementInfo] = []
+    for element in state.elements:
+        if not _usable(element) or element.tag not in {"button", "a"}:
+            continue
+        label = _label(element)
+        # Skip tiny labels (single characters like ×) and known dismissals.
+        if not label or label in CLOSE_LABELS or len(label) < 2:
+            continue
+        choices.append(element)
+    return choices
+
+
+def is_choice_modal(state: PageState) -> bool:
+    """Is there a blocking popup that offers a meaningful choice to the person?
+
+    True when the page is blocked AND the visible buttons are substantive
+    choices (not just close/dismiss controls), so the agent must NOT auto-dismiss
+    with Escape — it needs to ask the person first.
+    """
+    return len(choice_buttons(state)) >= MIN_CHOICE_BUTTONS

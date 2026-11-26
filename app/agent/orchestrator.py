@@ -61,7 +61,7 @@ from app.agent.contracts import (
 )
 from app.agent.llm.base import LLMRateLimited, LLMTimeout, LLMUnavailable
 from app.agent.perception.dom_extractor import MASK, ElementInfo, PageNotReadyError
-from app.agent.perception.overlays import is_blocked, safe_closers
+from app.agent.perception.overlays import choice_buttons, is_blocked, is_choice_modal, safe_closers
 from app.agent.perception.state import PageState
 from app.agent.planner.clarify import with_answers
 from app.agent.planner.outline import MAX_STEP_CHARS
@@ -532,6 +532,14 @@ class Orchestrator:
                 for_task, instruction = await self._ask_about_page(
                     task_id, instruction, state, pages, tally
                 )
+                # If a choice modal is currently open (language/format/class
+                # picker), ask the person which option they want before the
+                # planner decides — otherwise it may blindly click the wrong
+                # one or loop trying to dismiss the dialog.
+                if is_choice_modal(state):
+                    instruction = await self._ask_about_modal(
+                        task_id, instruction, state, pages, tally
+                    )
                 if preview and (
                     for_task
                     or not self._settings.AGENT_CLARIFY
@@ -1121,7 +1129,17 @@ class Orchestrator:
         dismissals are clicked (never "Accept"), a couple of tries at most, and
         a click that does not clear the popup stops the attempts rather than
         looping.
+
+        Choice modals — dialogs that present substantive options the person must
+        pick from (language, format, seat class) — are intentionally left open.
+        The orchestrator will ask the person what they prefer via
+        ``_ask_about_modal`` before the planner sees the page.
         """
+        # Never auto-dismiss a choice modal; the person must pick an option.
+        if is_choice_modal(state):
+            logger.info("overlay_is_choice_modal_skipping_clear")
+            return state
+
         for attempt in range(MAX_OVERLAY_CLEARS):
             closers = safe_closers(state)
             selector = selector_for(closers[0]) if closers else None
@@ -1622,6 +1640,65 @@ class Orchestrator:
             tally.asked_on_page = True
         logger.info("page_questions", asked=len(found.questions), answered=len(answers))
         return found.for_task, with_answers(instruction, answers)
+
+    async def _ask_about_modal(
+        self,
+        task_id: uuid.UUID,
+        instruction: str,
+        state: PageState,
+        pages: _PageSurvey,
+        tally: _Tally,
+    ) -> str:
+        """Ask the person which option to pick when a choice modal is open.
+
+        A choice modal is a dialog that blocks the page and shows two or more
+        substantive option buttons — format pickers (DOLBY CINEMA 2D,
+        MS InfVsn ICE 3D…), language selectors, booking class selectors, etc.
+        These are NOT close/dismiss controls: they represent decisions the agent
+        must not make on the person's behalf.
+
+        Uses a *modal fingerprint* (sorted option labels) as the survey key so
+        the same dialog on the same URL is asked about only once, while a
+        different dialog on the same URL (different step of a booking flow) gets
+        its own question.
+
+        Returns the instruction enriched with the person's answer.
+        """
+        if not self._settings.AGENT_CLARIFY:
+            return instruction
+
+        buttons = choice_buttons(state)
+        if len(buttons) < 2:
+            return instruction
+
+        # Build a stable key from the choice labels so the same modal is never
+        # asked twice, even if the page URL hasn't changed.
+        labels = tuple(sorted((b.name or b.text).strip()[:40] for b in buttons))
+        modal_key = f"modal:{_page_key(state)}:{hash(labels)}"
+        if modal_key in pages.seen:
+            return instruction
+        pages.seen.add(modal_key)
+
+        # Offer the page's own option labels verbatim as the choices.
+        options = tuple(
+            (b.name or b.text).strip()[:60] for b in buttons if (b.name or b.text).strip()
+        )[:8]
+        # Compose a sensible question from the first button's context.
+        site = _site_of(state)
+        site_part = f" on {site}" if site else ""
+        question = (
+            f"A dialog{site_part} is asking you to choose. Which option do you want?"
+        )
+
+        await self._return_to_planning(task_id)
+        answer = await self._ask(task_id, question, options, site=site)
+        if answer:
+            tally.asked_on_page = True
+            logger.info("modal_question_answered", answer=answer[:60])
+            return with_answers(instruction, [(question, answer)])
+        else:
+            pages.skipped.append(question)
+        return instruction
 
     async def _ask(
         self,
