@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Late city picker</title>
+<style>
+ body {font-family: sans-serif; padding: 40px;}
+ .card {display: inline-block; width: 160px; height: 100px; margin: 8px; padding: 8px; background: #ddd;}
+ button {padding: 12px; margin: 6px;}
+ #veil {position: fixed; inset: 0; z-index: 1000; background: #0009;
+   display: flex; align-items: flex-start; justify-content: center; padding-top: 60px;}
+ #panel {background: white; padding: 24px; width: 560px;}
+</style></head><body>
+<h1>Recommended movies</h1>
+<p>The page builds, goes quiet, and only then asks for a city, the way a
+booking site schedules its location prompt after load.</p>
+<div id="cards"></div>
+<p id="city">No city chosen</p>
+<script>
+ // Built at once and then still, so the page settles before the picker exists.
+ const cards = document.getElementById('cards');
+ for (let i = 0; i < 12; i++) {
+   const a = document.createElement('a');
+   a.className = 'card';
+   a.href = '#movie-' + i;
+   a.textContent = (i === 0 ? 'Avengers: Doomsday' : 'Movie ' + i);
+   cards.appendChild(a);
+ }
+ // A plain div panel inside a dimmed veil, with no dialog role: the harder of
+ // the two shapes for the detector, and the one booking sites tend to use.
+ const delay = Number(new URLSearchParams(location.search).get('delay') || 1000);
+ setTimeout(() => {
+   const veil = document.createElement('div');
+   veil.id = 'veil';
+   veil.innerHTML = '<div id="panel"><input placeholder="Search for your city">' +
+     '<p>Popular Cities</p>' +
+     ['Mumbai', 'Delhi-NCR', 'Bengaluru'].map(c => '<button>' + c + '</button>').join('') +
+     '</div>';
+   document.body.appendChild(veil);
+   for (const b of veil.querySelectorAll('button')) b.onclick = () => {
+     document.getElementById('city').textContent = 'City: ' + b.textContent;
+     veil.remove();
+   };
+ }, delay);
+</script></body></html>

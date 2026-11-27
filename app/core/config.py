@@ -261,6 +261,11 @@ class Settings(BaseSettings):
     # for verification, and how long to wait for that before reading anyway.
     AGENT_SETTLE_QUIET_MS: int = 300
     AGENT_SETTLE_TIMEOUT_MS: int = 3000
+    # How old a freshly loaded page must be before the agent trusts that no
+    # popup is coming. Sites put city pickers and consent prompts up on a timer
+    # after the page has gone quiet, which settling alone reads straight past.
+    # Only a new document pays it; 0 turns it off.
+    AGENT_LOAD_POPUP_GRACE_MS: int = Field(default=2000, ge=0)
 
     # ----------------------------------------------------------- live view
     # Spec section 6.1. The ticket is short-lived because it travels in a URL,
