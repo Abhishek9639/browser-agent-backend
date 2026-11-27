@@ -1,4 +1,4 @@
-# Browser Automation Agent — backend
+# Browser Automation Agent: backend
 
 A supervised autonomous browser agent. A user writes a task in plain language; a
 server-side Chromium reads the page, a language model proposes one structured
@@ -6,9 +6,10 @@ action at a time, the backend executes it, a **deterministic** verifier checks
 what actually happened, and a recovery ladder handles the page breaking. Anything
 irreversible stops and waits for a human. Every step is stored and streamed live.
 
-This is the backend of **AI-07**, one of three repositories. It owns identity — it
-is the only JWT issuer — the agent core, task and step persistence, the live
-stream, and the demo sites the agent is tested against.
+This is the backend of **AI-07**, one of three repositories. It owns identity (it
+is the only JWT issuer), the agent core, task and step persistence, the live
+stream, and the demo sites the agent is tested against. The web interface lives
+in the [frontend repository](https://github.com/ishaan-khandelwal/Browser-Automation-Agent).
 
 > **Student project.** Built for an OJT programme. It is not a product, it has
 > never been deployed, and the disclaimer at the bottom of this page is not
@@ -34,28 +35,29 @@ graph LR
     loop --> answer["The cheapest option is Rs 4,870."]
 ```
 
-Full diagrams — system context, agent layers, one loop iteration, the task state
-machine and deployment — are in **[docs/architecture.md](docs/architecture.md)**.
+Full diagrams (system context, agent layers, one loop iteration, the task state
+machine and deployment) are in **[docs/architecture.md](docs/architecture.md)**.
 
 ## Features
 
 | | |
 |---|---|
 | **Perception** | Interactive elements from a real DOM, a ~3k-token summary, hidden elements excluded, BeautifulSoup fallback for static pages |
-| **Planning** | Structured output against a JSON schema, one repair turn, four providers (Anthropic, OpenAI, Gemini, and a rule-based mock), versioned prompts recorded per step |
+| **Planning** | Structured output against a JSON schema, one repair turn, five providers (Anthropic, OpenAI, Gemini, Groq, and a rule-based mock), versioned prompts recorded per step |
+| **Popups** | A required dialog (a city picker, a language or format choice) is read before anything behind it, and nothing behind it can be clicked until it is answered. A page that shows its popup on a timer after loading is given a moment to do so before it is read |
 | **Visual grounding** | Set-of-marks: numbered boxes drawn over the elements, the model picks a number. Triggered rather than always on, and it degrades to DOM-only when vision is down |
-| **Verification** | Eleven deterministic checks comparing two page states. Never asks the model whether its own action worked |
+| **Verification** | Twelve deterministic checks comparing two page states. Never asks the model whether its own action worked |
 | **Recovery** | Seven ordered strategies, routed by the failure's error code, bounded at three attempts, one row per attempt |
 | **Safety** | Deterministic risk rules (English and Hinglish), human approval before anything irreversible, eight layers of prompt-injection defence |
 | **Multi-tab** | Stable tab ids, popups captured, a limit that holds against a page opening tabs in a loop |
 | **Cache** | A completed task's verified sequence is replayed by the next identical one. The final answer is never cached |
 | **Live view** | WebSocket with single-use tickets, replay from the database on reconnect, heartbeats |
-| **Observability** | Sixteen Prometheus metrics, a stats endpoint, structured logs that are tested for secret leakage |
+| **Observability** | Nineteen Prometheus metrics, a stats endpoint, structured logs that are tested for secret leakage |
 | **Billing** | Reserve synchronously, settle through a transactional outbox, against a payments service that is a separate repository |
 
 ## Quick start
 
-For the repaired local setup and presentation steps, see **[Local demo guide](docs/LOCAL_DEMO.md)**.
+For a step-by-step local walkthrough and the presentation flow, see the **[local demo guide](docs/LOCAL_DEMO.md)**.
 
 ### With Docker (nothing to install but Docker)
 
@@ -81,7 +83,7 @@ API key.
 
 ```bash
 cp .env.example .env
-make install          # dependencies, Chromium, git hooks
+make install          # dependencies, Chromium and Firefox, git hooks
 make db-up            # Postgres in Docker
 make migrate
 uv run python scripts/gen_keys.py
@@ -112,14 +114,18 @@ Watch it live with `uv run python scripts/ws_watch.py <task-id>`, or poll
 Use `http://localhost:8200/` as the start URL when running locally rather than in
 Docker: `skyfare` is the compose service name and only resolves inside the stack.
 
+To watch it in a browser instead, run the
+[frontend](https://github.com/ishaan-khandelwal/Browser-Automation-Agent). It
+shows each step's screenshot with the element the agent acted on outlined.
+
 ## The demo site
 
 `demo_sites/skyfare/` is a flight search site written for this project. Flights
 are generated deterministically from a seed, so the same search returns the same
-results on any machine, and an oracle endpoint knows the right answer — which is
+results on any machine, and an oracle endpoint knows the right answer, which is
 what makes "completed" into "completed **correctly**".
 
-Nine chaos toggles reproduce what real sites do: `?chaos=cookie,popup,shuffle,layoutb,iframe,newtab,delay,inject`.
+Nine chaos toggles reproduce what real sites do: `?chaos=cookie,popup,shuffle,layoutb,iframe,newtab,delay,inject,slowtype`.
 
 ![SkyFare results](docs/images/skyfare-results.png)
 
@@ -137,9 +143,9 @@ thirty runs over ten chaos configurations.
 |---|---|---|
 | End-to-end success | **100%** | ≥80% |
 | Recovery success | **100%** | >70% |
-| Verification accuracy | 100% | — |
-| Median time per task | 5.6s | — |
-| p90 time per task | 27.4s | — |
+| Verification accuracy | 100% | none set |
+| Median time per task | 5.6s | none set |
+| p90 time per task | 27.4s | none set |
 
 Success means the task finished **and** reported the fare the oracle says is
 cheapest. A run that completes with the wrong number counts as a failure, because
@@ -149,8 +155,8 @@ Those numbers are measured under the mock provider, which is rule-based: they
 measure the loop, the verifier and the recovery ladder rather than a model's
 judgement. The one live attempt,
 [2026-09-29-gemini.md](docs/benchmarks/2026-09-29-gemini.md), produced no usable
-measurement — the provider answered every request with 503 — and is kept because
-it does show the degradation path working.
+measurement because the provider answered every request with 503. It is kept
+because it does show the degradation path working.
 
 ## Configuration
 
@@ -162,17 +168,19 @@ lists the settings with comments. The ones that matter:
 | `APP_ENV` | `dev` | `dev`, `test` or `prod`. Production disables `/docs` and enables HSTS |
 | `LOG_LEVEL` | `INFO` | JSON logs in production, coloured console otherwise |
 | `CORS_ORIGINS` | `http://localhost:3000` | The frontend origin. Methods and headers are named, not `*` |
-| `POSTGRES_HOST` / `_PORT` / `_USER` / `_PASSWORD` / `_DB` | `localhost` / `5432` / `postgres` / — / `agent_core` | The database |
-| `LLM_PROVIDER` | `mock` | `mock`, `anthropic`, `openai`, `gemini`. `mock` is refused in production |
+| `POSTGRES_HOST` / `_PORT` / `_USER` / `_PASSWORD` / `_DB` | `localhost` / `5432` / `postgres` / unset / `agent_core` | The database |
+| `POSTGRES_TEST_DB` | `agent_core_test` | The integration suite's database. Refused if it matches `POSTGRES_DB` |
+| `LLM_PROVIDER` | `mock` | `mock`, `anthropic`, `openai`, `gemini`, `groq`. `mock` is refused in production |
 | `LLM_MODEL` | unset | Overrides the provider's default model |
-| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GOOGLE_API_KEY` | unset | Whichever provider you chose |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GOOGLE_API_KEY` / `GROQ_API_KEY` | unset | Whichever provider you chose |
 | `PLANNER_PROMPT_VERSION` | `v2` | Which prompt file to load. Recorded on every decision |
 | `AGENT_MAX_STEPS` | `25` | Step budget per task |
 | `AGENT_MAX_TASK_SECONDS` | `300` | Time budget per task |
 | `AGENT_MAX_RETRIES_PER_STEP` | `3` | Recovery ladder budget |
 | `AGENT_MAX_CONCURRENT_TASKS` | `3` | Global semaphore; `_PER_USER` defaults to 2 |
-| `AGENT_ALLOWED_DOMAINS` | localhost set | **The sandbox.** The agent cannot navigate anywhere else |
+| `AGENT_ALLOWED_DOMAINS` | `localhost`, `127.0.0.1`, SkyFare on `:8200` | **The sandbox.** The agent cannot navigate anywhere else. `*` allows any site, for local use only |
 | `AGENT_HEADLESS` | `true` | Set false to watch it work |
+| `AGENT_LOAD_POPUP_GRACE_MS` | `2000` | How long a freshly loaded page gets to show a popup before it is read. `0` turns it off |
 | `AGENT_APPROVAL_TIMEOUT_SECONDS` | `600` | After this an approval expires and the task times out |
 | `CACHE_ENABLED` / `CACHE_MIN_SUCCESS_RATE` | `true` / `0.5` | Flow replay, and the rate below which a flow is not used |
 | `BILLING_ENABLED` | `false` | Off means no reservation, no outbox, no calls |
@@ -188,17 +196,19 @@ lists the settings with comments. The ones that matter:
 | Repository | What it is | State |
 |---|---|---|
 | **browser-agent-backend** | This one. Agent, API, identity, demo sites | **Built** |
-| [Browser-Automation-Agent](https://github.com/ishaan-khandelwal/Browser-Automation-Agent) | Next.js frontend maintained separately | See linked repository |
+| [Browser-Automation-Agent](https://github.com/ishaan-khandelwal/Browser-Automation-Agent) | Next.js frontend: task box, live view of each step with the acted-on element outlined, approvals, sessions | **Built** |
 | browser-agent-payments | Credits wallet, Razorpay TEST mode, internal API | Not built |
 
-They meet at two documented interfaces and nowhere else: this service calls
-payments over an internal API ([docs/billing-integration.md](docs/billing-integration.md)),
-and payments verifies this service's tokens through `/.well-known/jwks.json`
-([docs/auth.md](docs/auth.md)). Neither is a prerequisite for running or
-demonstrating the backend.
+The frontend talks to this service only through the public REST API and the
+WebSocket stream in [docs/api.md](docs/api.md). Payments meets it at two
+documented interfaces: this service calls payments over an internal API
+([docs/billing-integration.md](docs/billing-integration.md)), and payments
+verifies this service's tokens through `/.well-known/jwks.json`
+([docs/auth.md](docs/auth.md)). Neither repository is a prerequisite for running
+or demonstrating the backend.
 
 `deploy/docker-compose.full.yml` describes all three as sibling checkouts, with
-the two unbuilt services arranged to be commented out until they exist. See
+services that are not built yet arranged to be commented out until they exist. See
 [ADR-006](docs/adr/006-three-repositories.md) for why it is three and not one.
 
 ## Documentation
@@ -207,7 +217,7 @@ the two unbuilt services arranged to be commented out until they exist. See
 |---|---|
 | [PROJECT_SPEC.md](docs/PROJECT_SPEC.md) | The specification. The source of truth |
 | [architecture.md](docs/architecture.md) | Five diagrams, and what is built versus future work |
-| [adr/](docs/adr/) | Twelve decisions, with the alternatives that were rejected |
+| [adr/](docs/adr/) | Thirteen decisions, with the alternatives that were rejected |
 | [api.md](docs/api.md) | Every endpoint, generated from OpenAPI, plus the WebSocket events |
 | [traceability.md](docs/traceability.md) | Requirement → module → table → test, with the gaps flagged |
 | [security.md](docs/security.md) | Every section 10 rule, where it is enforced, and its test |
@@ -216,13 +226,13 @@ the two unbuilt services arranged to be commented out until they exist. See
 | [cicd.md](docs/cicd.md) | The workflow, and branch protection |
 | [database.md](docs/database.md), [auth.md](docs/auth.md), [agent.md](docs/agent.md) | Per-area detail |
 | [viva-prep.md](docs/viva-prep.md) | 90 questions and answers, by difficulty |
-| [phase-notes/](docs/phase-notes/) | One per part: what was built, why, and what broke |
-| [CHANGELOG.md](docs/CHANGELOG.md) | Every part, in order |
+| [phase-notes/](docs/phase-notes/) | One per part or fix: what was built, why, and what broke |
+| [CHANGELOG.md](docs/CHANGELOG.md) | Every change, in order |
 
 ## Development
 
 ```bash
-make check        # lint, typecheck, unit tests — the fast gate
+make check        # lint, typecheck, unit tests: the fast gate
 make check-all    # adds integration tests. Must pass before a pull request
 make audit        # pip-audit and gitleaks
 make chaos        # the chaos suite against SkyFare
@@ -232,7 +242,10 @@ make test-int     # integration tests alone
 CI runs all of it on every pull request plus a Docker build that starts the stack.
 The single required check is **Quality gate**; see [docs/cicd.md](docs/cicd.md).
 
-**1,148 unit tests** (one skipped), **337 integration tests**, **23 chaos tests**.
+**1,450 unit tests**, **348 integration tests** and **24 chaos tests**, as of
+November 2026. The unit suite drives real Chromium, and one browser-fallback test
+needs the Firefox that `make install` adds. The integration suite runs against
+`POSTGRES_TEST_DB`, never the application database.
 
 ## Disclaimer
 
@@ -242,10 +255,10 @@ The single required check is **Quality gate**; see [docs/cicd.md](docs/cicd.md).
   **test mode** by design, the agent can be wrong, and the approval gate is the
   only thing between a mistake and a purchase. Nothing here has had the kind of
   review money deserves.
-- **Only automation-permitted sites.** The agent has a domain allow-list and it
-  is empty by default for a reason. Point it at a site whose terms of service
-  permit automation — ideally the bundled SkyFare, which exists so that no real
-  site has to be involved.
+- **Only automation-permitted sites.** The agent has a domain allow-list, and by
+  default it allows nothing but localhost and the bundled SkyFare site, for a
+  reason. Point it at a site whose terms of service permit automation, ideally
+  SkyFare, which exists so that no real site has to be involved.
 - **No CAPTCHA bypass, and none of the twelve allowed actions can solve one.**
   That is deliberate and it is not a gap to fill.
 - **No real personal data.** The demo site generates everything from a seed. Do
