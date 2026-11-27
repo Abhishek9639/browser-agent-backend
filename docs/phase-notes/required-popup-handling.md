@@ -50,6 +50,12 @@ Verification before pushing:
 - Ruff lint and format checks passed; strict mypy passed for 125 source files.
 - `git diff --check` passed.
 
+Full GitHub CI on implementation commit `b0fe06b` also passed all seven jobs:
+[verification run](https://github.com/Abhishek9639/browser-agent-backend/actions/runs/45941940297).
+The suites passed **1,814 tests**: 1,442 unit (one live-provider test skipped),
+348 integration and 24 chaos. The benchmark, Docker build/startup smoke test,
+lint/typecheck, dependency/secret audit and final quality gate passed as well.
+
 ## Viva questions
 
 1. Why is Escape not always a safe recovery step?
