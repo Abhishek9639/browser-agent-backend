@@ -5,7 +5,7 @@ from typing import Protocol
 from playwright.async_api import Error as PlaywrightError
 
 from app.agent.browser.scroller import METRICS_JS
-from app.agent.perception.dom_extractor import PageNotReadyError, extract
+from app.agent.perception.dom_extractor import PageNotReadyError, extract, modal_scope_source
 from app.agent.perception.state import PageState, ScrollState, compute_dom_hash
 from app.agent.perception.summarizer import SUMMARY_TOKEN_BUDGET, build_header, build_summary
 from app.core.logging import get_logger
@@ -19,7 +19,10 @@ logger = get_logger(__name__)
 _METRICS = (
     "() => { const m = ("
     + METRICS_JS
-    + ")(); return {"
+    + ")(); const modal = ("
+    + modal_scope_source()
+    + ")(document); return {"
+    + " modalOpen: !!modal, modalText: modal ? modal.innerText.slice(0, 4000) : '',"
     + " url: location.href,"
     + " title: document.title,"
     + " scrollY: m[0],"
@@ -112,6 +115,8 @@ async def perceive(
         # Also included in bounded, untrusted planner context so static
         # confirmations and result prices can inform the next decision.
         text=metrics.get("text", ""),
+        modal_open=metrics.get("modalOpen", False),
+        modal_text=metrics.get("modalText", ""),
         dom_hash=compute_dom_hash(metrics["url"], elements),
     )
 

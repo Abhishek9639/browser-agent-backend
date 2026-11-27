@@ -12,6 +12,7 @@
  *     prompt or a database row even by accident.
  */
 () => {
+  const modalScope = __MODAL_SCOPE__;
   const MAX_TEXT = 80;
 
   // "Zero size" cannot be taken literally. A button styled width:0;height:0
@@ -380,6 +381,7 @@
       candidates.push(el);
     }
 
+    const modal = modalScope(doc);
     for (const el of candidates) {
       if (el.tagName === "IFRAME") continue;
       if (hiddenReason(el, win, doc)) continue;
@@ -388,10 +390,11 @@
       // Covered means unreachable, so it is dropped. Two exceptions. Behind a
       // modal: the recovery ladder dismisses overlays, so it needs to see what
       // is there. And a form's own controls under a popup (see keptUnderPopup).
-      if (covered && !byModal && !keptUnderPopup(el)) continue;
+      if (covered && !byModal && !modal && !keptUnderPopup(el)) continue;
 
       const info = describe(el, win, doc, frameId, offsetX, offsetY);
-      info.covered = covered;
+      info.in_modal = Boolean(modal && modal.contains(el));
+      info.covered = covered || Boolean(modal && !info.in_modal);
       out.push(info);
     }
 

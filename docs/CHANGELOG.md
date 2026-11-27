@@ -4,6 +4,18 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### Popups that appear after the page has settled — 2026-11-27
+
+- Fix the agent clicking a page element underneath a popup that a site puts up on a timer after load, such as BookMyShow's city picker. The page went quiet, settling returned, and the agent read it before the popup existed, so the planner chose a card the popup then covered and recovery re-clicked it until the step timed out.
+- Every read the planner acts on now gives a freshly loaded page `AGENT_LOAD_POPUP_GRACE_MS` (default 2000) to put a popup up, returning the moment one appears. This covers the first read after a start URL, which nothing settled, as well as the read after each action. A page that has been up longer than the grace costs one round trip; 0 turns it off.
+- "A popup appeared" uses the same shared modal detector as perception's `modal_open`, so the wait and the planner agree on what a popup is.
+- Add a fixture that builds, goes quiet, then shows a city picker, plus regressions that reproduce the miss, prove the wait fixes it on the agent browser's real read path, and bound its cost.
+
+### Required popup handling
+
+- Read required language/format and input dialogs before background actions; prevent automatic Close/Escape loops and stale cached clicks behind them.
+- Share popup scope across perception, planning, driver execution, recovery and scrolling. Add focused browser and replay regressions.
+
 ### General web task configuration and failure reporting — 2026-11-26
 
 - Diagnose the GSoC task's first-navigation blocker: the local demo configuration only allowed localhost and Uber. Configure the user's local instance for the requested general web browsing; retain restricted repository defaults.

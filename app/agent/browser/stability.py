@@ -10,6 +10,11 @@ Two signals, whichever settles first. Network idle catches a page waiting on a
 fetch; a quiet DOM catches one rendering from data it already has. Both are
 capped, because a page with a polling timer or an animation never goes quiet
 and waiting forever is worse than reading slightly early.
+
+A quiet page is still not always a finished one. A site that builds itself,
+goes quiet, and THEN puts up a city picker or a consent prompt on a timer
+settles before the popup exists, so the planner chooses a click on the page
+underneath. ``await_late_overlays`` closes that gap for freshly loaded pages.
 """
 
 import asyncio
@@ -17,7 +22,13 @@ from typing import Final, Protocol
 
 from app.core.logging import get_logger
 
-__all__ = ["DEFAULT_QUIET_MS", "DEFAULT_TIMEOUT_MS", "settle"]
+__all__ = [
+    "DEFAULT_LOAD_POPUP_GRACE_MS",
+    "DEFAULT_QUIET_MS",
+    "DEFAULT_TIMEOUT_MS",
+    "await_late_overlays",
+    "settle",
+]
 
 logger = get_logger(__name__)
 
@@ -25,6 +36,30 @@ logger = get_logger(__name__)
 # short enough to pay on every step without anyone noticing.
 DEFAULT_QUIET_MS: Final = 300
 DEFAULT_TIMEOUT_MS: Final = 3000
+
+# How old a document has to be before "no popup" is believed. Location pickers
+# and consent prompts go up on a timer a moment after load, once the page has
+# already gone quiet.
+DEFAULT_LOAD_POPUP_GRACE_MS: Final = 2000
+
+# Polls the page's own clock, not ours: performance.now() is milliseconds since
+# THIS document started loading, so the wait is measured from the load the
+# popup is timed against, and a document that has been up a while costs one
+# round trip. Once the shared modal detector finds something it waits one quiet
+# period for the popup to finish drawing, then reports it.
+_LATE_OVERLAY = """
+(args) => new Promise((resolve) => {
+  const findModal = (__MODAL_SCOPE__);
+  const tick = () => {
+    if (performance.now() >= args.graceMs) { resolve(false); return; }
+    let found = null;
+    try { found = findModal(document); } catch (e) { found = null; }
+    if (found) { setTimeout(() => resolve(true), args.quietMs); return; }
+    setTimeout(tick, 100);
+  };
+  tick();
+})
+"""
 
 # Runs in the page. Resolves once nothing has mutated for `quiet` ms, and the
 # observer is disconnected on the way out so a long run does not leave one
@@ -101,3 +136,48 @@ async def _network_idle(page: _Settleable, deadline: float) -> None:
         await page.wait_for_load_state("networkidle", timeout=deadline * 1000)
     except Exception:
         return
+
+
+async def await_late_overlays(
+    page: _Settleable,
+    *,
+    modal_scope: str,
+    grace_ms: int = DEFAULT_LOAD_POPUP_GRACE_MS,
+    quiet_ms: int = DEFAULT_QUIET_MS,
+) -> bool:
+    """Give a freshly loaded page the chance to put up a late popup.
+
+    Returns whether one appeared. On a document older than ``grace_ms``, which
+    is every read after the first couple of seconds on a page, it costs a
+    single round trip. On a new one it costs at most ``grace_ms``, and returns
+    early the moment a popup is up. ``grace_ms`` of 0 turns it off.
+
+    ``modal_scope`` is the shared detector's source, the same one perception
+    uses for ``modal_open``. It is passed in so this module keeps no dependency
+    on perception, and so "a popup appeared" here means exactly what it means
+    to the planner.
+
+    Never raises, for the same reason ``settle`` does not.
+    """
+    if grace_ms <= 0:
+        return False
+
+    script = _LATE_OVERLAY.replace("__MODAL_SCOPE__", modal_scope)
+    # The page bounds itself at grace_ms plus one quiet period. This is only a
+    # backstop for a page that stops running its timers.
+    deadline = (grace_ms + quiet_ms) / 1000 + 1
+
+    try:
+        async with asyncio.timeout(deadline):
+            appeared = await page.evaluate(script, {"graceMs": grace_ms, "quietMs": quiet_ms})
+    except TimeoutError:
+        logger.debug("late_overlay_wait_timed_out", grace_ms=grace_ms)
+        return False
+    except Exception as exc:
+        # As in settle: a navigation mid-wait is the page moving on, not an error.
+        logger.debug("late_overlay_wait_interrupted", error_type=type(exc).__name__)
+        return False
+
+    if appeared:
+        logger.info("late_popup_waited_for", grace_ms=grace_ms)
+    return bool(appeared)

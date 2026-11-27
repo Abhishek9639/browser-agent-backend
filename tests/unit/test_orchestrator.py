@@ -2617,3 +2617,58 @@ async def test_cancel_wins_over_an_approval_and_publishes_the_final_event(
     assert rig.browser.executed == []
     assert rig.bus.published[-1].type is EventType.FINAL
     assert rig.bus.published[-1].status is TaskStatus.CANCELLED
+
+
+async def test_required_popup_stops_cached_background_clicks_and_is_not_closed(
+    settings: Settings,
+) -> None:
+    book = element(0, name="Book tickets").model_copy(update={"tag": "button", "input_type": None})
+    choice = element(1, name="English 3D").model_copy(
+        update={"tag": "button", "input_type": None, "in_modal": True}
+    )
+    close = element(2, name="Close").model_copy(
+        update={"tag": "button", "input_type": None, "in_modal": True}
+    )
+    popup = page(book.model_copy(update={"covered": True}), choice, close).model_copy(
+        update={"modal_open": True, "modal_text": "Select language and format: English 3D"}
+    )
+
+    class ChoosingBrowser(FakeBrowser):
+        async def execute(self, action: Any) -> ActionResult:
+            result = await super().execute(action)
+            if action.action is ActionType.CLICK:
+                self._state = page(book)
+            return result
+
+    cache = RecordingCache(
+        ReplayStep(
+            action=ActionType.CLICK,
+            locator=Locator(name="Book tickets"),
+            target="Book tickets",
+            expected_type=VerificationMethod.DOM_CHANGED,
+            expected_value="",
+        )
+    )
+    background = decision_payload(
+        action="click",
+        targetIndex=0,
+        target="Book tickets",
+        value=None,
+        expectedOutcome={"type": "dom_changed", "value": ""},
+    )
+    choose = {**background, "targetIndex": 1, "target": "English 3D"}
+    rig = build(
+        # First proposal repeats the bad background click. It must be repaired
+        # before execution, including on the planner's final (non-advisory) turn.
+        script=[background, choose, background, done_payload()],
+        browser=ChoosingBrowser(popup),
+        settings=settings,
+        cache=cache,
+    )
+    outcome = await rig.orchestrator.run(TASK_ID)
+    assert outcome.status is TaskStatus.COMPLETED
+    assert outcome.replayed_steps == 0
+    assert len(rig.browser.executed) == 3  # choice, background, done; never Close
+    assert '"1"' in rig.browser.executed[0].selector
+    assert '"0"' in rig.browser.executed[1].selector
+    assert rig.browser.pressed == []

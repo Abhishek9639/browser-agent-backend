@@ -89,6 +89,8 @@ class PageState(BaseModel):
     # Visible text for verification and bounded planner context, including
     # static results and confirmations that have no interactive element.
     text: str = ""
+    modal_open: bool = False
+    modal_text: str = ""
     dom_hash: str = ""
     # Every frame's URL, main frame first. A link inside an iframe navigates
     # that frame and leaves the top-level URL alone, so a URL check that only
@@ -99,6 +101,16 @@ class PageState(BaseModel):
     @property
     def planner_summary(self) -> str:
         """Controls plus bounded readable results; callers must fence as untrusted."""
+        if self.modal_open:
+            indices = ", ".join(str(e.index) for e in self.elements if e.in_modal and not e.covered)
+            return (
+                "ACTIVE POPUP: read and handle this before continuing the background task. "
+                "Complete its required choices using the user's preferences; ask the user "
+                "if a required detail is missing. Do not close a required popup merely to "
+                "click the button behind it again.\n"
+                f"Popup control indices: {indices or 'none visible; inspect the popup'}.\n"
+                f"POPUP TEXT\n{self.modal_text[:4000]}\n\n{self.summary_text}"
+            )
         if not self.text.strip():
             return self.summary_text
         return (

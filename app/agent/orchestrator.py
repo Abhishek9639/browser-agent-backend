@@ -66,7 +66,7 @@ from app.agent.contracts import (
 )
 from app.agent.llm.base import LLMAccessDenied, LLMRateLimited, LLMTimeout, LLMUnavailable
 from app.agent.perception.dom_extractor import MASK, ElementInfo, PageNotReadyError
-from app.agent.perception.overlays import is_blocked, safe_closers
+from app.agent.perception.overlays import is_blocked, requires_popup_attention, safe_closers
 from app.agent.perception.state import PageState
 from app.agent.planner.clarify import with_answers
 from app.agent.planner.outline import MAX_STEP_CHARS
@@ -76,6 +76,7 @@ from app.agent.planner.planner import (
     PlannerResult,
     StepSummary,
     input_target_problem,
+    modal_target_problem,
     not_editable_problem,
 )
 from app.agent.planner.schema import Decision, ExpectedOutcome
@@ -560,7 +561,9 @@ class Orchestrator:
             if grounded.used_vision:
                 tally.vision_steps += 1
             if decision.target_index != planned.decision.target_index and (
-                input_target_problem(decision, state) or not_editable_problem(decision, state)
+                input_target_problem(decision, state)
+                or not_editable_problem(decision, state)
+                or modal_target_problem(decision, state)
             ):
                 # Grounding moved the target onto an unnamed or covered input
                 # that the planner was already refused for. Keep the planner's.
@@ -648,6 +651,9 @@ class Orchestrator:
                     and missed_forecasts < MAX_MISSED_FORECASTS
                     and page_changed(state, after)
                 )
+                popup_interrupted = requires_popup_attention(after) and (
+                    not state.modal_open or state.modal_text != after.modal_text
+                )
                 verdict, after, attempts, tried = await self._verify(
                     task_id,
                     step_number,
@@ -656,7 +662,7 @@ class Orchestrator:
                     state,
                     after,
                     result,
-                    rescue=not forecast_only,
+                    rescue=not (forecast_only or popup_interrupted),
                 )
                 missed = forecast_only and not verdict.ok
 
@@ -767,6 +773,11 @@ class Orchestrator:
                 await self._return_to_planning(task_id)
                 continue
 
+            if not verdict.ok and popup_interrupted:
+                state = after
+                await self._return_to_planning(task_id)
+                continue
+
             if missed:
                 # The action ran and the page moved, so the target was right;
                 # what did not come true is the planner's guess at what would
@@ -846,6 +857,12 @@ class Orchestrator:
 
             if state is None:
                 state = await self._browser.perceive()
+
+            if state.modal_open:
+                # A cached background click cannot decide what a new popup
+                # needs. Let the planner read it before replay continues.
+                logger.info("replay_paused_for_popup")
+                break
 
             element = step.locator.resolve(state) if step.locator is not None else None
             if step.locator is not None and element is None:
@@ -1099,6 +1116,8 @@ class Orchestrator:
         looping.
         """
         for attempt in range(MAX_OVERLAY_CLEARS):
+            if requires_popup_attention(state):
+                return state
             closers = safe_closers(state)
             selector = selector_for(closers[0]) if closers else None
             if selector is None:

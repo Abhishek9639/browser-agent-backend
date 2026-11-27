@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Required booking choices</title>
+<style>
+ body {font-family: sans-serif; padding: 40px;}
+ button, input {padding: 12px; margin: 8px;}
+ #veil {position: fixed; inset: 0; z-index: 1000; background: #0009;
+   display: flex; align-items: center; justify-content: center;}
+ #veil[hidden] {display: none;}
+ #panel {background: white; padding: 24px; width: 360px;}
+</style></head><body>
+<h1>Movie screenings demo</h1>
+<p>Book tickets opens the required language and format choices.</p>
+<button id="book">Book tickets</button><p id="result"></p>
+<div id="veil" hidden><div id="panel" role="dialog" aria-modal="true" aria-labelledby="heading">
+ <h2 id="heading">Select language and format</h2>
+ <p>Choose a format to continue. Closing this popup does not select a format.</p>
+ <label for="seats">Number of people</label><input id="seats" type="number" min="1" max="6" value="1">
+ <button id="hindi">Hindi 2D</button><button id="english">English 3D</button>
+ <button id="close">Close</button>
+</div></div>
+<script>
+ const veil = document.getElementById('veil');
+ let chosen = '';
+ document.body.dataset.opens = '0';
+ document.getElementById('book').onclick = () => {
+   document.body.dataset.opens = String(Number(document.body.dataset.opens) + 1);
+   if (!chosen) veil.hidden = false;
+   else document.getElementById('result').textContent = 'Screenings ready: ' + chosen;
+ };
+ for (const id of ['hindi','english']) document.getElementById(id).onclick = () => {
+   chosen = document.getElementById(id).textContent + ' for ' + document.getElementById('seats').value;
+   veil.hidden = true;
+   document.getElementById('result').textContent = 'Selected ' + chosen + '. Press Book tickets to view screenings.';
+ };
+ document.getElementById('close').onclick = () => { veil.hidden = true; };
+ document.addEventListener('keydown', e => { if (e.key === 'Escape') veil.hidden = true; });
+ if (new URLSearchParams(location.search).has('plain')) {
+   document.getElementById('panel').removeAttribute('role');
+   document.getElementById('panel').removeAttribute('aria-modal');
+ }
+</script></body></html>

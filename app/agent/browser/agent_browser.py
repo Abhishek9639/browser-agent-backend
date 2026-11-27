@@ -16,8 +16,8 @@ from pydantic import BaseModel
 
 from app.agent.browser.driver import ActionResult, BrowserSnapshot, PlaywrightDriver
 from app.agent.browser.screenshots import Screenshot, capture
-from app.agent.browser.stability import settle
-from app.agent.perception.dom_extractor import PageNotReadyError
+from app.agent.browser.stability import await_late_overlays, settle
+from app.agent.perception.dom_extractor import PageNotReadyError, modal_scope_source
 from app.agent.perception.perceive import perceive
 from app.agent.perception.state import PageState
 from app.core.config import Settings
@@ -46,8 +46,20 @@ class DriverBrowser:
         self._token_budget = settings.AGENT_DOM_TOKEN_BUDGET
         self._quiet_ms = settings.AGENT_SETTLE_QUIET_MS
         self._settle_timeout_ms = settings.AGENT_SETTLE_TIMEOUT_MS
+        self._popup_grace_ms = settings.AGENT_LOAD_POPUP_GRACE_MS
 
     async def perceive(self) -> PageState:
+        # Every read the planner acts on comes through here: the first one after
+        # the start URL, which nothing settles, and the one after each action.
+        # On a page that has only just loaded, wait for a popup it may still be
+        # about to put up, or the planner picks a click on the page underneath
+        # it. A page that has been up a while answers at once.
+        await await_late_overlays(
+            self._driver.page,  # type: ignore[arg-type]
+            modal_scope=modal_scope_source(),
+            grace_ms=self._popup_grace_ms,
+            quiet_ms=self._quiet_ms,
+        )
         state = await self._read_page()
         # Perception is the only moment the session manager can learn what a
         # tab holds without doing browser work of its own, so this is where

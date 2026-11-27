@@ -133,6 +133,25 @@ def is_editable(element: Any) -> bool:
     return (element.role or "") in _EDITABLE_ROLES
 
 
+def modal_target_problem(decision: Decision, page_state: PageState) -> str | None:
+    """A modal must be handled before its obscured background can be used."""
+    if not page_state.modal_open or decision.action not in {
+        ActionType.CLICK,
+        ActionType.TYPE,
+        ActionType.SELECT,
+    }:
+        return None
+    target = (
+        page_state.element_at(decision.target_index) if decision.target_index is not None else None
+    )
+    if target is not None and target.in_modal and not target.covered:
+        return None
+    return (
+        "An active popup blocks this target. Read POPUP TEXT and choose an uncovered "
+        "popup control; complete the required selections before using the background page."
+    )
+
+
 def not_editable_problem(decision: Decision, page_state: PageState) -> str | None:
     """Refuse typing into something that is not a field, when there are fields.
 
@@ -489,7 +508,9 @@ class Planner:
                 f"Available indices: {shown}. Choose one of those, or scroll first."
             )
 
-        hard = not_editable_problem(decision, page_state)
+        hard = modal_target_problem(decision, page_state) or not_editable_problem(
+            decision, page_state
+        )
         if hard:
             return hard
 

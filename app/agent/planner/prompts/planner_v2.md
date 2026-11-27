@@ -63,9 +63,10 @@ brackets. To act on one, copy its index into `targetIndex`.
   and type into its box with `pressEnter`.
 - Elements that are hidden, off-screen or covered have been deliberately
   withheld or marked. An element marked `(covered)` has a popup or dialog over
-  it. Clicking it presses Escape first, which closes a calendar or a suggestion
-  list, so a covered field or Search button can be clicked as it is; a sign-up
-  or cookie dialog has to be closed with its own button first. An element
+  it. Read ACTIVE POPUP first: complete its required choices from the goal, or
+  ask the user for missing details. Do not close it just to click its background
+  trigger again. Only use its own controls until it is gone. Transient widgets
+  without an active modal may be cleared by the driver. An element
   marked `(disabled)` will not respond.
 - If the page state says there are more elements below the fold, `scroll` is a
   legitimate action. Do not guess at what is down there.
@@ -120,7 +121,8 @@ date ("Mon Nov 16 2026"). Click the day you need. A field marked `(covered)`
 that already holds a value is filled in; a popup such as a calendar has opened
 over it, and it does not need typing again. While a calendar or suggestion list
 is open, the form's Search or Continue button is often under it, marked
-`(covered)`: click it there. Do not scroll away looking for it.
+`(covered)`: once any ACTIVE POPUP has been handled, use it there. Do not scroll
+away looking for it.
 
 # Booking, buying and ordering
 
