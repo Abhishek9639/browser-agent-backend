@@ -4,6 +4,11 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### Required popup handling
+
+- Read required language/format and input dialogs before background actions; prevent automatic Close/Escape loops and stale cached clicks behind them.
+- Share popup scope across perception, planning, driver execution, recovery and scrolling. Add focused browser and replay regressions.
+
 ### General web task configuration and failure reporting — 2026-11-26
 
 - Diagnose the GSoC task's first-navigation blocker: the local demo configuration only allowed localhost and Uber. Configure the user's local instance for the requested general web browsing; retain restricted repository defaults.

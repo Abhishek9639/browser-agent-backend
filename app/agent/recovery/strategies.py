@@ -23,7 +23,7 @@ from typing import Final, Protocol
 from app.agent.browser.action_builder import build_action, selector_for
 from app.agent.contracts import AttemptResult, Grounder, RecoveryContext
 from app.agent.perception.dom_extractor import ElementInfo
-from app.agent.perception.overlays import icon_closers
+from app.agent.perception.overlays import icon_closers, requires_popup_attention
 from app.agent.perception.state import PageState
 from app.agent.planner.schema import Decision
 from app.core.logging import get_logger
@@ -357,7 +357,7 @@ class DismissOverlay:
     label = "closing a popup"
 
     def applicable(self, ctx: RecoveryContext) -> bool:
-        if not ctx.targets_an_element:
+        if not ctx.targets_an_element or requires_popup_attention(ctx.after):
             return False
         return bool(self.closers(ctx.after)) or blocked_by_overlay(ctx)
 
@@ -372,6 +372,9 @@ class DismissOverlay:
         current = await ctx.browser.perceive()
 
         for _ in range(MAX_OVERLAYS):
+            if requires_popup_attention(current):
+                ctx.after = current
+                return AttemptResult(RecoveryOutcome.SKIPPED, error="Read the active popup first.")
             closers = self.closers(current)
             if not closers:
                 break
@@ -414,8 +417,12 @@ class DismissOverlay:
         not also match "Accept and book this flight", which is a button that
         spends money.
         """
+        if requires_popup_attention(state):
+            return []
         found: list[tuple[int, ElementInfo]] = []
         for element in state.elements:
+            if state.modal_open and (not element.in_modal or element.covered):
+                continue
             label = (element.name or element.text).strip().casefold()
             if not label or element.tag not in {"button", "a"}:
                 continue

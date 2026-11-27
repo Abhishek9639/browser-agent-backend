@@ -38,7 +38,10 @@ brackets. To act on one, copy its index into `targetIndex`.
   know the date.
 - Elements that are hidden, off-screen or covered have been deliberately
   withheld or marked. An element marked `(covered)` cannot be clicked until
-  whatever covers it is dismissed. An element marked `(disabled)` will not
+  whatever covers it has been handled. Read ACTIVE POPUP first: complete its
+  required choices from the goal, or ask the user for missing details. Do not
+  close it just to click its background trigger again. Only use its own controls
+  until it is gone. An element marked `(disabled)` will not
   respond.
 - If the page state says there are more elements below the fold, `scroll` is a
   legitimate action. Do not guess at what is down there.

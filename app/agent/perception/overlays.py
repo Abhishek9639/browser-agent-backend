@@ -46,7 +46,19 @@ _MAX_ICON_SIZE: Final = 56
 
 def is_blocked(state: PageState) -> bool:
     """Is a popup covering the page?"""
-    return sum(1 for element in state.elements if element.covered) >= BLOCKED_COVERED_COUNT
+    return state.modal_open or sum(1 for e in state.elements if e.covered) >= BLOCKED_COVERED_COUNT
+
+
+def requires_popup_attention(state: PageState) -> bool:
+    """Unknown/task dialogs belong to the planner, not automatic dismissal.
+
+    Only explicit optional/consent dismissals are safe without interpreting
+    the task. A generic Close icon or language choice is not such evidence.
+    """
+    optional = {"reject non-essential", "reject all", "no thanks", "maybe later"}
+    return state.modal_open and not any(
+        e.in_modal and _usable(e) and _label(e) in optional for e in state.elements
+    )
 
 
 def _label(element: ElementInfo) -> str:
@@ -92,11 +104,13 @@ def safe_closers(state: PageState) -> list[ElementInfo]:
     Labelled closers outrank unlabelled icons because a label is evidence and a
     position is a guess.
     """
-    if not is_blocked(state):
+    if not is_blocked(state) or requires_popup_attention(state):
         return []
 
     labelled: list[tuple[int, ElementInfo]] = []
     for element in state.elements:
+        if state.modal_open and not element.in_modal:
+            continue
         if element.tag not in {"button", "a"} or not _usable(element):
             continue
         # Some pages give a control a long or garbled accessible name and keep

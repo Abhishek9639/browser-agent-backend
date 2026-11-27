@@ -60,7 +60,7 @@ from app.agent.browser.errors import (
 )
 from app.agent.browser.scroller import METRICS_JS, scroll_by_js
 from app.agent.browser.sessions import DEFAULT_MAX_TABS, TabLimitReached, TabSessionManager
-from app.agent.perception.dom_extractor import locator_in_any_frame
+from app.agent.perception.dom_extractor import locator_in_any_frame, modal_scope_source
 from app.core.config import Settings
 from app.core.logging import get_logger
 from app.domain.enums import ActionType
@@ -617,7 +617,9 @@ class PlaywrightDriver:
             case ScrollAction():
                 await self._scroll(action)
             case SelectAction():
-                await (await self._locate(action.selector)).select_option(action.value)
+                locator = await self._locate(action.selector)
+                await self._clear_obstruction(locator)
+                await locator.select_option(action.value)
             case ExtractAction():
                 return await self._extract(action)
             case WaitAction():
@@ -928,6 +930,16 @@ class PlaywrightDriver:
         without one, so it is tried once, and only when the target really is
         covered.
         """
+        modal = await locator.evaluate(
+            "(el) => { const modal = (" + modal_scope_source() + ")(el.ownerDocument);"
+            " return modal ? (modal.contains(el) ? 'inside' : 'outside') : ''; }"
+        )
+        if modal == "outside" or (modal == "inside" and await self._is_covered(locator)):
+            raise PlaywrightError(
+                "Target is not interactable: read and handle the active popup first"
+            )
+        if modal == "inside":
+            return
         try:
             await locator.scroll_into_view_if_needed(timeout=2_000)
             if not await self._is_covered(locator):
@@ -1176,6 +1188,7 @@ class PlaywrightDriver:
                 "not visible",
                 "not enabled",
                 "not editable",
+                "not interactable",
                 "intercepts pointer events",
                 "element is not attached",
                 "not an <input>",

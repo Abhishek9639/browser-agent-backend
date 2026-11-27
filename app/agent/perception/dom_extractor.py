@@ -80,6 +80,7 @@ class ElementInfo(BaseModel):
     bbox: BoundingBox
     in_viewport: bool
     covered: bool = False
+    in_modal: bool = False
     frame_id: str = "main"
     css_path: str = ""
     xpath: str = ""
@@ -106,12 +107,23 @@ class _Evaluator(Protocol):
 
 
 @cache
+def modal_scope_source() -> str:
+    """Shared, read-only modal detection for perception and action guards."""
+    return (
+        resources.files("app.agent.perception")
+        .joinpath("modal_scope.js")
+        .read_text(encoding="utf-8")
+    )
+
+
+@cache
 def collector_source() -> str:
     """The collector script, read once per process."""
     return (
         resources.files("app.agent.perception")
         .joinpath("dom_extractor.js")
         .read_text(encoding="utf-8")
+        .replace("__MODAL_SCOPE__", modal_scope_source())
     )
 
 

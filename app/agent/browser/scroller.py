@@ -11,6 +11,8 @@ measure, so the two can never disagree about what "the page" is.
 
 from typing import Final
 
+from app.agent.perception.dom_extractor import modal_scope_source
+
 __all__ = ["METRICS_JS", "SCROLLER_JS", "scroll_by_js"]
 
 # Prefer the active widget or dialog over its background document. Keep the
@@ -44,9 +46,7 @@ const scroller = () => {
     }
     return best;
   };
-  const dialogs = [...document.querySelectorAll(
-    'dialog[open], [role="dialog"], [aria-modal="true"]')];
-  const modal = dialogs.reverse().find(el => area(el) > 0);
+  const modal = (__MODAL_SCOPE__)(document);
   let active = document.activeElement;
   while (active && active.shadowRoot && active.shadowRoot.activeElement)
     active = active.shadowRoot.activeElement;
@@ -72,7 +72,7 @@ const scroller = () => {
   return document.body ? (largest(document.body) || root) : root;
 };
 const isRoot = (el) => el === document.scrollingElement || el === document.documentElement;
-"""
+""".replace("__MODAL_SCOPE__", modal_scope_source())
 
 # Scroll position and room to scroll, of whatever scrolls.
 METRICS_JS: Final = (
