@@ -461,6 +461,17 @@ async def test_close_is_idempotent(browser_settings: Settings) -> None:
 # ------------------------------------------------------- inside an iframe
 
 
+async def open_framed_page(driver: PlaywrightDriver, html_server: str) -> None:
+    """iframe.html, once its child frame has a document.
+
+    Navigating returns at DOMContentLoaded, which can come before the frame has
+    loaded, while the agent only reads a page after it settles. Read straight
+    away, the frame was sometimes still empty and the test failed in CI.
+    """
+    await driver.execute(NavigateAction(url=f"{html_server}/iframe.html"))
+    await driver.page.wait_for_load_state("load")
+
+
 @pytest.mark.browser
 async def test_a_button_inside_an_iframe_can_be_clicked(
     driver: PlaywrightDriver, html_server: str
@@ -471,7 +482,7 @@ async def test_a_button_inside_an_iframe_can_be_clicked(
     same-origin iframe was perceived perfectly well and then could not be
     touched. The whole iframe chaos configuration failed on this.
     """
-    await driver.execute(NavigateAction(url=f"{html_server}/iframe.html"))
+    await open_framed_page(driver, html_server)
     state = await perceive(driver.page, driver)
 
     inner = next(element for element in state.elements if element.frame_id != "main")
@@ -484,7 +495,7 @@ async def test_a_button_inside_an_iframe_can_be_clicked(
 async def test_extracting_reads_through_every_frame(
     driver: PlaywrightDriver, html_server: str
 ) -> None:
-    await driver.execute(NavigateAction(url=f"{html_server}/iframe.html"))
+    await open_framed_page(driver, html_server)
 
     result = await driver.execute(ExtractAction())
 
@@ -501,7 +512,7 @@ async def test_extracting_reads_through_every_frame(
 async def test_the_main_frame_still_wins_when_both_match(
     driver: PlaywrightDriver, html_server: str
 ) -> None:
-    await driver.execute(NavigateAction(url=f"{html_server}/iframe.html"))
+    await open_framed_page(driver, html_server)
 
     # A selector matching in the main frame must not start resolving into a
     # child frame: the main frame is searched first and that is the behaviour

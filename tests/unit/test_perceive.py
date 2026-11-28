@@ -162,7 +162,11 @@ async def test_modal_state_is_visible_to_the_planner(
 async def test_frame_elements_appear_in_the_summary(
     driver: PlaywrightDriver, html_server: str
 ) -> None:
-    state = await look_at(driver, html_server, "iframe.html")
+    await driver.execute(NavigateAction(url=f"{html_server}/iframe.html"))
+    # Navigating returns at DOMContentLoaded, which can beat the frame's own
+    # load; the agent reads only after the page settles.
+    await driver.page.wait_for_load_state("load")
+    state = await perceive(driver.page, driver)
 
     assert "Inside the frame" in state.summary_text
     assert "Outside the frame" in state.summary_text
