@@ -4,6 +4,12 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### A full stack that starts - 2026-11-28
+
+- Fix the `frontend` service in `deploy/docker-compose.full.yml`. It pointed at `../../browser-agent-frontend`, a checkout that does not exist under that name, and passed `NEXT_PUBLIC_API_BASE_URL` and `NEXT_PUBLIC_WS_BASE_URL` as runtime environment, which the frontend never reads. It now builds `../../Browser-Automation-Agent` (or `FRONTEND_DIR`) from the frontend's new `Dockerfile`, with `BACKEND_URL=http://api:8000` and `NEXT_PUBLIC_BACKEND_WS_URL` as build arguments, since the frontend's build bakes both in.
+- Put the `payments` service behind a `payments` profile. Its repository does not exist yet, so `up` failed on its build context until the block was commented out by hand.
+- `.env.full.example` swaps the unused frontend variables for `FRONTEND_DIR` and `NEXT_PUBLIC_BACKEND_WS_URL`. README, architecture and CI/CD docs describe the stack as it now runs.
+
 ### SkyFare is a test site only - 2026-11-28
 
 - Move SkyFare from `demo_sites/skyfare/` to `tests/skyfare/`. The chaos suite and the benchmark already serve it on a random port in-process, so they keep working unchanged; nothing else needs it.
