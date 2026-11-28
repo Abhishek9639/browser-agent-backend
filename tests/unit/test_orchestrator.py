@@ -1386,6 +1386,12 @@ async def test_the_sign_in_prompt_says_what_works_when_a_site_refuses_the_agent_
         # No title part is the site's name: the bare domain, not a sentence.
         ("https://auth.uber.com/v2/", "Sign up or Log in with Uber", "uber.com"),
         ("https://www.bbc.co.uk/news", "Home - BBC News", "bbc.co.uk"),
+        # An address is said as it is. Read as a domain, 127.0.0.1 was "0.1".
+        ("http://127.0.0.1:8200/book/IX-972", "Book | SkyFare", "127.0.0.1:8200"),
+        ("http://192.168.1.20/", "Router admin", "192.168.1.20"),
+        ("http://[::1]:8000/", "Local", "[::1]:8000"),
+        # A bare name is still a name.
+        ("http://localhost:8200/results", "Results", "localhost"),
     ],
 )
 def test_a_site_is_named_the_way_a_person_says_it(url: str, title: str, said: str) -> None:

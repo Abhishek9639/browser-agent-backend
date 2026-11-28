@@ -26,6 +26,18 @@ async def open_page(driver: PlaywrightDriver, html_server: str, page: str) -> li
     return await extract(driver.page)
 
 
+async def open_framed_page(driver: PlaywrightDriver, html_server: str) -> list[ElementInfo]:
+    """iframe.html, once its child frame has a document.
+
+    Navigating returns at DOMContentLoaded, which can come before the frame has
+    loaded, while the agent only reads a page after it settles. Read straight
+    away, the frame was sometimes still empty and the test failed in CI.
+    """
+    await driver.execute(NavigateAction(url=f"{html_server}/iframe.html"))
+    await driver.page.wait_for_load_state("load")
+    return await extract(driver.page)
+
+
 def named(elements: list[ElementInfo], name: str) -> ElementInfo:
     return next(element for element in elements if element.name == name)
 
@@ -284,7 +296,7 @@ async def test_a_control_under_a_popup_is_still_dropped(
 
 
 async def test_same_origin_frames_are_walked(driver: PlaywrightDriver, html_server: str) -> None:
-    elements = await open_page(driver, html_server, "iframe.html")
+    elements = await open_framed_page(driver, html_server)
 
     assert named(elements, "Inside the frame").frame_id != "main"
     assert named(elements, "Outside the frame").frame_id == "main"
@@ -294,7 +306,7 @@ async def test_frame_bboxes_are_offset_into_the_top_level_viewport(
     driver: PlaywrightDriver, html_server: str
 ) -> None:
     """One coordinate space, so nothing downstream redoes the arithmetic."""
-    elements = await open_page(driver, html_server, "iframe.html")
+    elements = await open_framed_page(driver, html_server)
     inner = named(elements, "Inside the frame")
 
     frame_box = await driver.page.locator("#same").bounding_box()
@@ -399,7 +411,7 @@ async def test_locator_for_index_reaches_into_a_frame(
     driver: PlaywrightDriver, html_server: str
 ) -> None:
     """page.locator only sees the main frame; the helper searches all of them."""
-    elements = await open_page(driver, html_server, "iframe.html")
+    elements = await open_framed_page(driver, html_server)
     inner = named(elements, "Inside the frame")
 
     locator = await locator_for_index(driver.page, inner.index)
