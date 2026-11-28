@@ -201,9 +201,21 @@ verifies this service's tokens through `/.well-known/jwks.json`
 ([docs/auth.md](docs/auth.md)). Neither repository is a prerequisite for running
 or demonstrating the backend.
 
-`deploy/docker-compose.full.yml` describes all three as sibling checkouts, with
-services that are not built yet arranged to be commented out until they exist. See
-[ADR-006](docs/adr/006-three-repositories.md) for why it is three and not one.
+`deploy/docker-compose.full.yml` runs Postgres, this API and the frontend
+together, from sibling checkouts:
+
+```bash
+cd deploy
+cp ../.env.full.example .env   # set FRONTEND_DIR if the frontend is not ../../Browser-Automation-Agent
+docker compose -f docker-compose.full.yml up --build
+```
+
+The app is then on <http://localhost:3000>. The frontend's server reaches the
+API by its service name; the browser opens the live stream on
+`NEXT_PUBLIC_BACKEND_WS_URL`, which is built into the frontend image. Payments is
+not built yet and is left out unless you add `--profile payments`. See
+[ADR-006](docs/adr/006-three-repositories.md) for why it is three repositories
+and not one.
 
 ## Documentation
 

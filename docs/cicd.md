@@ -250,10 +250,13 @@ provider configured there gets that provider in the container rather than the
 mock. That is usually what you want and occasionally surprising; `LLM_PROVIDER=mock
 make up` overrides it for one run.
 
-The full stack, with the frontend and payments service as sibling checkouts, is
-`deploy/docker-compose.full.yml`. Both of those repositories are still to be
-written, and their service blocks are arranged so each can be commented out in
-one piece until they exist.
+The full stack, with the frontend as a sibling checkout, is
+`deploy/docker-compose.full.yml`. The frontend image is built from that
+repository's own `Dockerfile`, with `BACKEND_URL` set to the `api` service and
+`NEXT_PUBLIC_BACKEND_WS_URL` to an address the browser can reach; both are build
+arguments because the frontend's build bakes them in. The payments service is
+still to be written, so it sits behind the `payments` profile and is not started
+unless asked for.
 
 ## Known limitations
 

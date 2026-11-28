@@ -253,9 +253,9 @@ graph TB
             vol2[["api_keys<br/>RS256 keypair"]]
         end
 
-        subgraph full["deploy/docker-compose.full.yml adds &mdash; NOT BUILT"]
+        subgraph full["deploy/docker-compose.full.yml adds"]
             fe["frontend<br/>:3000"]
-            pay["payments<br/>:8100"]
+            pay["payments<br/>:8100<br/>NOT BUILT, --profile payments only"]
         end
     end
 

@@ -4,20 +4,20 @@
 #   cp ../.env.full.example .env
 #   docker compose -f docker-compose.full.yml up --build
 #
-# The build contexts are sibling checkouts, so the three repositories sit beside
-# each other:
+# The build contexts are sibling checkouts by default, so the repositories sit
+# beside each other:
 #
 #   ai-07/
-#     browser-agent-backend/     <- this one
-#     browser-agent-frontend/
-#     browser-agent-payments/
+#     browser-agent-backend/       <- this one
+#     Browser-Automation-Agent/    the frontend
+#     browser-agent-payments/      not built yet
 #
-# **Two of those do not exist yet.** The `frontend` and `payments` services are
-# written so they can be commented out in one block each, and the stack works
-# without them: the backend runs with BILLING_ENABLED=false, which is its
-# default, and the API is usable from the docs page or curl without a frontend.
-# Comment them out rather than deleting them, so turning them on later is
-# uncommenting rather than reconstructing.
+# If the frontend is checked out somewhere else, set FRONTEND_DIR in deploy/.env
+# to its path.
+#
+# The payments service does not exist yet, so it sits behind the `payments`
+# profile and is left out unless asked for with `--profile payments`. Without it
+# the backend runs with BILLING_ENABLED=false, which is its default.
 
 services:
   postgres:
@@ -85,29 +85,31 @@ services:
       - api_keys:/app/keys
 
   # --------------------------------------------------------------- frontend
-  # Comment this block out until ../browser-agent-frontend exists.
   frontend:
     build:
-      context: ../../browser-agent-frontend
+      context: ${FRONTEND_DIR:-../../Browser-Automation-Agent}
+      # Build arguments, not environment: the frontend's build writes both into
+      # what it produces, so they cannot be changed when the container starts.
+      args:
+        # Called by the frontend's server, which is on the compose network, so
+        # the service name.
+        BACKEND_URL: http://api:8000
+        # Opened by the visitor's browser, which is not on the compose network,
+        # so an address on the host. wss:// once the site is served over HTTPS.
+        NEXT_PUBLIC_BACKEND_WS_URL: ${NEXT_PUBLIC_BACKEND_WS_URL:-ws://localhost:8000}
     container_name: ai07-frontend
     restart: unless-stopped
     depends_on:
       api:
         condition: service_healthy
-    environment:
-      # Read by the browser, so it is the address on the host rather than the
-      # service name: the compose network does not exist as far as a browser
-      # tab is concerned.
-      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
-      NEXT_PUBLIC_WS_BASE_URL: ${NEXT_PUBLIC_WS_BASE_URL:-ws://localhost:8000}
-      NEXT_PUBLIC_RAZORPAY_KEY_ID: ${NEXT_PUBLIC_RAZORPAY_KEY_ID:-}
     ports:
       - "${FRONTEND_PORT:-3000}:3000"
 
   # --------------------------------------------------------------- payments
-  # Comment this block out until ../browser-agent-payments exists, and leave
-  # BILLING_ENABLED=false while it is commented out.
+  # Not built yet. Started only with `--profile payments`; leave
+  # BILLING_ENABLED=false until it is.
   payments:
+    profiles: ["payments"]
     build:
       context: ../../browser-agent-payments
     container_name: ai07-payments
