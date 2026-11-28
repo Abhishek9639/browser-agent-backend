@@ -13,9 +13,10 @@ import pytest
 from app.agent.browser.actions import ClickAction, NavigateAction
 from app.agent.browser.agent_browser import DriverBrowser
 from app.agent.browser.driver import PlaywrightDriver
-from app.agent.browser.stability import await_late_overlays, settle
+from app.agent.browser.stability import await_late_overlays, await_popup_in_place, settle
 from app.agent.perception.dom_extractor import modal_scope_source
 from app.agent.perception.perceive import perceive
+from app.agent.perception.state import PageState
 from app.agent.planner.schema import Decision
 from app.agent.verification.verifier import DeterministicVerifier
 from app.core.config import Settings
@@ -236,3 +237,101 @@ async def test_a_grace_of_zero_turns_the_wait_off(
 
     assert appeared is False
     assert (await perceive(driver.page, driver)).modal_open is False
+
+
+# --------------------------------------------- a popup still on its way in
+
+
+async def open_format_picker(driver: PlaywrightDriver, html_server: str, query: str = "") -> None:
+    """Click "Book tickets" and settle, the way the loop does after an action."""
+    await open_page(driver, html_server, f"sliding_popup.html{query}")
+    await driver.execute(ClickAction(selector="#book"))
+    await settle(driver.page)
+
+
+def popup_choices(state: PageState) -> set[str]:
+    return {element.name for element in state.elements if element.in_modal and not element.covered}
+
+
+async def test_reading_a_sliding_popup_too_early_finds_none_of_its_choices(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    """BookMyShow's format picker, reproduced, as the control for the tests below.
+
+    The veil is up and the popup is detected, but its panel is still below the
+    fold, so not one format is on screen and the page behind it is covered. A
+    planner reading this has nothing to choose and answers from the background:
+    "it is listed as I'm interested, so it cannot be booked".
+    """
+    await open_format_picker(driver, html_server)
+
+    state = await perceive(driver.page, driver)
+
+    assert state.modal_open is True
+    assert "DOLBY CINEMA 2D" not in popup_choices(state)
+
+
+async def test_waiting_for_the_popup_to_come_to_rest_finds_its_choices(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    await open_format_picker(driver, html_server)
+
+    placement = await await_popup_in_place(driver.page, modal_scope=modal_scope_source())
+    state = await perceive(driver.page, driver)
+
+    assert placement == "waited"
+    assert {"DOLBY CINEMA 2D", "IMAX 3D", "Select all"} <= popup_choices(state)
+
+
+async def test_the_agent_browser_reads_a_sliding_popup_once_it_is_in_place(
+    driver: PlaywrightDriver, html_server: str, settings: Settings
+) -> None:
+    """The fix on the path every read the planner acts on takes."""
+    # No load grace, so the wait being tested is the only one in play.
+    browser = agent_browser(driver, settings, grace_ms=0)
+    await open_format_picker(driver, html_server)
+
+    state = await browser.perceive()
+
+    assert "DOLBY CINEMA 2D" in popup_choices(state)
+
+
+async def test_with_no_popup_open_the_check_costs_one_round_trip(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    await open_page(driver, html_server, "simple_form.html")
+
+    started = time.monotonic()
+    placement = await await_popup_in_place(driver.page, modal_scope=modal_scope_source())
+
+    assert placement == "none"
+    assert time.monotonic() - started < 0.3
+
+
+async def test_a_spinner_inside_a_popup_does_not_hold_the_read(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    """An animation that never ends is not the popup still arriving."""
+    await open_format_picker(driver, html_server, "?spinner=1")
+    assert await await_popup_in_place(driver.page, modal_scope=modal_scope_source()) == "waited"
+
+    # At rest now, with the spinner still turning: the next look answers at once.
+    started = time.monotonic()
+    placement = await await_popup_in_place(driver.page, modal_scope=modal_scope_source())
+
+    assert placement == "ready"
+    assert time.monotonic() - started < 0.4
+
+
+async def test_a_panel_that_never_arrives_holds_the_read_no_longer_than_the_timeout(
+    driver: PlaywrightDriver, html_server: str
+) -> None:
+    await open_format_picker(driver, html_server, "?mode=stuck")
+
+    started = time.monotonic()
+    placement = await await_popup_in_place(
+        driver.page, modal_scope=modal_scope_source(), timeout_ms=600
+    )
+
+    assert placement == "timeout"
+    assert time.monotonic() - started < 1.2

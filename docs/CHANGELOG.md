@@ -4,6 +4,12 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### Popups that slide in - 2026-11-28
+
+- Fix the agent answering from the page behind a popup that was still opening. On BookMyShow, "Book tickets" puts a dimmed veil up at once, holds the "Select language and format" panel below the fold for most of a second, then slides it in with a CSS animation that changes nothing in the DOM. The quiet-DOM settle returned while the panel was still off-screen, so the planner saw an open popup with no choices on screen and the movie page covered, and answered from the background text: it could not book because the movie was "listed as I'm interested".
+- Every read the planner acts on now waits, up to 2.5 seconds, for an open popup's controls to be on screen and to stop moving before reading it. With no popup open it costs one round trip. Positions are compared rather than running animations, so a spinner inside a popup does not hold the read.
+- Add a fixture that opens a picker the way BookMyShow does, plus regressions for the miss, the fix on the agent browser's real read path, the cost with no popup, a spinner inside the popup, and a panel that never arrives.
+
 ### A full stack that starts - 2026-11-28
 
 - Fix the `frontend` service in `deploy/docker-compose.full.yml`. It pointed at `../../browser-agent-frontend`, a checkout that does not exist under that name, and passed `NEXT_PUBLIC_API_BASE_URL` and `NEXT_PUBLIC_WS_BASE_URL` as runtime environment, which the frontend never reads. It now builds `../../Browser-Automation-Agent` (or `FRONTEND_DIR`) from the frontend's new `Dockerfile`, with `BACKEND_URL=http://api:8000` and `NEXT_PUBLIC_BACKEND_WS_URL` as build arguments, since the frontend's build bakes both in.
