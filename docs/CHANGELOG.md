@@ -4,6 +4,12 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### Site names for hosts that are IP addresses - 2026-11-28
+
+- Fix approval and question messages naming a site by the tail of its IP address. `_site_of` cut a hostname down to its last two labels, which is right for `www.uber.com` but turned `127.0.0.1:8200` into "0.1", so a person was asked to approve "Click 'Book this flight' on 0.1".
+- An IPv4 or IPv6 host is now named as it is, with its port when the URL has one: "127.0.0.1:8200", "192.168.1.20", "[::1]:8000". Domain names are unchanged.
+- Add regressions for IPv4 with and without a port, IPv6 and `localhost`.
+
 ### Popups that appear after the page has settled — 2026-11-27
 
 - Fix the agent clicking a page element underneath a popup that a site puts up on a timer after load, such as BookMyShow's city picker. The page went quiet, settling returned, and the agent read it before the popup existed, so the planner chose a card the popup then covered and recovery re-clicked it until the step timed out.

@@ -18,6 +18,7 @@ never behind the live view, so there is nothing a client can have seen that it
 cannot be told again.
 """
 
+import ipaddress
 import re
 import time
 import uuid
@@ -2029,9 +2030,16 @@ def _site_of(state: PageState) -> str:
     Not the page title: "IRCTC - Official Indian Railway Catering & Tourism
     Corporation Portal" quoted in every prompt is noise. A title segment that
     is the site's name keeps its capitals ("MakeMyTrip"); otherwise the bare
-    domain ("uber.com").
+    domain ("uber.com"). An address is said as it is ("127.0.0.1:8200").
     """
-    host = (urlsplit(state.url).hostname or "").removeprefix("www.")
+    parts = urlsplit(state.url)
+    host = (parts.hostname or "").removeprefix("www.")
+    if _is_address(host):
+        # An address has no name in it to find. Read as a domain, 127.0.0.1
+        # came out as "0.1", which then appeared in every approval and hand-off
+        # message for a site served from one.
+        shown = f"[{host}]" if ":" in host else host
+        return f"{shown}:{parts.port}" if parts.port else shown
     labels = host.split(".")
     owned = 3 if len(labels) >= 3 and labels[-2] in _SECOND_LEVEL and len(labels[-1]) == 2 else 2
     domain = ".".join(labels[-owned:]) if len(labels) >= owned else host
@@ -2040,6 +2048,15 @@ def _site_of(state: PageState) -> str:
         if name and _letters(part) == name:
             return part.strip()
     return domain
+
+
+def _is_address(host: str) -> bool:
+    """Is this hostname an IPv4 or IPv6 address rather than a name?"""
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
 
 
 def _letters(text: str) -> str:
