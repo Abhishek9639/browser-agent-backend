@@ -620,7 +620,7 @@ One executed step, after it has been committed. The screenshot is base64 JPEG, n
     "width": 1280,
     "height": 800
   },
-  "url": "http://skyfare:8200/results?sort=price",
+  "url": "https://www.example.com/results?sort=price",
   "tabId": "t1",
   "reasoning": "Sorting by price puts the cheapest option first.",
   "confidence": 0.9,
@@ -667,7 +667,7 @@ The run is parked on a human. It carries the screenshot and the bounding box, be
     "target": "Pay now"
   },
   "riskLevel": "HIGH",
-  "reason": "Click 'Pay now' on SkyFare. Flagged because the control says 'pay now'.",
+  "reason": "Click 'Pay now' on example.com. Flagged because the control says 'pay now'.",
   "screenshot": "/9j/4AAQSkZJRgABAQ...",
   "bbox": {
     "x": 640,

@@ -3,13 +3,13 @@
 
 .DEFAULT_GOAL := help
 .PHONY: help install browsers dev test test-unit test-fast test-int lint fmt typecheck check \
-	check-all audit chaos bench skyfare up down logs build \
+	check-all audit chaos bench up down logs build \
 	migrate revision downgrade db-up db-down db-reset
 
 UV      ?= uv
 # The development database on its own, for running the suite from a checkout.
 COMPOSE ?= docker compose -f docker-compose.dev.yml
-# The whole backend in containers: Postgres, the API and SkyFare.
+# The whole backend in containers: Postgres and the API.
 STACK   ?= docker compose
 
 help:  ## show this help
@@ -60,11 +60,10 @@ check: lint typecheck test-unit  ## the fast gate a part must pass
 check-all: lint typecheck test-unit test-int  ## the full gate: adds integration (needs `make db-up`)
 	@echo "check-all passed"
 
-up:  ## build and start the backend stack (postgres, api, skyfare)
+up:  ## build and start the backend stack (postgres, api)
 	$(STACK) up --build -d
 	@echo "api      http://localhost:$${API_PORT:-8000}/api/v1/health"
 	@echo "docs     http://localhost:$${API_PORT:-8000}/docs"
-	@echo "skyfare  http://localhost:$${SKYFARE_PORT:-8200}/"
 
 down:  ## stop the backend stack (keeps the volumes)
 	$(STACK) down
@@ -84,15 +83,12 @@ audit:  ## known vulnerabilities in the locked dependencies, and a secret scan
 	fi
 	@echo "audit passed"
 
-chaos:  ## run the chaos suite against SkyFare (needs `make db-up` and browsers)
+chaos:  ## run the chaos suite against the SkyFare test site (needs `make db-up` and browsers)
 	$(UV) run pytest tests/chaos -m chaos
 
 bench:  ## benchmark the agent: make bench runs=3 provider=mock
 	$(UV) run python scripts/benchmark.py --runs $(or $(runs),1) \
 		$(if $(provider),--provider $(provider),) $(if $(chaos),--chaos $(chaos),)
-
-skyfare:  ## serve the SkyFare demo site on :8200
-	$(UV) run uvicorn demo_sites.skyfare.app:app --host 127.0.0.1 --port 8200 --reload
 
 migrate:  ## apply database migrations
 	$(UV) run alembic upgrade head

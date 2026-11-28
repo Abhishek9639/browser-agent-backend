@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Print what the agent would see on a page.
 
-    python scripts/perceive.py http://localhost:8200/flight_search.html
-    python scripts/perceive.py --show-fenced http://localhost:8200/
+    python scripts/perceive.py https://www.example.com/
+    python scripts/perceive.py --show-fenced https://www.example.com/
 
 Opens a browser, runs one perception pass, and prints the summary exactly as
-the planner would receive it. Useful for checking a demo page before wiring the
-loop to it, and for showing what the model does and does not get told.
+the planner would receive it. Useful for checking a page before pointing the
+agent at it, and for showing what the model does and does not get told.
 """
 
 import argparse

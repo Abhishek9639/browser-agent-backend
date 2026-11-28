@@ -32,8 +32,8 @@ regexes = [
   '''hunter2[a-z-]*''',
   # The argon2 placeholder the fixtures store instead of a real hash.
   '''argon2-digest''',
-  # The SkyFare oracle marker. It gates an endpoint on the demo site that
-  # exists so the chaos suite can score itself, and the site is not deployed.
+  # The SkyFare oracle marker. It gates an endpoint on the test site in
+  # tests/skyfare so the chaos suite can score itself; the site is not deployed.
   '''scoring-only''',
   # Visa's published test card number, used to assert that card-like values are
   # masked. It cannot authorise anything.

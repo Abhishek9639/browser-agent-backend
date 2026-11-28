@@ -66,7 +66,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-agent_core}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
-      AGENT_ALLOWED_DOMAINS: ${AGENT_ALLOWED_DOMAINS:-skyfare,localhost,127.0.0.1}
+      AGENT_ALLOWED_DOMAINS: ${AGENT_ALLOWED_DOMAINS:-localhost,127.0.0.1}
       LLM_PROVIDER: ${LLM_PROVIDER:-mock}
       LLM_MODEL: ${LLM_MODEL:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -83,15 +83,6 @@ services:
     volumes:
       - api_storage:/app/storage
       - api_keys:/app/keys
-
-  skyfare:
-    build:
-      context: ..
-      target: skyfare
-    container_name: ai07-skyfare
-    restart: unless-stopped
-    ports:
-      - "${SKYFARE_PORT:-8200}:8200"
 
   # --------------------------------------------------------------- frontend
   # Comment this block out until ../browser-agent-frontend exists.

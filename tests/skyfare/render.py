@@ -10,7 +10,7 @@ one to thread through templates.
 from html import escape
 from typing import Final
 
-from demo_sites.skyfare.chaos import INJECTION_TEXT, POPUP_DELAY_SECONDS, Chaos, Names
+from tests.skyfare.chaos import INJECTION_TEXT, POPUP_DELAY_SECONDS, Chaos, Names
 
 __all__ = ["cookie_banner", "esc", "injection", "newsletter_popup", "page"]
 

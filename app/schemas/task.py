@@ -53,7 +53,7 @@ _WHITESPACE = re.compile(r"\s+")
 # rest are invisible characters with no business in a sentence a person typed.
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
 
-EXAMPLE_INSTRUCTION: Final = "Find the cheapest flight from Delhi to Bengaluru on 20 Oct on SkyFare"
+EXAMPLE_INSTRUCTION: Final = "Find the cheapest flight from Delhi to Bengaluru on 20 Oct"
 
 
 def normalise_instruction(value: str) -> str:
@@ -88,7 +88,7 @@ class CreateTaskRequest(CamelModel):
                 "configured domain allow-list. Omit to use the configured default start URL, "
                 "or a blank page."
             ),
-            examples=["https://skyfare.localhost:8200/"],
+            examples=["https://www.example.com/"],
         ),
     ] = None
 
@@ -162,7 +162,7 @@ class ApprovalResponse(CamelModel):
     proposed_action: dict[str, Any]
     reason: str | None = Field(
         default=None,
-        examples=["Click 'Pay now' on SkyFare. Flagged because the control says 'pay now'."],
+        examples=["Click 'Pay now' on example.com. Flagged because the control says 'pay now'."],
     )
     approved_by: uuid.UUID | None = None
     decided_at: datetime | None = None

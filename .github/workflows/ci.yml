@@ -356,7 +356,7 @@ jobs:
 
       # A build proves the layers assemble. Starting it proves the entrypoint
       # runs, the migrations apply against an empty database, the signing key is
-      # generated, Chromium launches, and SkyFare answers.
+      # generated, and Chromium launches.
       - name: Start the stack and check its health
         run: |
           docker compose up -d
@@ -364,7 +364,6 @@ jobs:
             if curl -fsS http://localhost:8000/api/v1/health > /dev/null 2>&1; then
               echo "api healthy after ~$((attempt * 3))s"
               curl -fsS http://localhost:8000/api/v1/health; echo
-              curl -fsS http://localhost:8200/healthz; echo
               exit 0
             fi
             sleep 3

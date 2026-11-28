@@ -32,7 +32,7 @@ graph TB
         pdb[("Postgres<br/>payments")]
     end
 
-    site["Target site<br/>demo_sites/skyfare on :8200"]
+    site["Target site<br/>any allow-listed host"]
 
     user -->|"HTTPS + WebSocket"| ui
     ui -->|"REST, JWT"| api
@@ -47,7 +47,7 @@ graph TB
     wallet -.->|"verifies our tokens<br/>/.well-known/jwks.json"| api
 ```
 
-**Implemented:** everything inside the backend box, plus SkyFare, plus the client
+**Implemented:** everything inside the backend box, plus the client
 side of the payments contract (`app/services/billing_client.py`) and its
 `docs/billing-integration.md` specification.
 
@@ -248,7 +248,6 @@ graph TB
     subgraph host["Developer machine or one host"]
         subgraph compose["docker-compose.yml &mdash; IMPLEMENTED"]
             apic["api<br/>Dockerfile target: api<br/>:8000"]
-            sky["skyfare<br/>Dockerfile target: skyfare<br/>:8200"]
             pg[("postgres:16<br/>:5433<br/>agent_core, agent_core_test, payments")]
             vol1[["api_storage<br/>screenshots"]]
             vol2[["api_keys<br/>RS256 keypair"]]
@@ -265,7 +264,6 @@ graph TB
     apic --> pg
     apic --> vol1
     apic --> vol2
-    apic -->|"agent's browser,<br/>allow-listed host"| sky
     fe -.-> apic
     apic -.-> pay
     pay -.-> pg
@@ -301,7 +299,7 @@ and the WebSocket ticket store.
 | Live WebSocket stream | Implemented | `app/api/v1/stream.py`, `app/services/stream.py` |
 | Metrics and stats | Implemented | `app/core/metrics.py`, `app/services/stats.py` |
 | Billing client and outbox | Implemented (client side) | `app/services/billing*.py` |
-| SkyFare demo site, nine chaos toggles | Implemented | `demo_sites/skyfare/` |
+| SkyFare test site, nine chaos toggles (chaos suite and benchmark only, not deployed) | Implemented | `tests/skyfare/` |
 | Docker images, compose, CI | Implemented | `Dockerfile`, `docker-compose.yml`, `.github/` |
 | Payments service | **Not built** | separate repository |
 | Frontend | **Not built** | separate repository |

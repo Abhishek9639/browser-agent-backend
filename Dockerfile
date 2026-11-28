@@ -1,4 +1,4 @@
-# The API and the SkyFare demo site, from one file.
+# The API image.
 #
 # Based on Microsoft's official Playwright Python image, pinned to the same
 # Playwright version as pyproject.toml. That pairing is not cosmetic: the Python
@@ -57,7 +57,6 @@ COPY --from=deps /opt/venv /opt/venv
 COPY --chown=pwuser:pwuser alembic.ini ./
 COPY --chown=pwuser:pwuser migrations ./migrations
 COPY --chown=pwuser:pwuser scripts ./scripts
-COPY --chown=pwuser:pwuser demo_sites ./demo_sites
 COPY --chown=pwuser:pwuser app ./app
 COPY --chown=pwuser:pwuser docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 
@@ -91,19 +90,3 @@ HEALTHCHECK --interval=15s --timeout=5s --start-period=40s --retries=3 \
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
-
-
-# ---------------------------------------------------------------- skyfare
-# The demo site. Same dependencies, no migrations, no keys, no browser: it is a
-# website the agent visits, not part of the agent.
-FROM api AS skyfare
-
-EXPOSE 8200
-
-HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
-    CMD python -c "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8200/healthz', timeout=4).status == 200 else 1)"
-
-# Straight to uvicorn: the entrypoint runs migrations, and this service has no
-# database at all.
-ENTRYPOINT []
-CMD ["uvicorn", "demo_sites.skyfare.app:app", "--host", "0.0.0.0", "--port", "8200"]

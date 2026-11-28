@@ -44,8 +44,8 @@ from app.models.task import Task
 from app.repositories.unit_of_work import UnitOfWork
 from app.services.events import InMemoryEventBus
 from app.services.storage import LocalFileStorage
-from demo_sites.skyfare.app import ORACLE_HEADER, ORACLE_TOKEN
-from demo_sites.skyfare.app import app as skyfare_app
+from tests.skyfare.app import ORACLE_HEADER, ORACLE_TOKEN
+from tests.skyfare.app import app as skyfare_app
 
 # Spec section 12's primary recorded demo, with a date far enough out that it
 # is never today and never the form's own default.

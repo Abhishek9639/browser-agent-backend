@@ -26,7 +26,7 @@ one weakness in it.
 | CORS restricted to the frontend origin | `app/main.py` — `CORS_ORIGINS`, credentials allowed, methods and headers named rather than `*` | `test_security_headers.py::test_cors_refuses_an_origin_that_is_not_configured`, `::test_cors_names_its_methods_and_headers_rather_than_allowing_everything` |
 | Secure headers | `app/core/security_headers.py` — nosniff, `DENY`, `no-referrer`, CSP, CORP, HSTS in production | `test_security_headers.py::test_every_response_carries_the_header`, `::test_hsts_is_sent_in_production_only` |
 | Screenshots served only to the owner | `app/services/task_service.py::screenshot` checks the task's owner, then pins the step to the task | `tests/integration/test_security.py::test_a_screenshot_is_served_only_to_its_owner`, `::test_a_step_from_another_task_cannot_be_read_through_your_own` |
-| No production credentials or real PII in demos | `demo_sites/skyfare` generates its own data from a seed; no live provider is reachable from it | `test_skyfare.py` (deterministic generation), `.gitleaks.toml` allowlist documents the demo markers |
+| No production credentials or real PII in tests | `tests/skyfare` generates its own data from a seed; no live provider is reachable from it | `test_skyfare.py` (deterministic generation), `.gitleaks.toml` allowlist documents the test markers |
 | No CAPTCHA bypass | Not implemented and not attempted. The action allow-list has twelve actions and none of them solves a challenge | `test_enums.py::test_action_allow_list_matches_section_4_4_exactly` |
 | Only sites that permit automation | `AGENT_ALLOWED_DOMAINS`, checked before the browser is touched and again after a redirect | `test_browser_driver.py::test_an_empty_allow_list_blocks_everything`, `tests/integration/test_security.py::test_a_start_url_outside_the_allow_list_is_rejected` |
 
@@ -128,7 +128,7 @@ hidden, and the suite asserts both that the agent still reports the right fare
 and that no high-risk action was proposed at all. The first assertion is the
 defence working; the second is what catches it when the defence does not.
 
-- Code: `demo_sites/skyfare/chaos.py`
+- Code: `tests/skyfare/chaos.py`
 - Tests: `tests/chaos/test_chaos.py` (`inject`), `test_skyfare.py::test_inject_puts_instructions_on_the_page_visibly_and_hidden`
 
 ## Tooling
@@ -154,11 +154,9 @@ decision rather than a quiet habit.
 | `S105` | `app/core/security.py` | `token_type = "Bearer"` is a scheme name from RFC 6750, not a credential |
 | `S105` | `app/api/ops.py` | The header *name* `X-Internal-Token`; the value is in settings |
 | `S105` ×2 | `app/services/audit.py` | Audit action names, `TOKEN_REFRESHED` and `TOKEN_REUSE_DETECTED` |
-| `S105` | `demo_sites/skyfare/app.py` | The oracle marker on a demo site that is never deployed |
 | `S311` | `app/agent/llm/base.py` | Retry jitter. Predictable jitter is a thundering-herd problem, not a security one, and `secrets` would be the wrong tool |
 | `S603` | `tests/integration/test_migrations.py` | Runs Alembic in a subprocess with a fixed argument list, no shell |
-| `S101`, `S105`, `S106`, `S311` | `tests/**` | `assert` is how pytest works, and the fake digests and seeded randomness are fixture data |
-| `S104`, `S311` | `demo_sites/**` | Binds `0.0.0.0` inside Docker on purpose, and its randomness is meant to be reproducible so the same search returns the same flights |
+| `S101`, `S105`, `S106`, `S311` | `tests/**` | `assert` is how pytest works, and the fake digests and seeded randomness are fixture data. This covers the SkyFare test site's oracle marker and its reproducible flights |
 | `N818` | `app/core/security_headers.py` | A private marker exception raised and caught inside one middleware |
 
 None of these is a finding that was silenced. pip-audit currently reports no

@@ -1356,7 +1356,7 @@
             ],
             "title": "Reason",
             "examples": [
-              "Click 'Pay now' on SkyFare. Flagged because the control says 'pay now'."
+              "Click 'Pay now' on example.com. Flagged because the control says 'pay now'."
             ]
           },
           "approvedBy": {
@@ -1499,7 +1499,7 @@
             "title": "Instruction",
             "description": "What the agent should do, in plain language.",
             "examples": [
-              "Find the cheapest flight from Delhi to Bengaluru on 20 Oct on SkyFare"
+              "Find the cheapest flight from Delhi to Bengaluru on 20 Oct"
             ]
           },
           "startUrl": {
@@ -1515,7 +1515,7 @@
             "title": "Starturl",
             "description": "Where to begin. Must be http or https and inside the configured domain allow-list. Omit to start from a blank page.",
             "examples": [
-              "https://skyfare.localhost:8200/"
+              "https://www.example.com/"
             ]
           }
         },
@@ -2578,7 +2578,7 @@
             "type": "string",
             "title": "Instruction",
             "examples": [
-              "Find the cheapest flight from Delhi to Bengaluru on 20 Oct on SkyFare"
+              "Find the cheapest flight from Delhi to Bengaluru on 20 Oct"
             ]
           },
           "status": {
