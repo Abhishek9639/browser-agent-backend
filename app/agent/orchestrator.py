@@ -1487,6 +1487,9 @@ class Orchestrator:
                     bbox=bbox,
                     screenshot_ref=reference,
                     plan_step=plan_step,
+                    url=after.url or None,
+                    viewport_width=shot.viewport_width or None,
+                    viewport_height=shot.viewport_height or None,
                     status=StepStatus.VERIFIED if verdict.ok else StepStatus.FAILED,
                 )
             )

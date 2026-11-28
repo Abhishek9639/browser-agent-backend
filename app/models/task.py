@@ -143,6 +143,14 @@ class TaskStep(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     # plan as it then stood. Kept so a reconnecting client ticks the same items
     # the live one did. Null without a plan, and for a replayed step.
     plan_step: Mapped[int | None] = mapped_column(Integer)
+    # The page the step left behind, and the size of the page area its bbox and
+    # screenshot were measured in. Kept so a step replayed from the database is
+    # drawn as the live one was: the outline box is placed as a share of the
+    # viewport, and without the viewport there is no box. Null for steps
+    # recorded before these columns existed.
+    url: Mapped[str | None] = mapped_column(Text)
+    viewport_width: Mapped[int | None] = mapped_column(Integer)
+    viewport_height: Mapped[int | None] = mapped_column(Integer)
     status: Mapped[StepStatus] = mapped_column(
         enum_column(StepStatus, "step_status"),
         nullable=False,

@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings
 from app.domain.enums import ActionType, ApprovalStatus, RiskLevel, StepStatus, TaskStatus
 from app.models.approval import Approval
-from app.models.task import TaskStep
+from app.models.task import LLMDecision, TaskStep
 from app.repositories.unit_of_work import UnitOfWork
 from app.services.events import EventType
 from app.services.storage import LocalFileStorage
@@ -215,6 +215,61 @@ async def test_replay_carries_every_step_with_its_screenshot(
     assert all(event.screenshot == base64.b64encode(JPEG).decode() for event in steps)
     assert steps[0].bbox is not None and steps[0].bbox.width == 3
     assert steps[0].verified is True
+
+
+async def test_replay_carries_what_the_live_step_showed(
+    service: StreamService, db_session: AsyncSession, storage: LocalFileStorage
+) -> None:
+    """A run opened from history reads like one watched live: why the agent did
+    each step, the page it was on, and the viewport its outline box is drawn in."""
+    owner = await make_user(db_session, "detail@example.test")
+    task = await make_task(db_session, owner, status=TaskStatus.COMPLETED)
+    step = await add_step(db_session, task.id, 1, storage=storage)
+    step.url = "https://in.bookmyshow.com/explore/movies-bengaluru"
+    step.viewport_width, step.viewport_height = 1440, 812
+    db_session.add(
+        LLMDecision(
+            step_id=step.id,
+            prompt_version="v2",
+            model_name="gemini-3-flash-preview",
+            provider="gemini",
+            reasoning_summary="Clicking Book tickets to see the shows.",
+            confidence=0.92,
+            risk_level=RiskLevel.LOW,
+            used_vision=True,
+        )
+    )
+    await db_session.commit()
+
+    replay = await service.build(task.id)
+
+    assert replay is not None
+    (event,) = [event for event in replay.events if event.type is EventType.STEP]
+    assert event.reasoning == "Clicking Book tickets to see the shows."
+    assert event.confidence == pytest.approx(0.92)
+    assert event.used_vision is True
+    assert event.url == "https://in.bookmyshow.com/explore/movies-bengaluru"
+    assert event.viewport is not None
+    assert (event.viewport.width, event.viewport.height) == (1440, 812)
+
+
+async def test_a_step_saved_before_viewports_were_kept_still_replays(
+    service: StreamService, db_session: AsyncSession, storage: LocalFileStorage
+) -> None:
+    owner = await make_user(db_session, "old-step@example.test")
+    task = await make_task(db_session, owner, status=TaskStatus.COMPLETED)
+    await add_step(db_session, task.id, 1, storage=storage)
+    await db_session.commit()
+
+    replay = await service.build(task.id)
+
+    assert replay is not None
+    (event,) = [event for event in replay.events if event.type is EventType.STEP]
+    # No row to read them from: no viewport (so no outline box), no reasoning.
+    assert event.viewport is None
+    assert event.url is None
+    assert event.reasoning is None
+    assert event.screenshot is not None
 
 
 async def test_replay_after_a_cursor_returns_only_what_was_missed(
