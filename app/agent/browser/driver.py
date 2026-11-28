@@ -18,7 +18,7 @@ import re
 import time
 from dataclasses import dataclass, replace
 from types import TracebackType
-from typing import Protocol, Self, runtime_checkable
+from typing import Final, Protocol, Self, runtime_checkable
 from urllib.parse import urlsplit
 
 from playwright.async_api import (
@@ -322,9 +322,25 @@ def indicator_script(mode: str) -> str:
     return _INDICATOR_JS.replace("__MODE__", json.dumps(mode))
 
 
-def launch_args(fullscreen: bool, headless: bool) -> list[str]:
-    """Chromium flags for the launch: open maximised when a full screen was asked for."""
-    return ["--start-maximized"] if fullscreen and not headless else []
+# The height of a visible Chromium's own frame (tab strip and address bar) on
+# top of the page. Measured: a 1280x800 window holds a 1280x713 page.
+WINDOW_FRAME_HEIGHT: Final = 87
+
+
+def launch_args(
+    fullscreen: bool, headless: bool, *, page_size: tuple[int, int] = (1280, 800)
+) -> list[str]:
+    """Chromium flags for a visible window: maximised, or sized to hold the page.
+
+    A visible page follows its window (see ``fills_window``), so the window's
+    starting size is the page's starting size. Headless has no window.
+    """
+    if headless:
+        return []
+    if fullscreen:
+        return ["--start-maximized"]
+    width, height = page_size
+    return [f"--window-size={width},{height + WINDOW_FRAME_HEIGHT}"]
 
 
 class PlaywrightDriver:
@@ -411,8 +427,15 @@ class PlaywrightDriver:
 
     @property
     def fills_window(self) -> bool:
-        """Does the page fill a maximised window rather than a fixed-size box?"""
-        return self._config.fullscreen and not self._config.headless and not self.attached
+        """Does the page follow its window rather than sit in a fixed-size box?
+
+        Always, for a visible browser. With a fixed viewport, a person who
+        maximised the window or put it in full screen got the same 1280x800 page
+        in one corner and empty space beside it, and the agent kept working in
+        that corner. Headless has no window to follow, and the user's own browser
+        keeps its own settings.
+        """
+        return not self._config.headless and not self.attached
 
     async def viewport_size(self) -> dict[str, int]:
         """The size of the page area right now, measured rather than assumed.
@@ -449,7 +472,11 @@ class PlaywrightDriver:
             headless=self._config.headless,
             slow_mo=self._config.slow_mo_ms,
             channel=self._config.channel or None,
-            args=launch_args(self._config.fullscreen, self._config.headless),
+            args=launch_args(
+                self._config.fullscreen,
+                self._config.headless,
+                page_size=(self._config.viewport_width, self._config.viewport_height),
+            ),
         )
 
     async def close(self) -> None:

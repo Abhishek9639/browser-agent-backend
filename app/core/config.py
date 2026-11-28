@@ -222,9 +222,10 @@ class Settings(BaseSettings):
     # with 401, 403 or 429. A separate browser, never the person's own. Names are
     # `msedge`, `chrome` or `firefox`; empty turns it off.
     AGENT_BROWSER_FALLBACKS: CsvList = Field(default_factory=lambda: ["msedge", "firefox"])
-    # Open the visible browser maximised and let the page fill the window,
-    # instead of a fixed 1280x800 box. Ignored when headless or attached to the
-    # user's own browser.
+    # Open the visible browser maximised. A visible browser's page always
+    # follows its window, so maximising it or going full screen later gives the
+    # page the whole window either way; this only decides how it starts.
+    # Ignored when headless or attached to the user's own browser.
     AGENT_FULLSCREEN: bool = False
     # One extra model call that outlines the expected steps, so the person can
     # see how long the task is. Made once the agent has opened the site, read

@@ -4,6 +4,12 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### A visible browser's page follows its window - 2026-11-28
+
+- Fix the page staying 1280x800 when the person maximised the agent's visible browser or put it in full screen. The context had a fixed viewport unless `AGENT_FULLSCREEN` was on, so the site sat in one corner with empty space beside and below it, and the agent kept working in that corner.
+- A visible browser's page now always follows its window: maximise it or go full screen at any point and the site, the agent's perception, its screenshots and its clicks all use the whole window. The size is measured from the page on each read, as it already was for `AGENT_FULLSCREEN`.
+- The visible window opens sized for a 1280x800 page (`--window-size`, allowing for the browser's own frame). `AGENT_FULLSCREEN=true` still opens it maximised. Headless runs keep their fixed 1280x800 viewport, and an attached browser keeps its own settings.
+
 ### A full stack that starts - 2026-11-28
 
 - Fix the `frontend` service in `deploy/docker-compose.full.yml`. It pointed at `../../browser-agent-frontend`, a checkout that does not exist under that name, and passed `NEXT_PUBLIC_API_BASE_URL` and `NEXT_PUBLIC_WS_BASE_URL` as runtime environment, which the frontend never reads. It now builds `../../Browser-Automation-Agent` (or `FRONTEND_DIR`) from the frontend's new `Dockerfile`, with `BACKEND_URL=http://api:8000` and `NEXT_PUBLIC_BACKEND_WS_URL` as build arguments, since the frontend's build bakes both in.

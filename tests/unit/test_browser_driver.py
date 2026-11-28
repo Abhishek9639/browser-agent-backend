@@ -642,7 +642,38 @@ def test_a_full_screen_visible_launch_asks_for_a_maximised_window() -> None:
 
     assert launch_args(True, False) == ["--start-maximized"]
     assert launch_args(True, True) == []  # headless has no window to maximise
-    assert launch_args(False, False) == []
+    assert launch_args(False, True) == []
+
+
+def test_a_visible_window_opens_big_enough_for_the_page() -> None:
+    """The page follows the window, so the window is sized for a 1280x800 page."""
+    from app.agent.browser.driver import WINDOW_FRAME_HEIGHT, launch_args
+
+    assert launch_args(False, False) == [f"--window-size=1280,{800 + WINDOW_FRAME_HEIGHT}"]
+    assert launch_args(False, False, page_size=(1440, 900)) == [
+        f"--window-size=1440,{900 + WINDOW_FRAME_HEIGHT}"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("update", "follows"),
+    [
+        # Visible, maximised or not: the page follows the window. A fixed
+        # viewport left a full-screen window with the page in one corner.
+        ({"AGENT_HEADLESS": False, "AGENT_FULLSCREEN": False}, True),
+        ({"AGENT_HEADLESS": False, "AGENT_FULLSCREEN": True}, True),
+        # Headless has no window, so the page keeps its fixed, repeatable size.
+        ({"AGENT_HEADLESS": True, "AGENT_FULLSCREEN": True}, False),
+        # The user's own browser keeps its own settings.
+        ({"AGENT_HEADLESS": False, "AGENT_CDP_URL": "http://127.0.0.1:9222"}, False),
+    ],
+)
+def test_a_visible_page_follows_its_window(
+    browser_settings: Settings, update: dict[str, object], follows: bool
+) -> None:
+    instance = PlaywrightDriver(browser_settings.model_copy(update=update))
+
+    assert instance.fills_window is follows
 
 
 async def test_the_viewport_is_measured_when_the_window_has_no_fixed_size(
