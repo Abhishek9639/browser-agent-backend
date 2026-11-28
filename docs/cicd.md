@@ -222,13 +222,12 @@ sounds.
 
 ## Images
 
-Two targets in one `Dockerfile`, both from the official Playwright Python image
-pinned to the same version as `pyproject.toml`:
+One `Dockerfile`, built from the official Playwright Python image pinned to the
+same version as `pyproject.toml`:
 
 - `api` — the service. Runs migrations and generates a signing key on first
   start, then uvicorn. Non-root (`pwuser`, from the base image), with
   `/app/storage` as a volume.
-- `skyfare` — the demo site. Same layers, no database, no keys, no browser.
 
 The pinning is not cosmetic. The Playwright Python package and the browser build
 it drives are released together, and a mismatch fails at the first `page.goto`
@@ -239,13 +238,12 @@ the resolved version so it cannot lag behind.
 ### Running it
 
 ```bash
-make up      # build and start postgres, api, skyfare
+make up      # build and start postgres and the api
 make logs    # follow
 make down    # stop, keeping the volumes
 ```
 
-Then `http://localhost:8000/docs`, `http://localhost:8000/api/v1/health`, and
-SkyFare on `http://localhost:8200`.
+Then `http://localhost:8000/docs` and `http://localhost:8000/api/v1/health`.
 
 Compose reads the repository's `.env` by itself, so a developer with a real
 provider configured there gets that provider in the container rather than the

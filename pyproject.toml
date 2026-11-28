@@ -43,7 +43,7 @@ dev = [
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-src = ["app", "demo_sites", "tests"]
+src = ["app", "tests"]
 
 [tool.ruff.lint]
 select = [
@@ -104,13 +104,9 @@ ignore = [
 # Alembic writes these. `op` and `sa` are always imported whether or not a
 # given revision uses them, and the module docstring is the revision header.
 "migrations/versions/*.py" = ["F401", "INP001"]
-# S104: the mock site binds 0.0.0.0 inside docker on purpose.
-# S311: its randomness is meant to be reproducible, not secure. The whole
-# point is that the same search returns the same flights every time.
-"demo_sites/**" = ["S104", "S311"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["app", "demo_sites", "tests"]
+known-first-party = ["app", "tests"]
 
 [tool.ruff.format]
 docstring-code-format = true
@@ -119,7 +115,7 @@ docstring-code-format = true
 
 [tool.mypy]
 python_version = "3.12"
-files = ["app", "demo_sites"]
+files = ["app", "tests/skyfare"]
 strict = true
 warn_unreachable = true
 warn_unused_configs = true

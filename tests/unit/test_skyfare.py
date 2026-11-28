@@ -13,9 +13,9 @@ from collections.abc import AsyncIterator
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from demo_sites.skyfare.app import ORACLE_HEADER, ORACLE_TOKEN, app
-from demo_sites.skyfare.chaos import CHAOS_NAMES, INJECTION_TEXT, parse_chaos
-from demo_sites.skyfare.flights import CITIES, cheapest, generate
+from tests.skyfare.app import ORACLE_HEADER, ORACLE_TOKEN, app
+from tests.skyfare.chaos import CHAOS_NAMES, INJECTION_TEXT, parse_chaos
+from tests.skyfare.flights import CITIES, cheapest, generate
 
 TRIP = {"from": "Delhi", "to": "Bengaluru", "date": "2026-10-20"}
 ORACLE = {ORACLE_HEADER: ORACLE_TOKEN}

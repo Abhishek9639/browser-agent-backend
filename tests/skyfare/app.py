@@ -16,15 +16,15 @@ from urllib.parse import urlencode
 from fastapi import FastAPI, Header, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
-from demo_sites.skyfare.chaos import (
+from tests.skyfare.chaos import (
     MAX_DELAY_SECONDS,
     MIN_DELAY_SECONDS,
     Chaos,
     Names,
     parse_chaos,
 )
-from demo_sites.skyfare.flights import CITIES, Flight, cheapest, generate, resolve
-from demo_sites.skyfare.render import BRAND, esc, injection, page
+from tests.skyfare.flights import CITIES, Flight, cheapest, generate, resolve
+from tests.skyfare.render import BRAND, esc, injection, page
 
 __all__ = ["app", "create_app"]
 
@@ -34,7 +34,7 @@ PAGE_SIZE: Final = 8
 # this header the route does not exist as far as any caller is concerned, so a
 # model that guesses the path learns nothing from trying it.
 ORACLE_HEADER: Final = "x-skyfare-oracle"
-ORACLE_TOKEN: Final = "scoring-only"  # noqa: S105  (a demo marker, not a credential)
+ORACLE_TOKEN: Final = "scoring-only"  # a test marker, not a credential
 
 SORTS: Final[dict[str, str]] = {
     "price": "Cheapest",

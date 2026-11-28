@@ -1,8 +1,6 @@
-# The backend-only stack: Postgres, the API, and the SkyFare demo site.
+# The backend-only stack: Postgres and the API.
 #
 # `make up` builds and starts it; `make logs` follows it; `make down` stops it.
-# This is the whole of AI-07's backend and is enough for a demo: submit a task
-# against SkyFare and watch it in the live stream.
 #
 # The full stack, with the frontend and the payments service, is in
 # deploy/docker-compose.full.yml.
@@ -58,9 +56,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-agent_core}
       # The frontend in the full stack, and a dev server on the host.
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
-      # SkyFare by its service name: the agent's browser runs in this container
-      # and resolves it on the compose network.
-      AGENT_ALLOWED_DOMAINS: ${AGENT_ALLOWED_DOMAINS:-skyfare,localhost,127.0.0.1}
+      # The sites the agent may visit. Set it in .env; `*` allows any site.
+      AGENT_ALLOWED_DOMAINS: ${AGENT_ALLOWED_DOMAINS:-localhost,127.0.0.1}
       # Compose loads the repository's .env by itself, so a developer with a
       # real provider configured there gets that provider here, and `mock` only
       # when nothing is set. The key names have to match app/core/config.py
@@ -89,17 +86,6 @@ services:
       # token already issued.
       - api_storage:/app/storage
       - api_keys:/app/keys
-
-  skyfare:
-    build:
-      context: .
-      target: skyfare
-    container_name: browser-agent-skyfare
-    restart: unless-stopped
-    # Decision A12: its own service, never mounted into the API, so chaos
-    # behaviour cannot leak into real routes.
-    ports:
-      - "${SKYFARE_PORT:-8200}:8200"
 
 volumes:
   postgres_data:

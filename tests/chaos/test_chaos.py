@@ -246,7 +246,7 @@ async def test_a_secret_like_shuffled_id_does_not_repeat_verified_typing(
     tmp_path: object,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from demo_sites.skyfare.chaos import Names
+    from tests.skyfare.chaos import Names
 
     original = Names.__call__
 

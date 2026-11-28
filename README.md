@@ -7,9 +7,8 @@ what actually happened, and a recovery ladder handles the page breaking. Anythin
 irreversible stops and waits for a human. Every step is stored and streamed live.
 
 This is the backend of **AI-07**, one of three repositories. It owns identity (it
-is the only JWT issuer), the agent core, task and step persistence, the live
-stream, and the demo sites the agent is tested against. The web interface lives
-in the [frontend repository](https://github.com/ishaan-khandelwal/Browser-Automation-Agent).
+is the only JWT issuer), the agent core, task and step persistence, and the live
+stream. The web interface lives in the [frontend repository](https://github.com/ishaan-khandelwal/Browser-Automation-Agent).
 
 > **Student project.** Built for an OJT programme. It is not a product, it has
 > never been deployed, and the disclaimer at the bottom of this page is not
@@ -57,8 +56,6 @@ machine and deployment) are in **[docs/architecture.md](docs/architecture.md)**.
 
 ## Quick start
 
-For a step-by-step local walkthrough and the presentation flow, see the **[local demo guide](docs/LOCAL_DEMO.md)**.
-
 ### With Docker (nothing to install but Docker)
 
 ```bash
@@ -67,17 +64,14 @@ cd browser-agent-backend
 make up
 ```
 
-That builds two images and starts Postgres, the API and the SkyFare demo site.
-The container applies migrations and generates a signing key on first start, so
-there is no setup step.
+That builds the image and starts Postgres and the API. The container applies migrations and generates a signing key on first start, so there is
+no setup step.
 
 - API: <http://localhost:8000/api/v1/health>
 - Interactive docs: <http://localhost:8000/docs>
-- SkyFare: <http://localhost:8200>
 
 `make logs` follows it, `make down` stops it. The default provider is `mock`,
-which is rule-based and offline, so the whole thing demonstrates itself with no
-API key.
+which is rule-based and offline, so it runs with no API key.
 
 ### Locally
 
@@ -89,7 +83,6 @@ make migrate
 uv run python scripts/gen_keys.py
 make check            # lint, typecheck, unit tests
 make dev              # the API on :8000, with reload
-make skyfare          # the demo site on :8200, in another terminal
 ```
 
 ### Run a task
@@ -101,35 +94,36 @@ curl -s -XPOST localhost:8000/api/v1/auth/register -H 'content-type: application
 TOKEN=$(curl -s -XPOST localhost:8000/api/v1/auth/login -H 'content-type: application/json' \
   -d '{"email":"you@example.test","password":"a-long-passphrase"}' | jq -r .accessToken)
 
-# Submit a task against the demo site
+# Submit a task
 curl -s -XPOST localhost:8000/api/v1/tasks -H "authorization: Bearer $TOKEN" \
   -H 'content-type: application/json' \
-  -d '{"instruction":"Find the cheapest flight from Delhi to Bengaluru on 2026-10-29 on SkyFare",
-       "startUrl":"http://skyfare:8200/"}'
+  -d '{"instruction":"Open the More information link and tell me the title of that page",
+       "startUrl":"https://www.example.com/"}'
 ```
 
 Watch it live with `uv run python scripts/ws_watch.py <task-id>`, or poll
 `GET /api/v1/tasks/{id}`.
 
-Use `http://localhost:8200/` as the start URL when running locally rather than in
-Docker: `skyfare` is the compose service name and only resolves inside the stack.
+The start URL has to be on `AGENT_ALLOWED_DOMAINS`, which allows only this
+machine by default. Add the sites the agent should use, comma-separated, or set
+it to `*` to allow any site when running it yourself.
 
 To watch it in a browser instead, run the
 [frontend](https://github.com/ishaan-khandelwal/Browser-Automation-Agent). It
 shows each step's screenshot with the element the agent acted on outlined.
 
-## The demo site
+## The SkyFare test site
 
-`demo_sites/skyfare/` is a flight search site written for this project. Flights
-are generated deterministically from a seed, so the same search returns the same
-results on any machine, and an oracle endpoint knows the right answer, which is
-what makes "completed" into "completed **correctly**".
+`tests/skyfare/` is a flight search site written for testing the agent. It runs
+only inside the chaos suite and the benchmark, on a random local port, and is not
+part of the Docker image or the deployment. Flights are generated
+deterministically from a seed, so the same search returns the same results on any
+machine, and an oracle endpoint knows the right answer, which is what makes
+"completed" into "completed **correctly**".
 
 Nine chaos toggles reproduce what real sites do: `?chaos=cookie,popup,shuffle,layoutb,iframe,newtab,delay,inject,slowtype`.
 
-![SkyFare results](docs/images/skyfare-results.png)
-
-## Benchmark and demo
+## Benchmark
 
 ```bash
 make chaos                          # ten chaos configurations, ~5 minutes
@@ -178,7 +172,7 @@ lists the settings with comments. The ones that matter:
 | `AGENT_MAX_TASK_SECONDS` | `300` | Time budget per task |
 | `AGENT_MAX_RETRIES_PER_STEP` | `3` | Recovery ladder budget |
 | `AGENT_MAX_CONCURRENT_TASKS` | `3` | Global semaphore; `_PER_USER` defaults to 2 |
-| `AGENT_ALLOWED_DOMAINS` | `localhost`, `127.0.0.1`, SkyFare on `:8200` | **The sandbox.** The agent cannot navigate anywhere else. `*` allows any site, for local use only |
+| `AGENT_ALLOWED_DOMAINS` | `localhost`, `127.0.0.1` | **The sandbox.** The agent cannot navigate anywhere else. `*` allows any site, for local use only |
 | `AGENT_HEADLESS` | `true` | Set false to watch it work |
 | `AGENT_LOAD_POPUP_GRACE_MS` | `2000` | How long a freshly loaded page gets to show a popup before it is read. `0` turns it off |
 | `AGENT_APPROVAL_TIMEOUT_SECONDS` | `600` | After this an approval expires and the task times out |
@@ -195,7 +189,7 @@ lists the settings with comments. The ones that matter:
 
 | Repository | What it is | State |
 |---|---|---|
-| **browser-agent-backend** | This one. Agent, API, identity, demo sites | **Built** |
+| **browser-agent-backend** | This one. Agent, API, identity | **Built** |
 | [Browser-Automation-Agent](https://github.com/ishaan-khandelwal/Browser-Automation-Agent) | Next.js frontend: task box, live view of each step with the acted-on element outlined, approvals, sessions | **Built** |
 | browser-agent-payments | Credits wallet, Razorpay TEST mode, internal API | Not built |
 
@@ -235,7 +229,7 @@ services that are not built yet arranged to be commented out until they exist. S
 make check        # lint, typecheck, unit tests: the fast gate
 make check-all    # adds integration tests. Must pass before a pull request
 make audit        # pip-audit and gitleaks
-make chaos        # the chaos suite against SkyFare
+make chaos        # the chaos suite against the SkyFare test site
 make test-int     # integration tests alone
 ```
 
@@ -256,14 +250,13 @@ needs the Firefox that `make install` adds. The integration suite runs against
   only thing between a mistake and a purchase. Nothing here has had the kind of
   review money deserves.
 - **Only automation-permitted sites.** The agent has a domain allow-list, and by
-  default it allows nothing but localhost and the bundled SkyFare site, for a
-  reason. Point it at a site whose terms of service permit automation, ideally
-  SkyFare, which exists so that no real site has to be involved.
+  default it allows nothing but this machine, for a reason. Point it only at
+  sites whose terms of service permit automation.
 - **No CAPTCHA bypass, and none of the twelve allowed actions can solve one.**
   That is deliberate and it is not a gap to fill.
-- **No real personal data.** The demo site generates everything from a seed. Do
-  not put real names, cards or credentials into it, and note that the agent is
-  built to refuse to type a password or a card number at all.
+- **No real personal data.** Do not put real names, cards or credentials into a
+  task, and note that the agent is built to refuse to type a password or a card
+  number at all.
 - **Not deployed, and not hardened for it.** It runs on one host, the rate
   limiter and the event bus are per process, and there is no registry or
   orchestration. The known limitations are written down in each phase note rather

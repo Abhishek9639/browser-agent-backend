@@ -4,6 +4,14 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### SkyFare is a test site only - 2026-11-28
+
+- Move SkyFare from `demo_sites/skyfare/` to `tests/skyfare/`. The chaos suite and the benchmark already serve it on a random port in-process, so they keep working unchanged; nothing else needs it.
+- Drop it from everything that is deployed: the `skyfare` Dockerfile stage and the `COPY demo_sites` in the API image, the `skyfare` service in both compose files, `make skyfare`, the CI image job's check on `:8200`, and `SKYFARE_PORT`.
+- The default `AGENT_ALLOWED_DOMAINS` is now `localhost,127.0.0.1`, in settings, `.env.example` and both compose files. The `:8200` entries were already covered by the bare hosts, and `skyfare` only resolved inside the compose network.
+- API examples in the OpenAPI schema no longer name SkyFare.
+- Remove the demo-only pieces: `docs/LOCAL_DEMO.md`, `scripts/smoke_backend.py` (it needed SkyFare running on `:8200`) and the SkyFare screenshots in `docs/images/`. README, architecture, CI/CD, API and security docs updated to match.
+
 ### Site names for hosts that are IP addresses - 2026-11-28
 
 - Fix approval and question messages naming a site by the tail of its IP address. `_site_of` cut a hostname down to its last two labels, which is right for `www.uber.com` but turned `127.0.0.1:8200` into "0.1", so a person was asked to approve "Click 'Book this flight' on 0.1".
