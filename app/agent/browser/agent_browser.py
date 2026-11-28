@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from app.agent.browser.driver import ActionResult, BrowserSnapshot, PlaywrightDriver
 from app.agent.browser.screenshots import Screenshot, capture
-from app.agent.browser.stability import await_late_overlays, settle
+from app.agent.browser.stability import await_late_overlays, await_popup_in_place, settle
 from app.agent.perception.dom_extractor import PageNotReadyError, modal_scope_source
 from app.agent.perception.perceive import perceive
 from app.agent.perception.state import PageState
@@ -59,6 +59,14 @@ class DriverBrowser:
             modal_scope=modal_scope_source(),
             grace_ms=self._popup_grace_ms,
             quiet_ms=self._quiet_ms,
+        )
+        # A popup that is up may still be on its way in: BookMyShow's format
+        # picker dims the page at once and slides its panel in most of a second
+        # later. Read before then, the popup has no choices on screen and the
+        # planner answers from the covered page behind it.
+        await await_popup_in_place(
+            self._driver.page,  # type: ignore[arg-type]
+            modal_scope=modal_scope_source(),
         )
         state = await self._read_page()
         # Perception is the only moment the session manager can learn what a
