@@ -43,7 +43,7 @@ machine and deployment) are in **[docs/architecture.md](docs/architecture.md)**.
 |---|---|
 | **Perception** | Interactive elements from a real DOM, a ~3k-token summary, hidden elements excluded, BeautifulSoup fallback for static pages |
 | **Planning** | Structured output against a JSON schema, one repair turn, five providers (Anthropic, OpenAI, Gemini, Groq, and a rule-based mock), versioned prompts recorded per step |
-| **Popups** | A required dialog (a city picker, a language or format choice) is read before anything behind it, and nothing behind it can be clicked until it is answered. A page that shows its popup on a timer after loading is given a moment to do so before it is read |
+| **Popups** | A required dialog (a city picker, a language or format choice) is read before anything behind it, and nothing behind it can be clicked until it is answered. A page that shows its popup on a timer after loading is given a moment to do so, and a popup that slides or fades in is read once it has come to rest |
 | **Visual grounding** | Set-of-marks: numbered boxes drawn over the elements, the model picks a number. Triggered rather than always on, and it degrades to DOM-only when vision is down |
 | **Verification** | Twelve deterministic checks comparing two page states. Never asks the model whether its own action worked |
 | **Recovery** | Seven ordered strategies, routed by the failure's error code, bounded at three attempts, one row per attempt |

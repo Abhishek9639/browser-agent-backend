@@ -15,18 +15,29 @@ A quiet page is still not always a finished one. A site that builds itself,
 goes quiet, and THEN puts up a city picker or a consent prompt on a timer
 settles before the popup exists, so the planner chooses a click on the page
 underneath. ``await_late_overlays`` closes that gap for freshly loaded pages.
+
+Nor is a popup that exists always one that can be read. BookMyShow's format
+picker puts its dimmed veil up at once, holds the panel below the fold for most
+of a second and then slides it in with a CSS animation, which changes nothing in
+the DOM. Read in that window, the popup is open but every one of its choices is
+off-screen, the page behind it is covered, and the planner is left with the
+background text ("I'm interested", "Releasing on 17 Dec") to answer from.
+``await_popup_in_place`` waits for the panel to come to rest first.
 """
 
 import asyncio
-from typing import Final, Protocol
+from typing import Final, Literal, Protocol, cast
 
 from app.core.logging import get_logger
 
 __all__ = [
     "DEFAULT_LOAD_POPUP_GRACE_MS",
+    "DEFAULT_POPUP_IN_PLACE_MS",
     "DEFAULT_QUIET_MS",
     "DEFAULT_TIMEOUT_MS",
+    "PopupPlacement",
     "await_late_overlays",
+    "await_popup_in_place",
     "settle",
 ]
 
@@ -41,6 +52,50 @@ DEFAULT_TIMEOUT_MS: Final = 3000
 # and consent prompts go up on a timer a moment after load, once the page has
 # already gone quiet.
 DEFAULT_LOAD_POPUP_GRACE_MS: Final = 2000
+
+# How long an open popup is given to come to rest before it is read anyway.
+# BookMyShow's panel takes about 1.3 seconds from the click; this leaves room
+# for a slower machine without letting one stuck panel hold up a step for long.
+DEFAULT_POPUP_IN_PLACE_MS: Final = 2500
+
+PopupPlacement = Literal["none", "ready", "waited", "timeout"]
+
+# A popup is in place once at least one of its controls is on screen and none
+# of them moved since the last look. Off-screen catches a panel still waiting
+# to slide in; "moved" catches one sliding, growing or springing into place.
+# Neither needs the DOM to change, which is what lets a CSS animation slip past
+# the quiet-DOM wait. Positions rather than running animations are compared, so
+# a spinner or a pulsing button inside the popup does not hold it open.
+# The control selector is the one modal_scope.js uses.
+_POPUP_IN_PLACE = """
+(args) => new Promise((resolve) => {
+  const findModal = (__MODAL_SCOPE__);
+  const controls = 'button,a[href],input:not([type="hidden"]),select,textarea,' +
+    '[role="button"],[role="option"],[role="radio"],[onclick]';
+  const started = performance.now();
+  let previous = null;
+  let looks = 0;
+  const onScreen = (r) => r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0 &&
+    r.top < window.innerHeight && r.left < window.innerWidth;
+  const tick = () => {
+    let modal = null;
+    try { modal = findModal(document); } catch (e) { modal = null; }
+    if (!modal) { resolve('none'); return; }
+    looks += 1;
+    const rects = [...modal.querySelectorAll(controls)].slice(0, 8)
+      .map((el) => el.getBoundingClientRect());
+    const layout = rects
+      .map((r) => [r.left, r.top, r.width, r.height].map(Math.round).join(','))
+      .join(';');
+    const placed = rects.length === 0 || rects.some(onScreen);
+    if (placed && layout === previous) { resolve(looks > 2 ? 'waited' : 'ready'); return; }
+    if (performance.now() - started >= args.timeoutMs) { resolve('timeout'); return; }
+    previous = layout;
+    setTimeout(tick, 40);
+  };
+  tick();
+})
+"""
 
 # Polls the page's own clock, not ours: performance.now() is milliseconds since
 # THIS document started loading, so the wait is measured from the load the
@@ -181,3 +236,45 @@ async def await_late_overlays(
     if appeared:
         logger.info("late_popup_waited_for", grace_ms=grace_ms)
     return bool(appeared)
+
+
+async def await_popup_in_place(
+    page: _Settleable,
+    *,
+    modal_scope: str,
+    timeout_ms: int = DEFAULT_POPUP_IN_PLACE_MS,
+) -> PopupPlacement:
+    """Hold the read until an open popup's controls are on screen and still.
+
+    Returns ``"none"`` when no popup is open, which costs one round trip;
+    ``"ready"`` when the popup was already at rest; ``"waited"`` when it was
+    still arriving and came to rest; ``"timeout"`` when it had not by
+    ``timeout_ms`` and is read as it is.
+
+    ``modal_scope`` is the shared detector's source, as for
+    ``await_late_overlays``, so "a popup is open" means what it means to the
+    planner. Never raises.
+    """
+    script = _POPUP_IN_PLACE.replace("__MODAL_SCOPE__", modal_scope)
+    # The page bounds itself at timeout_ms; this is the backstop for a page that
+    # stops running its timers.
+    deadline = timeout_ms / 1000 + 1
+
+    try:
+        async with asyncio.timeout(deadline):
+            outcome = cast(str, await page.evaluate(script, {"timeoutMs": timeout_ms}))
+    except TimeoutError:
+        logger.debug("popup_placement_wait_timed_out", timeout_ms=timeout_ms)
+        return "timeout"
+    except Exception as exc:
+        # A navigation mid-wait replaces the document: the popup is gone.
+        logger.debug("popup_placement_wait_interrupted", error_type=type(exc).__name__)
+        return "none"
+
+    if outcome == "waited":
+        logger.info("popup_waited_into_place")
+    elif outcome == "timeout":
+        logger.info("popup_not_in_place", timeout_ms=timeout_ms)
+    if outcome in ("none", "ready", "waited", "timeout"):
+        return cast(PopupPlacement, outcome)
+    return "none"

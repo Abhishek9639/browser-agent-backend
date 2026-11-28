@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Sliding format picker</title>
+<style>
+ body {font-family: sans-serif; padding: 40px;}
+ .interest {display: flex; gap: 16px; align-items: center; border: 1px solid #999; padding: 12px; width: 420px;}
+ .interest .btn {border: 1px solid #333; padding: 6px 10px; cursor: pointer;}
+ #book {padding: 12px 36px; margin-top: 16px;}
+ #veil {position: fixed; inset: 0; z-index: 100; background: rgba(34, 34, 34, 0.8);
+   display: flex; align-items: center; justify-content: center;}
+ #panel {position: relative; width: 360px; background: white; padding: 16px;}
+ #panel .opt {display: inline-block; border: 1px solid #ccc; padding: 6px 10px; margin: 4px; cursor: pointer;}
+ /* BookMyShow's shape: the veil is up at once, while the panel waits below the
+    fold and only then slides in. Nothing in the DOM changes while it moves. */
+ @keyframes slide-up {from {transform: translateY(2000px);} to {transform: none;}}
+ #panel.sliding {animation: slide-up 400ms ease-out 900ms both;}
+ #panel.stuck {transform: translateY(2000px);}
+ @keyframes spin {to {transform: rotate(360deg);}}
+ .spinner {display: inline-block; width: 12px; height: 12px; border: 2px solid #999;
+   border-top-color: transparent; border-radius: 50%; animation: spin 800ms linear infinite;}
+</style></head><body>
+<h1>Avengers: Doomsday</h1>
+<section class="interest">
+  <span>1.1M+ are interested</span>
+  <div class="btn" role="button" tabindex="0">I'm interested</div>
+</section>
+<p>Releasing on 17 Dec, 2026</p>
+<button id="book">Book tickets</button>
+<p id="chosen">No format chosen</p>
+<script>
+ // ?mode=stuck leaves the panel below the fold for good; ?spinner=1 puts an
+ // animation that never ends inside the panel.
+ const params = new URLSearchParams(location.search);
+ const mode = params.get('mode') || 'sliding';
+ document.getElementById('book').onclick = () => {
+   const veil = document.createElement('div');
+   veil.id = 'veil';
+   veil.innerHTML = '<div id="panel" class="' + mode + '"><h4>Avengers: Doomsday</h4>' +
+     '<h5>Select language and format</h5>' +
+     '<div role="button" tabindex="0" aria-label="Close" id="close">x</div>' +
+     (params.get('spinner') ? '<span class="spinner"></span>' : '') +
+     '<p>English</p>' +
+     ['DOLBY CINEMA 2D', 'IMAX 3D', 'Select all'].map(
+       f => '<div class="opt" role="button" tabindex="0" aria-label="' + f + '">' + f + '</div>').join('') +
+     '</div>';
+   document.body.appendChild(veil);
+   for (const o of veil.querySelectorAll('.opt')) o.onclick = () => {
+     document.getElementById('chosen').textContent = 'Format: ' + o.textContent;
+     veil.remove();
+   };
+   veil.querySelector('#close').onclick = () => veil.remove();
+ };
+</script></body></html>
