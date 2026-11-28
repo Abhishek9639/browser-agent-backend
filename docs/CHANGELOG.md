@@ -4,6 +4,12 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### A visible browser's page follows its window - 2026-11-28
+
+- Fix the page staying 1280x800 when the person maximised the agent's visible browser or put it in full screen. The context had a fixed viewport unless `AGENT_FULLSCREEN` was on, so the site sat in one corner with empty space beside and below it, and the agent kept working in that corner.
+- A visible browser's page now always follows its window: maximise it or go full screen at any point and the site, the agent's perception, its screenshots and its clicks all use the whole window. The size is measured from the page on each read, as it already was for `AGENT_FULLSCREEN`.
+- The visible window opens sized for a 1280x800 page (`--window-size`, allowing for the browser's own frame). `AGENT_FULLSCREEN=true` still opens it maximised. Headless runs keep their fixed 1280x800 viewport, and an attached browser keeps its own settings.
+
 ### Popups that slide in - 2026-11-28
 
 - Fix the agent answering from the page behind a popup that was still opening. On BookMyShow, "Book tickets" puts a dimmed veil up at once, holds the "Select language and format" panel below the fold for most of a second, then slides it in with a CSS animation that changes nothing in the DOM. The quiet-DOM settle returned while the panel was still off-screen, so the planner saw an open popup with no choices on screen and the movie page covered, and answered from the background text: it could not book because the movie was "listed as I'm interested".
