@@ -226,6 +226,11 @@ async def test_the_database_holds_a_full_record_of_each_step(rig: dict[str, Any]
     assert first.selector_used == f'[data-agent-idx="{origin}"]'
     assert first.bbox is not None and first.bbox["width"] > 0
     assert first.tab_id
+    # What a replay needs to draw the step as it was seen live: the page it
+    # left and the viewport its bbox is measured in.
+    assert first.url and first.url.startswith("http")
+    assert first.viewport_width and first.viewport_width > 0
+    assert first.viewport_height and first.viewport_height > 0
 
     decision = (
         await session.execute(select(LLMDecision).where(LLMDecision.step_id == first.id))

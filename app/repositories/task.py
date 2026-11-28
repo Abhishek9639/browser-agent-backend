@@ -177,6 +177,15 @@ class LlmDecisionRepository(BaseRepository[LLMDecision]):
         )
         return decision
 
+    async def list_for_task(self, task_id: uuid.UUID) -> Sequence[LLMDecision]:
+        """Every decision behind a task's steps, in one query, for its replay."""
+        stmt = (
+            select(LLMDecision)
+            .join(TaskStep, TaskStep.id == LLMDecision.step_id)
+            .where(TaskStep.task_id == task_id)
+        )
+        return list((await self.session.scalars(stmt)).all())
+
 
 class VerificationRepository(BaseRepository[Verification]):
     model = Verification

@@ -4,6 +4,12 @@ All notable changes to the backend. Format follows [Keep a Changelog](https://ke
 
 ## [Unreleased]
 
+### A replayed step shows what the live one did - 2026-11-29
+
+- A step replayed from the database (a reconnect, or a run opened again from history) now carries the agent's reasoning, its confidence, whether it used vision, the page it left behind and the viewport its bbox was measured in. Before, a replayed step had a screenshot but no reasoning, no URL and no viewport, and without the viewport the client could not place the outline box, so a run reopened later showed screenshots with nothing marked on them.
+- `task_steps` gains `url`, `viewport_width` and `viewport_height` (migration `d5f1a8c3e927`, nullable). The orchestrator fills them from the page after the action and the screenshot's viewport. Steps recorded before this replay as they did, without the box.
+- The decisions come from one query (`LlmDecisionRepository.list_for_task`) rather than one per step.
+
 ### A visible browser's page follows its window - 2026-11-28
 
 - Fix the page staying 1280x800 when the person maximised the agent's visible browser or put it in full screen. The context had a fixed viewport unless `AGENT_FULLSCREEN` was on, so the site sat in one corner with empty space beside and below it, and the agent kept working in that corner.

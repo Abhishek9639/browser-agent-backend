@@ -20,7 +20,7 @@ from typing import Literal
 from app.agent.orchestrator import UnitOfWorkFactory
 from app.core.logging import get_logger
 from app.domain.enums import ApprovalStatus, StepStatus, TaskStatus, UserRole
-from app.models.task import Task, TaskStep
+from app.models.task import LLMDecision, Task, TaskStep
 from app.services.events import (
     AnyEvent,
     ApprovalRequiredEvent,
@@ -30,6 +30,7 @@ from app.services.events import (
     StatusEvent,
     StepEvent,
     TaskStats,
+    Viewport,
 )
 from app.services.storage import ScreenshotStorage
 
@@ -94,6 +95,13 @@ class StreamService:
                 for step in await uow.task_steps.list_for_task(task_id)
                 if step.step_number > after_step
             ]
+            # One query for every step's decision, read while the session is
+            # open: what the model said and why is what makes a replayed step
+            # readable, and the rows cannot be touched once it closes.
+            decisions = {
+                decision.step_id: _DecisionView.of(decision)
+                for decision in await uow.llm_decisions.list_for_task(task_id)
+            }
             pending = await uow.approvals.get_pending_for_task(task_id)
             status = TaskStatus(task.status)
             pending_is_open = pending is not None and (
@@ -110,7 +118,7 @@ class StreamService:
             events.append(PlanEvent(task_id=task_id, steps=plan, seq=REPLAY_SEQ))
 
         for step in steps:
-            events.append(await self._step_event(task_id, step))
+            events.append(await self._step_event(task_id, step, decisions.get(step.id)))
 
         if approval is not None:
             events.append(
@@ -142,7 +150,18 @@ class StreamService:
         last_step = steps[-1].step_number if steps else after_step
         return Replay(events, status=status, last_step=last_step)
 
-    async def _step_event(self, task_id: uuid.UUID, step: TaskStep) -> StepEvent:
+    async def _step_event(
+        self, task_id: uuid.UUID, step: TaskStep, decision: "_DecisionView | None" = None
+    ) -> StepEvent:
+        # The same fields the live event carries, as far as the rows keep them,
+        # so a run opened from history reads like one watched live. Steps saved
+        # before the viewport was stored replay without it, and so without the
+        # outline box, which is all an old row can support.
+        viewport = (
+            Viewport(width=step.viewport_width, height=step.viewport_height)
+            if step.viewport_width and step.viewport_height
+            else None
+        )
         return StepEvent(
             task_id=task_id,
             seq=REPLAY_SEQ,
@@ -153,8 +172,12 @@ class StreamService:
             verified=StepStatus(step.status) is StepStatus.VERIFIED,
             screenshot=await self._screenshot(step),
             bbox=BoundingBox(**step.bbox) if step.bbox else None,
-            url=None,
+            viewport=viewport,
+            url=step.url,
             tab_id=step.tab_id,
+            reasoning=decision.reasoning if decision else None,
+            confidence=decision.confidence if decision else None,
+            used_vision=decision.used_vision if decision else False,
             plan_step=step.plan_step,
         )
 
@@ -178,6 +201,21 @@ class StreamService:
                 ref=step.screenshot_ref,
             )
             return None
+
+
+class _DecisionView:
+    """The parts of a step's decision a replayed event shows, copied out of the row."""
+
+    __slots__ = ("confidence", "reasoning", "used_vision")
+
+    def __init__(self, reasoning: str | None, confidence: float | None, used_vision: bool) -> None:
+        self.reasoning = reasoning
+        self.confidence = confidence
+        self.used_vision = used_vision
+
+    @classmethod
+    def of(cls, decision: LLMDecision) -> "_DecisionView":
+        return cls(decision.reasoning_summary, decision.confidence, bool(decision.used_vision))
 
 
 class _Snapshot:
